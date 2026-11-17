@@ -118,6 +118,26 @@ sudo journalctl -u pbf-wastewater-web -n 20 --no-pager
 
 All three services should say `active`. Then open **https://51.161.52.12** in your browser, sign in, and check the new cards. The app sends `no-store` headers, but if the old look still shows, press **Ctrl+F5**.
 
+## 8. Create or change the Operator login (once, optional)
+
+There are two roles:
+
+| | Admin (existing `wastewater` login) | Operator |
+|---|---|---|
+| View readings, trends, alarm list | ✔ | ✔ |
+| Download CSV history (Reports) | ✔ | ✔ |
+| Acknowledge alarms | ✔ | ✔ |
+| View / change Settings | ✔ | ✘ (tab hidden, server returns 403) |
+| View Audit log | ✔ | ✘ |
+
+If an Operator account already exists (`/etc/pbf-wastewater/operator-auth.json`), it keeps working. To create one or change its password, run this on the VPS after deploying:
+
+```bash
+sudo python3 /opt/pbf-wastewater/web/web.py --set-operator operator
+```
+
+It asks for the password twice (at least 10 characters). The password is never typed on the command line. The file gets the same owner and group as `web-auth.json`, so the web service can read it. The change takes effect on the next sign-in; no restart is needed.
+
 ## Rollback
 
 To put the previous web code back, using the backup path from step 6:

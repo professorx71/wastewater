@@ -142,6 +142,15 @@ def role_for(env):
     except (OSError,ValueError,KeyError,UnicodeError):pass
     return None
 
+# Role permissions. Admin: everything. Operator: view readings/trends/alarms, download
+# CSV history from Reports, and acknowledge alarms. Operator cannot view or change
+# settings and cannot view the audit log. Enforced server-side for every endpoint.
+ROLE_PERMISSIONS={
+    'Admin':frozenset({'view','export','acknowledge','settings','audit'}),
+    'Operator':frozenset({'view','export','acknowledge'}),
+}
+def can(role,permission): return permission in ROLE_PERMISSIONS.get(role,())
+
 def audit(conn,actor,action,detail):
     conn.execute('INSERT INTO audit(stamp,actor,action,detail) VALUES (?,?,?,?)',
                  (iso(datetime.now(UTC)),actor,action,detail[:800]))
@@ -181,13 +190,14 @@ def handle_post(path,env,role,conn):
     body=json.loads(env['wsgi.input'].read(length))
     if not isinstance(body,dict):raise ValueError('JSON object required')
     if path=='/api/settings':
-        if role!='Admin':return '403 Forbidden',{'error':'Admin required'}
+        if not can(role,'settings'):return '403 Forbidden',{'error':'Admin required to change settings'}
         updated=val_settings(body,settings(conn))
         for k,v in updated.items():conn.execute('INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)',(k,json.dumps(v)))
         audit(conn,role,'Settings updated',', '.join(body.keys()))
         conn.commit()
         return '200 OK',updated
     if path=='/api/ack':
+        if not can(role,'acknowledge'):return '403 Forbidden',{'error':'Not permitted'}
         eid=body.get('id')
         if type(eid)!=int or eid<1:raise ValueError('Invalid event ID')
         cur=conn.execute("UPDATE events SET state='acknowledged', actor=?, ack_at=? WHERE id=? AND state='open'",(role,iso(datetime.now(UTC)),eid))
@@ -204,25 +214,34 @@ def application(env,start_response):
         start_response(status,headers+[('Content-Type',kind),('Content-Length',str(len(body)))]+list(extra))
         return [body]
     role=role_for(env)
+    if env.get('PATH_INFO')=='/switch':
+        # Basic Auth has no logout. Refuse the role the user is switching FROM so the browser
+        # shows its sign-in box; once a different valid login arrives, return to the dashboard.
+        old=parse_qs(env.get('QUERY_STRING','')).get('from',[''])[0]
+        if role and role!=old:return send('302 Found',b'',extra=[('Location','/')])
+        page=(b'<!doctype html><meta charset="utf-8"><title>Switch user</title>'
+              b'<p>Sign in with a different account to switch user.</p><p><a href="/">Back to dashboard</a></p>')
+        return send('401 Unauthorized',page,'text/html; charset=utf-8',[('WWW-Authenticate','Basic realm="Wastewater Dashboard", charset="UTF-8"')])
     if not role:return send('401 Unauthorized',{'error':'Sign in required'},extra=[('WWW-Authenticate','Basic realm="Wastewater Dashboard", charset="UTF-8"')])
     method=env.get('REQUEST_METHOD','GET');path=env.get('PATH_INFO','/')
     try:
         if method=='GET':
             if path=='/api/summary':
-                d=summary();d['role']=role
+                d=summary();d['role']=role;d['permissions']=sorted(ROLE_PERMISSIONS[role])
                 with appdb() as conn:
                     cfg=settings(conn);d['limits']={'low':cfg['ph_low'],'high':cfg['ph_high'],'enabled':cfg['alarms_enabled'],'confirm_samples':cfg['alarm_confirm_samples']}
                 return send('200 OK',d)
             if path in ('/api/history','/api/export'):
+                if not can(role,'export' if path.endswith('export') else 'view'):return send('403 Forbidden',{'error':'Not permitted'})
                 data=history(parse_qs(env.get('QUERY_STRING','')),path.endswith('export'))
                 if isinstance(data,bytes):return send('200 OK',data,'text/csv; charset=utf-8',[('Content-Disposition','attachment; filename="wastewater-history.csv"')])
                 return send('200 OK',data)
             if path=='/api/settings':
+                if not can(role,'settings'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:config=settings(conn)
-                if role!='Admin':config={k:v for k,v in config.items() if k not in ('recipients',)}
                 return send('200 OK',{'settings':config,'role':role,'email_configured':EMAIL_CFG.is_file()})
             if path in ('/api/events','/api/audit'):
-                if path=='/api/audit' and role!='Admin':return send('403 Forbidden',{'error':'Admin required'})
+                if not can(role,'audit' if path.endswith('audit') else 'view'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:return send('200 OK',{'rows':records(conn,'events' if path.endswith('events') else 'audit')})
             files={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/process.jpg':('process.jpg','image/jpeg'),'/process-overview.webp':('process-overview.webp','image/webp')}
             if path in files:
@@ -397,8 +416,31 @@ def historical_report(now,period):
     out.extend(['','Report uses recorded samples; missing or invalid-quality data should be reviewed separately.'])
     return '\n'.join(out)
 
+def set_operator(username):
+    """Create or replace the Operator login. Password is prompted, never passed on the command line."""
+    import getpass
+    if not username or ':' in username or len(username)>64:sys.exit('Invalid username')
+    try:
+        if hmac.compare_digest(username,json.loads(AUTH.read_text())['username']):sys.exit('Operator username must differ from the Admin username')
+    except (OSError,ValueError,KeyError):pass
+    pwd=getpass.getpass('New Operator password: ')
+    if len(pwd)<10 or len(pwd)>256:sys.exit('Password must be 10–256 characters')
+    if getpass.getpass('Repeat password: ')!=pwd:sys.exit('Passwords do not match')
+    salt=secrets.token_bytes(16);iterations=600000
+    record={'username':username,'salt':salt.hex(),'iterations':iterations,
+            'hash':hashlib.pbkdf2_hmac('sha256',pwd.encode(),salt,iterations).hex()}
+    OP_AUTH.parent.mkdir(parents=True,exist_ok=True)
+    tmp=OP_AUTH.with_suffix('.tmp')
+    tmp.write_text(json.dumps(record))
+    os.chmod(tmp,0o640)
+    if hasattr(os,'chown') and AUTH.exists() and os.geteuid()==0:
+        st=AUTH.stat();os.chown(tmp,st.st_uid,st.st_gid)  # same owner/group as the Admin auth file
+    os.replace(tmp,OP_AUTH)
+    print('Operator login saved to',OP_AUTH)
+
 if __name__=='__main__':
     if len(sys.argv)>1 and sys.argv[1]=='--scheduler':scheduler()
     elif len(sys.argv)>1 and sys.argv[1]=='--init':
         with appdb() as conn: print('App database ready:',APP_DB)
-    else: print('Usage: python3 web.py --init|--scheduler')
+    elif len(sys.argv)>2 and sys.argv[1]=='--set-operator':set_operator(sys.argv[2])
+    else: print('Usage: python3 web.py --init|--scheduler|--set-operator USERNAME')

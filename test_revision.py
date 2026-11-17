@@ -108,6 +108,58 @@ class RevisionTests(unittest.TestCase):
             self.assertEqual(len(keys),3)
             self.assertEqual(set(keys),{'alarm:incident:1','recovery:incident:1','alarm:incident:3'})
 
+    def _login(self,path,user,pwd):
+        import hashlib
+        salt=os.urandom(16)
+        path.write_text(json.dumps({'username':user,'salt':salt.hex(),'iterations':1000,
+            'hash':hashlib.pbkdf2_hmac('sha256',pwd.encode(),salt,1000).hex()}))
+
+    def call(self,method,path,user,pwd,body=None,query=''):
+        import base64
+        data=json.dumps(body).encode() if body is not None else b''
+        env={'REQUEST_METHOD':method,'PATH_INFO':path,'QUERY_STRING':query,'HTTP_HOST':'localhost',
+             'HTTP_AUTHORIZATION':'Basic '+base64.b64encode(f'{user}:{pwd}'.encode()).decode(),
+             'HTTP_X_WW_REQUEST':'1','CONTENT_LENGTH':str(len(data)),'wsgi.input':io.BytesIO(data)}
+        out={}
+        payload=b''.join(web.application(env,lambda status,headers:out.update(status=status)))
+        return int(out['status'][:3]),payload
+
+    def test_role_permissions(self):
+        web.OP_AUTH=Path(self.tmp.name)/'operator.json'
+        self._login(web.AUTH,'admin','admin-pass')
+        self._login(web.OP_AUTH,'op','op-pass')
+        with web.appdb() as db:
+            db.execute("INSERT INTO events(stamp,kind,detail,state) VALUES ('2026-11-16T12:00:00Z','pH high','x','open')")
+        new={'ph_low':6.0}
+        # Operator: view data, download CSV, acknowledge alarms
+        code,body=self.call('GET','/api/summary','op','op-pass')
+        self.assertEqual(code,200)
+        info=json.loads(body)
+        self.assertEqual(info['role'],'Operator')
+        self.assertNotIn('settings',info['permissions'])
+        self.assertEqual(self.call('GET','/api/history','op','op-pass')[0],200)
+        self.assertEqual(self.call('GET','/api/export','op','op-pass')[0],200)
+        self.assertEqual(self.call('GET','/api/events','op','op-pass')[0],200)
+        self.assertEqual(self.call('POST','/api/ack','op','op-pass',{'id':1})[0],200)
+        # Operator: no settings (read or write) and no audit
+        self.assertEqual(self.call('GET','/api/settings','op','op-pass')[0],403)
+        self.assertEqual(self.call('POST','/api/settings','op','op-pass',new)[0],403)
+        self.assertEqual(self.call('GET','/api/audit','op','op-pass')[0],403)
+        with web.appdb() as db:
+            self.assertEqual(web.settings(db)['ph_low'],web.DEFAULTS['ph_low'])
+        # Admin: everything
+        self.assertEqual(self.call('GET','/api/settings','admin','admin-pass')[0],200)
+        self.assertEqual(self.call('POST','/api/settings','admin','admin-pass',new)[0],200)
+        self.assertEqual(self.call('GET','/api/audit','admin','admin-pass')[0],200)
+        with web.appdb() as db:
+            self.assertEqual(web.settings(db)['ph_low'],6.0)
+        # Wrong password: nothing
+        self.assertEqual(self.call('GET','/api/summary','op','wrong')[0],401)
+        # Switch user: current role is refused with a sign-in prompt; a different role returns to '/'
+        self.assertEqual(self.call('GET','/switch','op','op-pass',query='from=Operator')[0],401)
+        self.assertEqual(self.call('GET','/switch','admin','admin-pass',query='from=Operator')[0],302)
+        self.assertEqual(self.call('GET','/switch','admin','admin-pass',query='from=Admin')[0],401)
+
     def test_static_html_has_no_old_embed_sections(self):
         base=Path(web.__file__).parent/'static'
         html=(base/'index.html').read_text()

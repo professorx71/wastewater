@@ -7,7 +7,7 @@
 
 Everything lives in ./.local (git-ignored). Never points at production paths,
 never sends email, and never touches the VPS. Sign in with the printed
-local-only username/password.
+local-only Admin or Operator username/password.
 """
 import argparse, hashlib, json, math, os, random, secrets, sqlite3, sys, threading, time
 from datetime import datetime, timedelta, timezone
@@ -17,7 +17,8 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 ROOT = Path(__file__).parent
 LOCAL = ROOT / '.local'
-USER, PASSWORD = 'local', 'local'
+USER, PASSWORD = 'local', 'local'                # Admin
+OP_USER, OP_PASSWORD = 'operator', 'operator'    # Operator
 UTC = timezone.utc
 
 
@@ -25,11 +26,11 @@ def iso(t):
     return t.astimezone(UTC).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
-def write_auth(path):
+def write_auth(path, user, password):
     salt = secrets.token_bytes(16)
     iterations = 100_000
-    digest = hashlib.pbkdf2_hmac('sha256', PASSWORD.encode(), salt, iterations).hex()
-    path.write_text(json.dumps({'username': USER, 'salt': salt.hex(), 'iterations': iterations, 'hash': digest}))
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iterations).hex()
+    path.write_text(json.dumps({'username': user, 'salt': salt.hex(), 'iterations': iterations, 'hash': digest}))
 
 
 def reading(t, total):
@@ -98,6 +99,13 @@ def main():
     ap.add_argument('--reset', action='store_true', help='delete and regenerate .local demo data')
     args = ap.parse_args()
 
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo('America/Vancouver')
+    except Exception:
+        sys.exit('Time-zone data is missing (normal on Windows). Install it once with:\n'
+                 '    py -m pip install tzdata\nthen run this again.')
+
     LOCAL.mkdir(exist_ok=True)
     history = LOCAL / 'history.sqlite3'
     if args.reset:
@@ -107,7 +115,10 @@ def main():
 
     auth = LOCAL / 'web-auth.json'
     if not auth.exists():
-        write_auth(auth)
+        write_auth(auth, USER, PASSWORD)
+    op_auth = LOCAL / 'operator-auth.json'
+    if not op_auth.exists():
+        write_auth(op_auth, OP_USER, OP_PASSWORD)
 
     if args.db:
         history = args.db.resolve()
@@ -127,7 +138,7 @@ def main():
     os.environ['PBF_DB'] = str(history)
     os.environ['PBF_WEB_AUTH'] = str(auth)
     os.environ['PBF_APP_DB'] = str(LOCAL / 'dashboard.sqlite3')
-    os.environ['PBF_OPERATOR_AUTH'] = str(LOCAL / 'operator-auth.json')  # absent → Admin only
+    os.environ['PBF_OPERATOR_AUTH'] = str(op_auth)
     os.environ['PBF_EMAIL_CONFIG'] = str(LOCAL / 'email.json')           # absent → email never sends
     sys.path.insert(0, str(ROOT))
     import web
@@ -137,7 +148,8 @@ def main():
 
     with make_server(args.host, args.port, web.application, server_class=ThreadingWSGIServer, handler_class=QuietHandler) as httpd:
         print(f'\nWastewater dashboard running at http://{args.host}:{args.port}')
-        print(f'Sign in with  username: {USER}   password: {PASSWORD}')
+        print(f'Admin login:     {USER} / {PASSWORD}')
+        print(f'Operator login:  {OP_USER} / {OP_PASSWORD}')
         print(f'History DB:   {history}' + ('' if args.db else '  (demo data, new sample every 30 s)'))
         print('Press Ctrl+C to stop.\n')
         try:
