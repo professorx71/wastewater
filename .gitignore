@@ -41,3 +41,6 @@ venv/
 .vscode/settings.json
 .DS_Store
 Thumbs.db
+
+# Local development data (run_local.py)
+/.local/

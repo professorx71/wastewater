@@ -1,5 +1,11 @@
 'use strict';
 const TAGS=[['pH_Reading','EQ pH','pH'],['EQ_Tank_Level_Ft','EQ Tank Level','ft'],['FLOW_RATE','Discharge Flow','L/min'],['Total_Flow_Li','Total Flow','L']];
+const ICONS={
+ pH_Reading:'<svg viewBox="0 0 32 32"><path d="M12 4h8M13 4v9L6.5 25a2 2 0 0 0 1.8 3h15.4a2 2 0 0 0 1.8-3L19 13V4"/><path d="M9.5 20h13"/></svg>',
+ EQ_Tank_Level_Ft:'<svg viewBox="0 0 32 32"><rect x="4" y="7" width="24" height="21" rx="2.5"/><path d="M10 4v5M22 4v5M4 13h24"/><path d="M8 21c2-2 4-2 6 0s4 2 6 0 4-2 4-2"/></svg>',
+ FLOW_RATE:'<svg viewBox="0 0 32 32"><path d="M5.5 24a12 12 0 1 1 21 0"/><path d="M16 18l6-6"/><circle cx="16" cy="18" r="1.6"/><path d="M9 11l1.5 1.5M16 8v2M23 11l-1.5 1.5M7 18h2M25 18h-2"/></svg>',
+ Total_Flow_Li:'<svg viewBox="0 0 32 32"><ellipse cx="16" cy="7.5" rx="10" ry="3.5"/><path d="M6 7.5v17c0 1.9 4.5 3.5 10 3.5s10-1.6 10-3.5v-17"/><path d="M6 13.2c0 1.9 4.5 3.5 10 3.5s10-1.6 10-3.5M6 18.9c0 1.9 4.5 3.5 10 3.5s10-1.6 10-3.5"/></svg>'
+};
 const $=id=>document.getElementById(id);
 const fmt=x=>x==null?'--.--':Number(x).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2});
 const local=x=>{try{return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(x))}catch{return '—'}};
@@ -12,8 +18,10 @@ function drawCards(){
  if(!summaryData)return;
  const lookup=Object.fromEntries(summaryData.tags.map(t=>[t.name,t]));
  $('cards').innerHTML=TAGS.map(([key,label,unit])=>{
-   const item=lookup[key]||{};const good=item.status==='current'&&item.value!=null;
-   return `<div class="card"><div class="name">${escapeHTML(label)}</div><div class="value">${good?fmt(item.value):'--.--'} <span class="unit">${unit}</span></div><small><i class="state-dot ${escapeHTML(item.status||'missing')}"></i>${escapeHTML(item.status||'missing')} · ${item.stamp?local(item.stamp):'No records'}</small></div>`;
+   const item=lookup[key]||{};const status=item.status||'missing';const good=status==='current'&&item.value!=null;
+   const pill=good?'LIVE':status.toUpperCase();
+   const tip=`${label}: ${status} · ${item.stamp?local(item.stamp):'No records'}`;
+   return `<div class="card ${good?'':'not-live'}" title="${escapeHTML(tip)}"><div class="card-icon" aria-hidden="true">${ICONS[key]||''}</div><div class="card-meta"><div class="name">${escapeHTML(label)}</div><span class="live-pill ${escapeHTML(status)}"><i class="state-dot ${escapeHTML(status)}"></i>${escapeHTML(pill)}</span></div><div class="card-divider" aria-hidden="true"></div><div class="value">${good?fmt(item.value):'--.--'}<span class="unit">${unit}</span></div></div>`;
  }).join('');
  const item=(key)=>lookup[key]||{};
  const set=(id,key,unit='')=>{const t=item(key);$(id).textContent=(t.status==='current'&&t.value!=null?fmt(t.value):'--.--')+(unit?' '+unit:'')};

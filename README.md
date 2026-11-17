@@ -34,6 +34,16 @@ This repo contains **application source**, interface artwork, deployment scripts
 3. From the VS Code terminal, run `python -m unittest test_revision -v` (or `py -m unittest test_revision -v` on Windows).
 4. To publish, open **Source Control → Initialize Repository → Commit**, then **Publish to GitHub → Private**.
 
+### Run the dashboard locally
+
+```
+py run_local.py            # then open http://127.0.0.1:8000  (sign in: local / local)
+py run_local.py --reset    # regenerate demo data
+py run_local.py --db C:\path\to\history-copy.sqlite3   # view a copied history DB instead
+```
+
+Or press **F5** in VS Code ("Run dashboard locally"). All local data lives in the git-ignored `.local/` folder: 7 days of demo history plus a new sample every 30 s. Email never sends, and nothing contacts the VPS.
+
 Tests use temporary databases and do not contact the VPS or SMTP. Running the actual dashboard needs a controlled test environment and proper configuration; do not place real credentials in the repository.
 
 ## Live VPS deployment
@@ -48,6 +58,8 @@ Production paths (on the Ubuntu VPS):
 - `pbf-wastewater-web.service` and `pbf-wastewater-scheduler.timer`
 
 **Do not run `deploy.sh` from Windows.** Upload an approved release to the VPS, SSH into Ubuntu, and stage/test before running the explicit production deployment. Take a consistent database backup first.
+
+Step-by-step update procedure: [Deploying to the OVHcloud VPS](docs/DEPLOY_OVHCLOUD.md).
 
 See [GitHub/VS Code setup](docs/GITHUB_VSCODE_SETUP.md), [release notes](REVISION.txt), and [original deployment notes](README.txt).
 
