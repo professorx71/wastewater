@@ -98,7 +98,8 @@ Enter the server password if asked.
 Paste this whole box and press Enter:
 
 ```bash
-rm -rf ~/ww-upgrade/rev1.2.2
+cd ~
+sudo rm -rf ~/ww-upgrade/rev1.2.2
 mkdir -p ~/ww-upgrade/rev1.2.2
 tar xzf ~/pbf-wastewater-rev1.2.2.tar.gz -C ~/ww-upgrade/rev1.2.2
 cd ~/ww-upgrade/rev1.2.2/pbf-wastewater-rev1.2.2
@@ -189,17 +190,25 @@ sudo systemctl is-active pbf-wastewater-web pbf-wastewater-collector.timer pbf-w
 
 Then, in your browser, open **https://51.161.52.12** and sign in. Check that you see the new boxes and **Rev 1.2.2** in the top-right corner. If it still looks old, press **Ctrl+F5**.
 
-### Step 11 (optional). Create the Operator login
+### Step 11 (optional). Set up passwords
 
-Do this only if you want a second, limited login. It's for staff who should see readings, download reports and acknowledge alarms, but not change settings.
+You do this in the **dashboard itself**, not in the server window.
+
+1. Open **https://51.161.52.12** and sign in as **Admin**.
+2. Click **Settings** and scroll down to **Accounts and passwords**.
+3. **To change the Admin password:** type the current password, then the new password twice, and click **Change Admin login**. The browser asks you to sign in again. Use the new password.
+4. **To create a login for staff (Operator):** type a username (for example `operator`), type a password twice, and click **Save Operator login**. Operators can see readings, download reports and acknowledge alarms, but cannot change settings.
+5. **To stop Operators signing in,** click **Turn off Operator login**.
+
+Passwords must be at least **6 characters for Admin** and **4 characters for Operator**.
+
+✅ **You should see** a green message such as `Operator login saved for operator`.
+
+**Forgot the Admin password?** Connect to the server (step 5) and paste the line below. Type a new password twice when asked:
 
 ```bash
-sudo python3 /opt/pbf-wastewater/web/web.py --set-operator operator
+sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin wastewater
 ```
-
-Type a new password (at least 10 characters) and press Enter. Type it again and press Enter.
-
-✅ **You should see** `Operator login saved`. Staff can now sign in with username `operator` and that password.
 
 ### Step 12. Disconnect from the server
 

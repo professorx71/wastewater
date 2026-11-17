@@ -44,7 +44,32 @@ async function loadEvents(){try{const data=await api('/api/events');$('eventlist
 async function loadAudit(){try{const data=await api('/api/audit');$('auditlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.actor)}</td><td>${escapeHTML(r.action)}</td><td>${escapeHTML(r.detail)}</td></tr>`).join('')||'<tr><td colspan="4">No audit entries.</td></tr>'}</tbody></table></div>`}catch(e){$('auditlist').textContent='Admin required or audit unavailable: '+e.message}}
 const KEYS=['ph_low','ph_high','alarms_enabled','email_enabled','email_recovery_enabled','alarm_confirm_samples','alarm_recovery_samples','alarm_on','alarm_off','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time'];
 const dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];$('alarmDays').innerHTML=dayNames.map((d,i)=>`<label><input type="checkbox" data-day="${i}"> ${d}</label>`).join('');
-async function loadSettings(){try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input,#settings textarea,#settings button').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
+async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input,#settings textarea,#settings button').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
+// ---- Accounts and passwords (Admin only; server enforces the same rule) ----
+const postJSON=(path,body)=>fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d});
+function accountMsg(text,ok){const el=$('accountState');el.textContent=text;el.className=ok?'ok-text':'error-text'}
+async function loadAccounts(){try{const a=await api('/api/accounts');
+ $('adminState').textContent=`Signed-in Admin: ${a.admin.username||'—'}`+(a.admin.source==='file'?' (original server login)':'');
+ $('adminUser').value=a.admin.username||'';
+ $('operatorState').textContent=a.operator.enabled?`Active: ${a.operator.username}`:'Not set up — Operator sign-in is off';
+ $('opUser').value=a.operator.username||'';$('disableOperator').disabled=!a.operator.enabled;
+}catch(e){$('adminState').textContent=$('operatorState').textContent='Unavailable: '+e.message}}
+$('saveAdmin').addEventListener('click',async()=>{
+ if($('adminNew').value!==$('adminRepeat').value){accountMsg('New Admin passwords do not match.');return}
+ if(!confirm('Change the Admin login? You will be asked to sign in again with the new password.'))return;
+ try{await postJSON('/api/accounts/admin',{username:$('adminUser').value.trim(),current_password:$('adminCurrent').value,new_password:$('adminNew').value});
+  ['adminCurrent','adminNew','adminRepeat'].forEach(id=>$(id).value='');
+  accountMsg('Admin login changed. Sign in again with the new password…',true);
+  setTimeout(()=>window.location.reload(),1500);
+ }catch(e){accountMsg('Not changed: '+e.message)}});
+$('saveOperator').addEventListener('click',async()=>{
+ if($('opPass').value!==$('opRepeat').value){accountMsg('Operator passwords do not match.');return}
+ try{const r=await postJSON('/api/accounts/operator',{username:$('opUser').value.trim(),password:$('opPass').value});
+  ['opPass','opRepeat'].forEach(id=>$(id).value='');accountMsg(`Operator login saved for ${r.username}.`,true);loadAccounts();
+ }catch(e){accountMsg('Not saved: '+e.message)}});
+$('disableOperator').addEventListener('click',async()=>{
+ if(!confirm('Turn off the Operator login? Operators will no longer be able to sign in.'))return;
+ try{await postJSON('/api/accounts/operator/disable',{});accountMsg('Operator login turned off.',true);loadAccounts()}catch(e){accountMsg('Not changed: '+e.message)}});
 $('save').addEventListener('click',async()=>{const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));body.recipients=$('recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)});$('saveState').textContent='Settings saved to server.';loadSummary()}catch(e){$('saveState').textContent='Save failed: '+e.message}});
 $('export').addEventListener('click',()=>{const a=$('from').value,b=$('to').value;if(!a||!b||a>b){alert('Choose a valid date range.');return}let days=(Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/86400000;if(days>30){alert('Maximum 31 inclusive days');return}window.location.href='/api/export?startDate='+encodeURIComponent(a)+'&endDate='+encodeURIComponent(b)});
 // /switch refuses the current role so the browser re-prompts; a different login returns to '/'.

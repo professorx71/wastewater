@@ -118,7 +118,7 @@ sudo journalctl -u pbf-wastewater-web -n 20 --no-pager
 
 All three services should say `active`. Then open **https://51.161.52.12** in your browser, sign in, and check the new cards. The app sends `no-store` headers, but if the old look still shows, press **Ctrl+F5**.
 
-## 8. Create or change the Operator login (once, optional)
+## 8. Admin and Operator logins
 
 There are two roles:
 
@@ -129,14 +129,25 @@ There are two roles:
 | Acknowledge alarms | ✔ | ✔ |
 | View / change Settings | ✔ | ✘ (tab hidden, server returns 403) |
 | View Audit log | ✔ | ✘ |
+| Change Admin password, create / change / turn off Operator login | ✔ | ✘ |
 
-If an Operator account already exists (`/etc/pbf-wastewater/operator-auth.json`), it keeps working. To create one or change its password, run this on the VPS after deploying:
+**From the dashboard (normal way):** sign in as Admin and go to **Settings → Accounts and passwords**.
+
+- **Admin login:** enter the current password, then the new one twice. You'll be asked to sign in again.
+- **Operator login:** enter a username and a password (twice), then click **Save Operator login**. Use **Turn off Operator login** to block Operator sign-in.
+
+Logins saved this way are stored (as salted PBKDF2 hashes) in the dashboard settings database, `/var/lib/pbf-wastewater/dashboard-v1.2.sqlite3`. `deploy.sh` already backs that database up. They take priority over the original `/etc/pbf-wastewater/web-auth.json` and `operator-auth.json` files, which keep working until a login is changed from the page. Every change is written to the Audit log, without the password.
+
+**From the server (if you're locked out of Admin):**
 
 ```bash
-sudo python3 /opt/pbf-wastewater/web/web.py --set-operator operator
+sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin wastewater
+sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-operator operator
 ```
 
-It asks for the password twice (at least 10 characters). The password is never typed on the command line. The file gets the same owner and group as `web-auth.json`, so the web service can read it. The change takes effect on the next sign-in; no restart is needed.
+Each command asks for the password twice (Admin at least 6 characters, Operator at least 4), so the password is never typed on the command line. It takes effect at the next sign-in; no restart is needed.
+
+> If you **roll back** to a version before this feature, logins changed from the page stop applying, and the original `/etc/pbf-wastewater/*-auth.json` passwords work again.
 
 ## Rollback
 

@@ -32,6 +32,22 @@
 <div class="panel"><h3>pH alarm limits and confirmation</h3><div class="formgrid"><label>Low pH<input id="ph_low" type="number" min="0" max="14" step="0.01"></label><label>High pH<input id="ph_high" type="number" min="0" max="14" step="0.01"></label><label>Consecutive abnormal readings (1–10)<input id="alarm_confirm_samples" type="number" min="1" max="10" step="1"></label><label>Consecutive normal readings for recovery (1–10)<input id="alarm_recovery_samples" type="number" min="1" max="10" step="1"></label></div><label class="check"><input id="alarms_enabled" type="checkbox"> Enable pH alarm monitoring</label><label class="check"><input id="email_enabled" type="checkbox"> Enable alarm email</label><label class="check"><input id="email_recovery_enabled" type="checkbox"> Email when an emailed pH incident is confirmed recovered</label><p>Each reading timestamp counts once. Incident emails are unique per confirmed event, not limited to once per day. This software alarm is not a substitute for a safety or compliance interlock.</p></div>
 <div class="panel"><h3>Alarm notification schedule</h3><div class="formgrid"><label>On <input id="alarm_on" type="time"></label><label>Off <input id="alarm_off" type="time"></label></div><div id="alarmDays" class="days"></div><p>Vancouver local time; overnight schedules supported.</p></div>
 <div class="panel"><h3>Email recipients and reports</h3><label>Recipients (one per line)<textarea rows="3" id="recipients" placeholder="name@example.com"></textarea></label><label class="check"><input id="daily_enabled" type="checkbox"> Send daily report</label><label>Daily time <input id="daily_time" type="time"></label><label class="check"><input id="monthly_enabled" type="checkbox"> Send monthly report</label><div class="formgrid"><label>Day of month (1–28) <input id="monthly_day" type="number" min="1" max="28"></label><label>Monthly time <input id="monthly_time" type="time"></label></div><p id="smtp">SMTP: checking…</p><button id="save">Save settings (Admin only)</button><p id="saveState" role="status"></p></div>
-<div class="panel"><h3>Access roles</h3><p><b>Admin</b> (existing login) can view everything, change all settings, acknowledge alarms and view the Audit log.</p><p><b>Operator</b> can view readings, trends and alarms, download CSV history under Reports, and acknowledge alarms. Operators cannot see or change Settings and cannot view Audit. Create or change the Operator login on the server with <code>sudo python3 /opt/pbf-wastewater/web/web.py --set-operator USERNAME</code>.</p></div></section>
+<div class="panel accounts"><h3>Accounts and passwords</h3>
+<p><b>Admin</b> can view everything, change all settings, acknowledge alarms, view Audit and manage these logins. <b>Operator</b> can view readings, trends and alarms, download CSV history under Reports and acknowledge alarms, but cannot see Settings or Audit.</p>
+<div class="formgrid">
+<div class="account-box"><h4>Admin login</h4><p class="account-state" id="adminState">Loading…</p>
+<label>Username<input id="adminUser" autocomplete="username" maxlength="64"></label>
+<label>Current password<input id="adminCurrent" type="password" autocomplete="current-password" maxlength="256"></label>
+<label>New password (6+ characters)<input id="adminNew" type="password" autocomplete="new-password" maxlength="256"></label>
+<label>Repeat new password<input id="adminRepeat" type="password" autocomplete="new-password" maxlength="256"></label>
+<button id="saveAdmin" type="button">Change Admin login</button></div>
+<div class="account-box"><h4>Operator login</h4><p class="account-state" id="operatorState">Loading…</p>
+<label>Username<input id="opUser" autocomplete="off" maxlength="64"></label>
+<label>Password (4+ characters)<input id="opPass" type="password" autocomplete="new-password" maxlength="256"></label>
+<label>Repeat password<input id="opRepeat" type="password" autocomplete="new-password" maxlength="256"></label>
+<button id="saveOperator" type="button">Save Operator login</button> <button id="disableOperator" type="button" class="danger">Turn off Operator login</button></div>
+</div>
+<p id="accountState" role="status"></p>
+<p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
 <footer>Rev 1.2.2 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
 </main></body></html>

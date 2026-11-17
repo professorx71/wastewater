@@ -22,17 +22,6 @@ def database():
     db.execute('PRAGMA query_only=ON')
     return db
 
-def authorized(env):
-    try:
-        scheme,token=env.get('HTTP_AUTHORIZATION','').split(' ',1)
-        if scheme.lower()!='basic': return False
-        user,password=base64.b64decode(token,validate=True).decode('utf-8').split(':',1)
-        if len(password)>256: return False
-        config=json.loads(AUTH.read_text())
-        digest=hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(config['salt']),config['iterations']).hex()
-        return hmac.compare_digest(user,config['username']) and hmac.compare_digest(digest,config['hash'])
-    except (ValueError,KeyError,OSError,UnicodeError): return False
-
 def summary():
     now=datetime.now(UTC)
     db=database()
@@ -111,7 +100,9 @@ def appdb():
     CREATE TABLE IF NOT EXISTS ph_alarm_v2 (id INTEGER PRIMARY KEY CHECK (id=1),
         last_sample_stamp TEXT, candidate_kind TEXT, candidate_count INTEGER NOT NULL DEFAULT 0,
         active_kind TEXT, active_event INTEGER, recovery_count INTEGER NOT NULL DEFAULT 0,
-        pending_recovery_event INTEGER, recovery_origin_event INTEGER);''')
+        pending_recovery_event INTEGER, recovery_origin_event INTEGER);
+    CREATE TABLE IF NOT EXISTS accounts (role TEXT PRIMARY KEY, username TEXT NOT NULL, salt TEXT NOT NULL,
+        iterations INTEGER NOT NULL, hash TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, updated TEXT NOT NULL);''')
     conn.commit()
     try:
         yield conn
@@ -128,25 +119,102 @@ def settings(conn):
         if r['key'] in result: result[r['key']]=json.loads(r['value'])
     return result
 
-def role_for(env):
-    # Preserve original authentication exactly for existing administrator.
-    if authorized(env): return 'Admin'
+# Logins: one Admin and one optional Operator. A login saved from Settings (or with
+# --set-admin / --set-operator) lives in the app database and takes precedence; otherwise
+# the original /etc/pbf-wastewater/*-auth.json files are used unchanged.
+ROLES=('Admin','Operator')
+ACCOUNT_FILES={'Admin':lambda:AUTH,'Operator':lambda:OP_AUTH}
+PBKDF2_ITERATIONS=310000
+_verified={}
+
+class AccountError(ValueError):pass
+
+def _file_account(role):
+    try:
+        obj=json.loads(ACCOUNT_FILES[role]().read_text())
+        return dict(username=obj['username'],salt=obj['salt'],iterations=int(obj['iterations']),hash=obj['hash'],source='file')
+    except (OSError,ValueError,KeyError,TypeError):return None
+
+def load_account(role,conn=None):
+    """Login record for a role, or None when missing or disabled."""
+    try:
+        if conn is None:
+            with appdb() as c:return load_account(role,c)
+        row=conn.execute('SELECT * FROM accounts WHERE role=?',(role,)).fetchone()
+        if row:
+            if row['disabled']:return None
+            return dict(username=row['username'],salt=row['salt'],iterations=int(row['iterations']),hash=row['hash'],source='settings')
+    except (OSError,sqlite3.Error):pass
+    return _file_account(role)
+
+def password_ok(rec,password):
+    # PBKDF2 is deliberately slow; remember successful checks for this password + stored
+    # record. Any password change alters the record, so old entries can never match.
+    key=hashlib.sha256((password+'\0'+rec['salt']+rec['hash']).encode()).digest()
+    if key in _verified:return True
+    digest=hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(rec['salt']),rec['iterations']).hex()
+    if not hmac.compare_digest(digest,rec['hash']):return False
+    if len(_verified)>256:_verified.clear()
+    _verified[key]=True
+    return True
+
+def credentials(env):
     try:
         scheme,token=env.get('HTTP_AUTHORIZATION','').split(' ',1)
-        if scheme.lower()!='basic': return None
-        user,pwd=base64.b64decode(token,validate=True).decode().split(':',1)
-        if len(pwd)>256:return None
-        obj=json.loads(OP_AUTH.read_text())
-        d=hashlib.pbkdf2_hmac('sha256',pwd.encode(),bytes.fromhex(obj['salt']),int(obj['iterations'])).hex()
-        if hmac.compare_digest(user,obj['username']) and hmac.compare_digest(d,obj['hash']):return 'Operator'
-    except (OSError,ValueError,KeyError,UnicodeError):pass
+        if scheme.lower()!='basic':return None
+        user,pwd=base64.b64decode(token,validate=True).decode('utf-8').split(':',1)
+        return None if len(pwd)>256 else (user,pwd)
+    except (ValueError,UnicodeError):return None
+
+def role_for(env):
+    cred=credentials(env)
+    if not cred:return None
+    user,pwd=cred
+    try:
+        with appdb() as conn:accounts={r:load_account(r,conn) for r in ROLES}
+    except (OSError,sqlite3.Error):
+        accounts={r:_file_account(r) for r in ROLES}
+    for role in ROLES:
+        rec=accounts[role]
+        try:
+            if rec and hmac.compare_digest(user,rec['username']) and password_ok(rec,pwd):return role
+        except (ValueError,KeyError,TypeError):pass
     return None
+
+MIN_PASSWORD_LENGTH={'Admin':6,'Operator':4}
+USERNAME_CHARS=set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+def check_username(name):
+    if not isinstance(name,str) or not 1<=len(name)<=64 or set(name)-USERNAME_CHARS:
+        raise AccountError('Username: 1–64 letters, numbers, dot, dash or underscore')
+def check_password(role,pwd):
+    low=MIN_PASSWORD_LENGTH[role]
+    if not isinstance(pwd,str) or not low<=len(pwd)<=256:raise AccountError(f'{role} password must be {low}–256 characters')
+
+def save_account(conn,role,username,password):
+    check_username(username);check_password(role,password)
+    other=load_account('Operator' if role=='Admin' else 'Admin',conn)
+    if other and other['username'].lower()==username.lower():raise AccountError('Admin and Operator usernames must be different')
+    salt=secrets.token_bytes(16)
+    digest=hashlib.pbkdf2_hmac('sha256',password.encode(),salt,PBKDF2_ITERATIONS).hex()
+    conn.execute('INSERT OR REPLACE INTO accounts(role,username,salt,iterations,hash,disabled,updated) VALUES (?,?,?,?,?,0,?)',
+                 (role,username,salt.hex(),PBKDF2_ITERATIONS,digest,iso(datetime.now(UTC))))
+
+def disable_operator(conn):
+    conn.execute("INSERT OR REPLACE INTO accounts(role,username,salt,iterations,hash,disabled,updated) VALUES ('Operator','','',1,'',1,?)",
+                 (iso(datetime.now(UTC)),))
+
+def account_summary(conn):
+    out={}
+    for role in ROLES:
+        rec=load_account(role,conn)
+        out[role.lower()]={'enabled':rec is not None,'username':rec['username'] if rec else None,'source':rec['source'] if rec else None}
+    return out
 
 # Role permissions. Admin: everything. Operator: view readings/trends/alarms, download
 # CSV history from Reports, and acknowledge alarms. Operator cannot view or change
 # settings and cannot view the audit log. Enforced server-side for every endpoint.
 ROLE_PERMISSIONS={
-    'Admin':frozenset({'view','export','acknowledge','settings','audit'}),
+    'Admin':frozenset({'view','export','acknowledge','settings','audit','accounts'}),
     'Operator':frozenset({'view','export','acknowledge'}),
 }
 def can(role,permission): return permission in ROLE_PERMISSIONS.get(role,())
@@ -196,6 +264,25 @@ def handle_post(path,env,role,conn):
         audit(conn,role,'Settings updated',', '.join(body.keys()))
         conn.commit()
         return '200 OK',updated
+    if path.startswith('/api/accounts/'):
+        if not can(role,'accounts'):return '403 Forbidden',{'error':'Admin required'}
+        if path=='/api/accounts/admin':
+            # Re-confirm the current Admin password (the one this request signed in with).
+            cred=credentials(env);rec=load_account('Admin',conn);current=body.get('current_password')
+            if not (cred and rec and isinstance(current,str) and hmac.compare_digest(current,cred[1]) and password_ok(rec,current)):
+                return '403 Forbidden',{'error':'Current Admin password is incorrect'}
+            username=body.get('username') or rec['username']
+            save_account(conn,'Admin',username,body.get('new_password'))
+            audit(conn,role,'Admin login changed','username '+username);conn.commit()
+            return '200 OK',{'saved':'admin','username':username}
+        if path=='/api/accounts/operator':
+            save_account(conn,'Operator',body.get('username'),body.get('password'))
+            audit(conn,role,'Operator login set','username '+body['username']);conn.commit()
+            return '200 OK',{'saved':'operator','username':body['username']}
+        if path=='/api/accounts/operator/disable':
+            disable_operator(conn);audit(conn,role,'Operator login disabled','');conn.commit()
+            return '200 OK',{'disabled':'operator'}
+        return '404 Not Found',{'error':'Not found'}
     if path=='/api/ack':
         if not can(role,'acknowledge'):return '403 Forbidden',{'error':'Not permitted'}
         eid=body.get('id')
@@ -240,6 +327,9 @@ def application(env,start_response):
                 if not can(role,'settings'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:config=settings(conn)
                 return send('200 OK',{'settings':config,'role':role,'email_configured':EMAIL_CFG.is_file()})
+            if path=='/api/accounts':
+                if not can(role,'accounts'):return send('403 Forbidden',{'error':'Admin required'})
+                with appdb() as conn:return send('200 OK',account_summary(conn))
             if path in ('/api/events','/api/audit'):
                 if not can(role,'audit' if path.endswith('audit') else 'view'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:return send('200 OK',{'rows':records(conn,'events' if path.endswith('events') else 'audit')})
@@ -252,6 +342,7 @@ def application(env,start_response):
                 status,body=handle_post(path,env,role,conn)
                 return send(status,body)
         return send('405 Method Not Allowed',{'error':'Unsupported method'},extra=[('Allow','GET, POST')])
+    except AccountError as e:return send('400 Bad Request',{'error':str(e)})
     except (ValueError,KeyError,json.JSONDecodeError):return send('400 Bad Request',{'error':'Invalid request data'})
     except (OSError,sqlite3.Error):return send('503 Service Unavailable',{'error':'Storage temporarily unavailable'})
 
@@ -416,31 +507,23 @@ def historical_report(now,period):
     out.extend(['','Report uses recorded samples; missing or invalid-quality data should be reviewed separately.'])
     return '\n'.join(out)
 
-def set_operator(username):
-    """Create or replace the Operator login. Password is prompted, never passed on the command line."""
+def set_login(role,username):
+    """Create or replace a login from the server shell (also the lockout-recovery path).
+    The password is prompted, never passed on the command line."""
     import getpass
-    if not username or ':' in username or len(username)>64:sys.exit('Invalid username')
-    try:
-        if hmac.compare_digest(username,json.loads(AUTH.read_text())['username']):sys.exit('Operator username must differ from the Admin username')
-    except (OSError,ValueError,KeyError):pass
-    pwd=getpass.getpass('New Operator password: ')
-    if len(pwd)<10 or len(pwd)>256:sys.exit('Password must be 10–256 characters')
+    pwd=getpass.getpass(f'New {role} password for {username}: ')
     if getpass.getpass('Repeat password: ')!=pwd:sys.exit('Passwords do not match')
-    salt=secrets.token_bytes(16);iterations=600000
-    record={'username':username,'salt':salt.hex(),'iterations':iterations,
-            'hash':hashlib.pbkdf2_hmac('sha256',pwd.encode(),salt,iterations).hex()}
-    OP_AUTH.parent.mkdir(parents=True,exist_ok=True)
-    tmp=OP_AUTH.with_suffix('.tmp')
-    tmp.write_text(json.dumps(record))
-    os.chmod(tmp,0o640)
-    if hasattr(os,'chown') and AUTH.exists() and os.geteuid()==0:
-        st=AUTH.stat();os.chown(tmp,st.st_uid,st.st_gid)  # same owner/group as the Admin auth file
-    os.replace(tmp,OP_AUTH)
-    print('Operator login saved to',OP_AUTH)
+    try:
+        with appdb() as conn:
+            save_account(conn,role,username,pwd)
+            audit(conn,'server shell',f'{role} login changed','username '+username)
+    except AccountError as e:sys.exit(str(e))
+    print(f'{role} login saved for {username}. It takes effect at the next sign-in.')
 
 if __name__=='__main__':
     if len(sys.argv)>1 and sys.argv[1]=='--scheduler':scheduler()
     elif len(sys.argv)>1 and sys.argv[1]=='--init':
         with appdb() as conn: print('App database ready:',APP_DB)
-    elif len(sys.argv)>2 and sys.argv[1]=='--set-operator':set_operator(sys.argv[2])
-    else: print('Usage: python3 web.py --init|--scheduler|--set-operator USERNAME')
+    elif len(sys.argv)>2 and sys.argv[1]=='--set-operator':set_login('Operator',sys.argv[2])
+    elif len(sys.argv)>2 and sys.argv[1]=='--set-admin':set_login('Admin',sys.argv[2])
+    else: print('Usage: python3 web.py --init|--scheduler|--set-admin USERNAME|--set-operator USERNAME')

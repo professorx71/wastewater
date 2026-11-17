@@ -160,6 +160,44 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/switch','admin','admin-pass',query='from=Operator')[0],302)
         self.assertEqual(self.call('GET','/switch','admin','admin-pass',query='from=Admin')[0],401)
 
+    def test_accounts_admin_and_operator_logins(self):
+        web.OP_AUTH=Path(self.tmp.name)/'operator.json'
+        self._login(web.AUTH,'admin','admin-pass-1')
+        self._login(web.OP_AUTH,'op','op-pass-123')
+        A=('admin','admin-pass-1')
+        # Only Admin may see or manage accounts
+        self.assertEqual(self.call('GET','/api/accounts',*A)[0],200)
+        self.assertEqual(self.call('GET','/api/accounts','op','op-pass-123')[0],403)
+        self.assertEqual(self.call('POST','/api/accounts/operator','op','op-pass-123',{'username':'x','password':'long-enough-pw'})[0],403)
+        # Admin sets a new Operator login: it replaces the original operator file login
+        self.assertEqual(self.call('POST','/api/accounts/operator',*A,{'username':'shift','password':'abc'})[0],400)  # Operator minimum 4
+        self.assertEqual(self.call('POST','/api/accounts/operator',*A,{'username':'ADMIN','password':'long-enough-pw'})[0],400)
+        self.assertEqual(self.call('POST','/api/accounts/operator',*A,{'username':'shift','password':'shift-pass-99'})[0],200)
+        self.assertEqual(self.call('GET','/api/summary','shift','shift-pass-99')[0],200)
+        self.assertEqual(self.call('GET','/api/summary','op','op-pass-123')[0],401)
+        # Admin password change needs the current password
+        self.assertEqual(self.call('POST','/api/accounts/admin',*A,{'current_password':'wrong','new_password':'new-admin-pass'})[0],403)
+        self.assertEqual(self.call('POST','/api/accounts/admin',*A,{'current_password':'admin-pass-1','new_password':'abcde'})[0],400)  # Admin minimum 6
+        self.assertEqual(self.call('POST','/api/accounts/admin',*A,{'current_password':'admin-pass-1','new_password':'new-admin-pass'})[0],200)
+        self.assertEqual(self.call('GET','/api/summary',*A)[0],401)
+        A=('admin','new-admin-pass')
+        code,body=self.call('GET','/api/accounts',*A)
+        self.assertEqual(code,200)
+        info=json.loads(body)
+        self.assertEqual(info['admin']['source'],'settings')
+        self.assertEqual(info['operator']['username'],'shift')
+        self.assertNotIn('hash',body.decode())
+        # Turning the Operator off blocks sign-in (file login does not come back)
+        self.assertEqual(self.call('POST','/api/accounts/operator/disable',*A,{})[0],200)
+        self.assertEqual(self.call('GET','/api/summary','shift','shift-pass-99')[0],401)
+        self.assertEqual(self.call('GET','/api/summary','op','op-pass-123')[0],401)
+        # Changes are audited without passwords
+        with web.appdb() as db:
+            details=' '.join(r['action']+' '+r['detail'] for r in db.execute('SELECT * FROM audit'))
+        self.assertIn('Operator login disabled',details)
+        self.assertNotIn('shift-pass-99',details)
+        self.assertNotIn('new-admin-pass',details)
+
     def test_static_html_has_no_old_embed_sections(self):
         base=Path(web.__file__).parent/'static'
         html=(base/'index.html').read_text()
