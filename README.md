@@ -1,4 +1,4 @@
-# Wastewater Dashboard — Rev 1.2.2
+# Wastewater Dashboard — Rev 1.2.3
 
 **Design and program by Daniel Salazar**
 
@@ -59,6 +59,8 @@ Production paths (on the Ubuntu VPS):
 - `pbf-wastewater-web.service` and `pbf-wastewater-scheduler.timer`
 
 **Do not run `deploy.sh` from Windows.** Upload an approved release to the VPS, SSH into Ubuntu, and stage/test before running the explicit production deployment. Take a consistent database backup first.
+
+**Release and deploy in one go:** double-click `release.cmd` (or run `.\release.cmd -DryRun` first to preview). It bumps the revision, commits, tags, pushes, creates the GitHub release, and stages and deploys to the VPS after you type `DEPLOY`.
 
 Step-by-step update procedure: [plain-language guide](docs/DEPLOY_STEP_BY_STEP.md) (no programming needed) or [technical guide](docs/DEPLOY_OVHCLOUD.md).
 

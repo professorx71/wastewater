@@ -1,9 +1,42 @@
 # How to put the new dashboard version on the server — plain step-by-step
 
-This guide updates the live dashboard at **https://51.161.52.12** to **version 1.2.2**. You don't need to know programming. You will **copy commands from this page and paste them** into a window, then check that what you see matches what this guide says.
+This guide updates the live dashboard at **https://51.161.52.12** to **version 1.2.3**. You don't need to know programming. You will **copy commands from this page and paste them** into a window, then check that what you see matches what this guide says.
 
 **Time needed:** about 30 minutes.
 **What stays safe:** the readings history, alarm settings, email settings and passwords are **not** changed. The server makes a backup automatically before changing anything.
+
+---
+
+## ⚡ The quick way: one script does all the steps below
+
+In the project folder `C:\developer\wastewater`, **double-click `release.cmd`**. Or, in the VS Code terminal, type:
+
+```powershell
+.\release.cmd
+```
+
+It does everything on this page for you and asks before each important step:
+
+1. **Raises the version number** by one (for example 1.4.7 → 1.4.8) in every file and adds release notes to `REVISION.txt`.
+2. **Saves to GitHub**: commits, creates the release tag, pushes, and creates a GitHub release with the package attached.
+3. **Uploads** the package to the server and checks it arrived intact.
+4. **Installs a test copy** and runs the tests. The live site isn't touched.
+5. **Offers a preview** of the test copy in your browser.
+6. **Goes live only when you type `DEPLOY`**, then checks the services and shows the **backup path**. Save that path.
+
+Type the server password whenever it's asked for (nothing shows while you type).
+
+| You want to… | Type |
+|---|---|
+| See what would change, without changing anything | `.\release.cmd -DryRun` |
+| Add a one-line description to the release | `.\release.cmd -Notes "What changed"` |
+| Release to GitHub but not deploy yet | `.\release.cmd -NoDeploy` |
+| Deploy the current version again (no new number) | `.\release.cmd -DeployOnly` |
+| Choose the version number yourself | `.\release.cmd -Version 1.3.0` |
+
+**GitHub releases need the GitHub CLI, installed once.** Run `winget install --id GitHub.cli`, close and reopen the terminal, then run `gh auth login`. Without it, the script still saves and pushes to GitHub, and prints the command to create the release later.
+
+If the script stops with **STOPPED:** in red, read the message. Nothing after that point was done. The rest of this page shows the same steps done by hand.
 
 ---
 
@@ -48,10 +81,10 @@ Paste this and press Enter:
 
 ```powershell
 git add -A
-git commit -m "Release 1.2.2"
+git commit -m "Release 1.2.3"
 ```
 
-✅ **You should see** a line like `[main 1a2b3c4] Release 1.2.2` and a count of files changed.
+✅ **You should see** a line like `[main 1a2b3c4] Release 1.2.3` and a count of files changed.
 ℹ️ If it says `nothing to commit`, that's fine. The changes were already saved. Continue.
 
 ### Step 3. Build the upload package
@@ -59,17 +92,17 @@ git commit -m "Release 1.2.2"
 Paste this as **one line** and press Enter:
 
 ```powershell
-git -c core.autocrlf=false archive --format=tar.gz --prefix=pbf-wastewater-rev1.2.2/ -o "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.2.tar.gz" HEAD
+git -c core.autocrlf=false archive --format=tar.gz --prefix=pbf-wastewater-rev1.2.3/ -o "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.3.tar.gz" HEAD
 ```
 
-✅ **You should see** nothing, just a new empty line. That means it worked. The file `pbf-wastewater-rev1.2.2.tar.gz` is now in your **Downloads** folder.
+✅ **You should see** nothing, just a new empty line. That means it worked. The file `pbf-wastewater-rev1.2.3.tar.gz` is now in your **Downloads** folder.
 
 ### Step 4. Send the package to the server
 
 Paste this and press Enter:
 
 ```powershell
-scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.2.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
+scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.3.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
 ```
 
 - If it asks **"Are you sure you want to continue connecting (yes/no)?"**, type `yes` and press Enter.
@@ -99,10 +132,10 @@ Paste this whole box and press Enter:
 
 ```bash
 cd ~
-sudo rm -rf ~/ww-upgrade/rev1.2.2
-mkdir -p ~/ww-upgrade/rev1.2.2
-tar xzf ~/pbf-wastewater-rev1.2.2.tar.gz -C ~/ww-upgrade/rev1.2.2
-cd ~/ww-upgrade/rev1.2.2/pbf-wastewater-rev1.2.2
+sudo rm -rf ~/ww-upgrade/rev1.2.3
+mkdir -p ~/ww-upgrade/rev1.2.3
+tar xzf ~/pbf-wastewater-rev1.2.3.tar.gz -C ~/ww-upgrade/rev1.2.3
+cd ~/ww-upgrade/rev1.2.3/pbf-wastewater-rev1.2.3
 ls
 ```
 
@@ -128,7 +161,7 @@ This step uses **two windows**.
 **8a. Start the test copy.** In the **server window** you already have open, paste:
 
 ```bash
-sudo -u pbf-wastewater env PBF_APP_DB=/var/lib/pbf-wastewater/dashboard-v1.2.2-stage.sqlite3 bash -c 'cd /opt/pbf-wastewater/rev1.2.2-stage && exec gunicorn --bind 127.0.0.1:8003 --workers 1 web:application'
+sudo -u pbf-wastewater env PBF_APP_DB=/var/lib/pbf-wastewater/dashboard-v1.2.3-stage.sqlite3 bash -c 'cd /opt/pbf-wastewater/rev1.2.3-stage && exec gunicorn --bind 127.0.0.1:8003 --workers 1 web:application'
 ```
 
 ✅ You should see a few lines including **"Listening at: http://127.0.0.1:8003"**. **Leave this window alone.** It stays busy while the test copy runs.
@@ -149,7 +182,7 @@ Sign in with the **Admin** login (`wastewater` and its password). Check that:
 
 - [ ] The four boxes at the top have **pictures**, a green **● LIVE** label and numbers
 - [ ] The numbers are about the same as on the live site, https://51.161.52.12
-- [ ] The top-right corner shows **Admin**, **Rev 1.2.2** and a **Switch user** button
+- [ ] The top-right corner shows **Admin**, **Rev 1.2.3** and a **Switch user** button
 - [ ] **Trends**, **Alarms**, **Reports** and **Settings** pages open
 
 🛑 If something looks wrong, skip to **"If you want to stop"** at the bottom. Nothing live has been changed yet.
@@ -165,14 +198,14 @@ Sign in with the **Admin** login (`wastewater` and its password). Check that:
 In the **first** server window, paste:
 
 ```bash
-cd ~/ww-upgrade/rev1.2.2/pbf-wastewater-rev1.2.2
+cd ~/ww-upgrade/rev1.2.3/pbf-wastewater-rev1.2.3
 sudo bash deploy.sh --approved
 ```
 
 Wait about a minute. The live dashboard is offline for a few seconds during this step.
 
 ✅ **You should see** at the end:
-- `Revision 1.2.2 deployed. Backup: /var/backups/pbf-wastewater/pre-deploy-1.2.2-...`
+- `Revision 1.2.3 deployed. Backup: /var/backups/pbf-wastewater/pre-deploy-1.2.3-...`
 
 📝 **Copy that whole Backup line and save it** in Notepad or an email to yourself. You need it if you ever want to go back to the old version.
 
@@ -188,7 +221,7 @@ sudo systemctl is-active pbf-wastewater-web pbf-wastewater-collector.timer pbf-w
 
 ✅ **You should see** `active` three times.
 
-Then, in your browser, open **https://51.161.52.12** and sign in. Check that you see the new boxes and **Rev 1.2.2** in the top-right corner. If it still looks old, press **Ctrl+F5**.
+Then, in your browser, open **https://51.161.52.12** and sign in. Check that you see the new boxes and **Rev 1.2.3** in the top-right corner. If it still looks old, press **Ctrl+F5**.
 
 ### Step 11 (optional). Set up passwords
 
@@ -226,8 +259,8 @@ exit
 - **After step 9, to go back to the old version:** connect to the server (step 5), then paste the line below. Replace the part after `rollback.sh` with the **Backup** path you saved in step 9.
 
 ```bash
-cd ~/ww-upgrade/rev1.2.2/pbf-wastewater-rev1.2.2
-sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.2-PASTE-YOUR-DATE-HERE
+cd ~/ww-upgrade/rev1.2.3/pbf-wastewater-rev1.2.3
+sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.3-PASTE-YOUR-DATE-HERE
 ```
 
 ✅ **You should see** "Previous web code restored". Readings history and settings are not affected.

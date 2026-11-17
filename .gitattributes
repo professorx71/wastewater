@@ -1,0 +1,5 @@
+# Shell scripts run on the Ubuntu server: always keep Linux (LF) line endings,
+# even on Windows checkouts with core.autocrlf=true.
+*.sh text eol=lf
+# Windows launchers need CRLF.
+*.cmd text eol=crlf
