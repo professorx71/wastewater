@@ -1,3 +1,28 @@
+Revision 1.2.2 — Wastewater Dashboard
+Design and program by Daniel Salazar.
+
+Based on Rev 1.2.1. No database schema, collector, SMTP or scheduler changes.
+
+Overview:
+- Redesigned four top reading cards: icon, LIVE status pill, divider and large value with unit.
+  Stale/invalid/missing readings show an amber/grey status pill and greyed value; timestamp on hover.
+
+Roles and access:
+- Explicit role permissions enforced server-side on every endpoint.
+  Admin: view, CSV export, acknowledge alarms, view/change Settings, Audit.
+  Operator: view, CSV export (Reports), acknowledge alarms. Settings and Audit are hidden and return 403
+  (Operators can no longer read settings via the API).
+- New: sudo python3 /opt/pbf-wastewater/web/web.py --set-operator USERNAME (password prompted; file owner
+  copied from web-auth.json). Existing operator-auth.json keeps working.
+- New "Switch user" button (/switch) to change Basic Auth login without closing the browser.
+
+Development:
+- run_local.py for local preview with demo data (Admin local/local, Operator operator/operator); not deployed.
+- docs/DEPLOY_OVHCLOUD.md step-by-step staging/deploy/rollback guide.
+- Regression test for role permissions and switch user.
+
+------------------------------------------------------------------------
+
 Revision 1.2.1 — Wastewater Dashboard
 Design and program by Daniel Salazar.
 

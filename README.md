@@ -1,4 +1,4 @@
-# Wastewater Dashboard — Rev 1.2.1
+# Wastewater Dashboard — Rev 1.2.2
 
 **Design and program by Daniel Salazar**
 
@@ -60,7 +60,7 @@ Production paths (on the Ubuntu VPS):
 
 **Do not run `deploy.sh` from Windows.** Upload an approved release to the VPS, SSH into Ubuntu, and stage/test before running the explicit production deployment. Take a consistent database backup first.
 
-Step-by-step update procedure: [Deploying to the OVHcloud VPS](docs/DEPLOY_OVHCLOUD.md).
+Step-by-step update procedure: [plain-language guide](docs/DEPLOY_STEP_BY_STEP.md) (no programming needed) or [technical guide](docs/DEPLOY_OVHCLOUD.md).
 
 See [GitHub/VS Code setup](docs/GITHUB_VSCODE_SETUP.md), [release notes](REVISION.txt), and [original deployment notes](README.txt).
 
