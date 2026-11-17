@@ -38,7 +38,7 @@ def summary():
                 item['status']='stale' if age>180 else 'current'
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             result.append(item)
-        return {'revision':'1.2.3','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state}
+        return {'revision':'1.2.4','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state}
     finally: db.close()
 
 def window(params):

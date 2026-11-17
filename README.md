@@ -1,4 +1,4 @@
-# Wastewater Dashboard — Rev 1.2.3
+# Wastewater Dashboard — Rev 1.2.4
 
 **Design and program by Daniel Salazar**
 
@@ -61,6 +61,8 @@ Production paths (on the Ubuntu VPS):
 **Do not run `deploy.sh` from Windows.** Upload an approved release to the VPS, SSH into Ubuntu, and stage/test before running the explicit production deployment. Take a consistent database backup first.
 
 **Release and deploy in one go:** double-click `release.cmd` (or run `.\release.cmd -DryRun` first to preview). It bumps the revision, commits, tags, pushes, creates the GitHub release, and stages and deploys to the VPS after you type `DEPLOY`.
+
+**Add or change a login on the live server:** double-click `set-login.cmd` (or `.\set-login.cmd -Show` to only list the current logins). It detects the server's revision, runs the right command, and asks for the new password in a hidden prompt.
 
 Step-by-step update procedure: [plain-language guide](docs/DEPLOY_STEP_BY_STEP.md) (no programming needed) or [technical guide](docs/DEPLOY_OVHCLOUD.md).
 
