@@ -1,0 +1,43 @@
+# Credentials and live system configuration — never commit
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+*credentials*.json
+*auth.json
+email.json
+dmweb.json
+operator-auth.json
+web-auth.json
+
+# Live databases, WAL files, archives, and private backups
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.db
+*.db-shm
+*.db-wal
+*.bak
+*.backup
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.gpg
+*.age
+/backups/
+/private/
+
+# Python/runtime/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.log
+.vscode/settings.json
+.DS_Store
+Thumbs.db

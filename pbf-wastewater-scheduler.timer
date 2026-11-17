@@ -1,0 +1,9 @@
+[Unit]
+Description=Check wastewater alarm and reporting schedules every minute
+[Timer]
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=2s
+Unit=pbf-wastewater-scheduler.service
+[Install]
+WantedBy=timers.target

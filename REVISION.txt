@@ -1,0 +1,30 @@
+Revision 1.2.1 — Wastewater Dashboard
+Design and program by Daniel Salazar.
+
+Based on running Rev 1.2.0 with existing Ewon Flexy 205 → Talk2M DataMailbox → VPS SQLite history pipeline.
+
+New overview:
+- Approved process-only industrial illustration; no embedded sample 6-hour trend, alarm history, or duplicate four-card image.
+- Four top metrics are rendered from live /api/summary results (pH, EQ level, discharge flow, total flow).
+- EQ tank pH and level on the process illustration are live-value overlays.
+- Discharge flow and total flow also appear as live overlays on the schematic.
+- Stale/missing/invalid values show --.--, never misleading LIVE numerals.
+- Motor frequency and sludge-pickup values in schematic are masked as Not connected.
+- Water level fill, chemical dosing, pumps and other equipment are illustrative, NOT live PLC signals.
+- Independent trends remain accessible under Trends; alarms remain under Alarms.
+
+Alarm improvements:
+- Configurable consecutive fresh-reading confirmation (default 2), and recovery confirmation (default 2).
+- One confirmed incident per excursion with unique event ID, rather than one email per alarm type per day.
+- Recovery event and optional recovery email following two consecutive normal readings.
+- Existing 1.2.0 alarm state adopted at first run to avoid duplicate high-pH email on upgrade.
+- New settings added without rewriting the historical sample database.
+
+Preserved:
+- Existing Basic Auth Admin and optional Operator account, production settings, SMTP credentials and schedules.
+- API mapping: pH_Reading, EQ_Tank_Level_Ft, FLOW_RATE × 3.78541 US gal/min → L/min, Total_Flow_Li.
+- Reports (daily/monthly), Events, Audit, calendar CSV exports, systemd scheduler, and Talk2M collector.
+
+Limitations: alarms are software notifications, not safety/compliance controls. End-to-end SMTP reports and
+notification schedules must be verified on production after deployment. No direct VPS modification is
+performed by building this package.

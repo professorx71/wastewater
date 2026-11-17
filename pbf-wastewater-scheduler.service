@@ -1,0 +1,17 @@
+[Unit]
+Description=Wastewater Dashboard Rev 1.2.0 scheduled alarms and email
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=pbf-wastewater
+Group=pbf-wastewater
+WorkingDirectory=/opt/pbf-wastewater/web
+ExecStart=/usr/bin/python3 /opt/pbf-wastewater/web/web.py --scheduler
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pbf-wastewater
+InaccessiblePaths=/etc/pbf-wastewater/dmweb.json
+TimeoutStartSec=70
