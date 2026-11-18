@@ -1,4 +1,4 @@
-# Wastewater Dashboard — Rev 1.2.8
+# Wastewater Dashboard — Rev 1.2.9
 
 **Design and program by Daniel Salazar**
 
@@ -23,8 +23,9 @@ This repo contains **application source**, interface artwork, deployment scripts
 
 - Live process overview with readings over the EQ tank process diagram.
 - Separate Trends and Events/Alarms pages.
-- Historical CSV export, configurable pH alarms and incident confirmation/recovery.
-- Daily/monthly email reports and audit log.
+- Excel reports (Total_Flow_Li EOD summary with daily usage), configurable pH, EQ high-level, no-flow and data-stopped alarms.
+- Daily/monthly/quarterly email reports (Excel attached), named Operator logins, sign-in lockout and audit log.
+- Nightly database backups on the server.
 - Python WSGI application; no live instrumentation is included in this repository.
 
 ## Working locally in VS Code
@@ -58,11 +59,14 @@ Production paths (on the Ubuntu VPS):
 - `/var/lib/pbf-wastewater/dashboard-v1.2.sqlite3` — settings/events/audit metadata
 - `/etc/pbf-wastewater/web-auth.json` — Basic Auth (private)
 - `/etc/pbf-wastewater/email.json` — SMTP configuration (private)
-- `pbf-wastewater-web.service` and `pbf-wastewater-scheduler.timer`
+- `/var/backups/pbf-wastewater-nightly/` — nightly database backups (newest 14)
+- `pbf-wastewater-web.service`, `pbf-wastewater-scheduler.timer` and `pbf-wastewater-backup.timer`
 
 **Do not run `deploy.sh` from Windows.** Upload an approved release to the VPS, SSH into Ubuntu, and stage/test before running the explicit production deployment. Take a consistent database backup first.
 
 **Release and deploy in one go:** double-click `release.cmd` (or run `.\release.cmd -DryRun` first to preview). It bumps the revision, commits, tags, pushes, creates the GitHub release, and stages and deploys to the VPS after you type `DEPLOY`.
+
+**Copy the newest nightly backup to this PC:** double-click `pull-backups.cmd` (weekly). The server backs up both databases every night at 02:30 and keeps 14.
 
 **Add or change a login on the live server:** double-click `set-login.cmd` (or `.\set-login.cmd -Show` to only list the current logins). It detects the server's revision, runs the right command, and asks for the new password in a hidden prompt.
 

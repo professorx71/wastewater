@@ -1,0 +1,9 @@
+[Unit]
+Description=Back up the wastewater databases every night at 02:30
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=120
+Unit=pbf-wastewater-backup.service
+[Install]
+WantedBy=timers.target

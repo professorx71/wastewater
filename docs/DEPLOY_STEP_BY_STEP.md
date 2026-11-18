@@ -1,6 +1,6 @@
 # How to put the new dashboard version on the server — plain step-by-step
 
-This guide updates the live dashboard at **https://51.161.52.12** to **version 1.2.8**. You don't need to know programming. You will **copy commands from this page and paste them** into a window, then check that what you see matches what this guide says.
+This guide updates the live dashboard at **https://51.161.52.12** to **version 1.2.9**. You don't need to know programming. You will **copy commands from this page and paste them** into a window, then check that what you see matches what this guide says.
 
 **Time needed:** about 30 minutes.
 **What stays safe:** the readings history, alarm settings, email settings and passwords are **not** changed. The server makes a backup automatically before changing anything.
@@ -81,10 +81,10 @@ Paste this and press Enter:
 
 ```powershell
 git add -A
-git commit -m "Release 1.2.8"
+git commit -m "Release 1.2.9"
 ```
 
-✅ **You should see** a line like `[main 1a2b3c4] Release 1.2.8` and a count of files changed.
+✅ **You should see** a line like `[main 1a2b3c4] Release 1.2.9` and a count of files changed.
 ℹ️ If it says `nothing to commit`, that's fine. The changes were already saved. Continue.
 
 ### Step 3. Build the upload package
@@ -92,17 +92,17 @@ git commit -m "Release 1.2.8"
 Paste this as **one line** and press Enter:
 
 ```powershell
-git -c core.autocrlf=false archive --format=tar.gz --prefix=pbf-wastewater-rev1.2.8/ -o "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.8.tar.gz" HEAD
+git -c core.autocrlf=false archive --format=tar.gz --prefix=pbf-wastewater-rev1.2.9/ -o "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.9.tar.gz" HEAD
 ```
 
-✅ **You should see** nothing, just a new empty line. That means it worked. The file `pbf-wastewater-rev1.2.8.tar.gz` is now in your **Downloads** folder.
+✅ **You should see** nothing, just a new empty line. That means it worked. The file `pbf-wastewater-rev1.2.9.tar.gz` is now in your **Downloads** folder.
 
 ### Step 4. Send the package to the server
 
 Paste this and press Enter:
 
 ```powershell
-scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.8.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
+scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.9.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
 ```
 
 - If it asks **"Are you sure you want to continue connecting (yes/no)?"**, type `yes` and press Enter.
@@ -132,10 +132,10 @@ Paste this whole box and press Enter:
 
 ```bash
 cd ~
-sudo rm -rf ~/ww-upgrade/rev1.2.8
-mkdir -p ~/ww-upgrade/rev1.2.8
-tar xzf ~/pbf-wastewater-rev1.2.8.tar.gz -C ~/ww-upgrade/rev1.2.8
-cd ~/ww-upgrade/rev1.2.8/pbf-wastewater-rev1.2.8
+sudo rm -rf ~/ww-upgrade/rev1.2.9
+mkdir -p ~/ww-upgrade/rev1.2.9
+tar xzf ~/pbf-wastewater-rev1.2.9.tar.gz -C ~/ww-upgrade/rev1.2.9
+cd ~/ww-upgrade/rev1.2.9/pbf-wastewater-rev1.2.9
 ls
 ```
 
@@ -161,7 +161,7 @@ This step uses **two windows**.
 **8a. Start the test copy.** In the **server window** you already have open, paste:
 
 ```bash
-sudo -u pbf-wastewater env PBF_APP_DB=/var/lib/pbf-wastewater/dashboard-v1.2.8-stage.sqlite3 bash -c 'cd /opt/pbf-wastewater/rev1.2.8-stage && exec gunicorn --bind 127.0.0.1:8003 --workers 1 web:application'
+sudo -u pbf-wastewater env PBF_APP_DB=/var/lib/pbf-wastewater/dashboard-v1.2.9-stage.sqlite3 bash -c 'cd /opt/pbf-wastewater/rev1.2.9-stage && exec gunicorn --bind 127.0.0.1:8003 --workers 1 web:application'
 ```
 
 ✅ You should see a few lines including **"Listening at: http://127.0.0.1:8003"**. **Leave this window alone.** It stays busy while the test copy runs.
@@ -182,7 +182,7 @@ Sign in with the **Admin** login (`wastewater` and its password). Check that:
 
 - [ ] The four boxes at the top have **pictures**, a green **● LIVE** label and numbers
 - [ ] The numbers are about the same as on the live site, https://51.161.52.12
-- [ ] The top-right corner shows **Admin**, **Rev 1.2.8** and a **Switch user** button
+- [ ] The top-right corner shows **Admin**, **Rev 1.2.9** and a **Switch user** button
 - [ ] **Trends**, **Alarms**, **Reports** and **Settings** pages open
 
 🛑 If something looks wrong, skip to **"If you want to stop"** at the bottom. Nothing live has been changed yet.
@@ -198,14 +198,14 @@ Sign in with the **Admin** login (`wastewater` and its password). Check that:
 In the **first** server window, paste:
 
 ```bash
-cd ~/ww-upgrade/rev1.2.8/pbf-wastewater-rev1.2.8
+cd ~/ww-upgrade/rev1.2.9/pbf-wastewater-rev1.2.9
 sudo bash deploy.sh --approved
 ```
 
 Wait about a minute. The live dashboard is offline for a few seconds during this step.
 
 ✅ **You should see** at the end:
-- `Revision 1.2.8 deployed. Backup: /var/backups/pbf-wastewater/pre-deploy-1.2.8-...`
+- `Revision 1.2.9 deployed. Backup: /var/backups/pbf-wastewater/pre-deploy-1.2.9-...`
 
 📝 **Copy that whole Backup line and save it** in Notepad or an email to yourself. You need it if you ever want to go back to the old version.
 
@@ -216,12 +216,12 @@ Wait about a minute. The live dashboard is offline for a few seconds during this
 Paste:
 
 ```bash
-sudo systemctl is-active pbf-wastewater-web pbf-wastewater-collector.timer pbf-wastewater-scheduler.timer
+sudo systemctl is-active pbf-wastewater-web pbf-wastewater-collector.timer pbf-wastewater-scheduler.timer pbf-wastewater-backup.timer
 ```
 
-✅ **You should see** `active` three times.
+✅ **You should see** `active` four times. The fourth is the nightly backup.
 
-Then, in your browser, open **https://51.161.52.12** and sign in. Check that you see the new boxes and **Rev 1.2.8** in the top-right corner. If it still looks old, press **Ctrl+F5**.
+Then, in your browser, open **https://51.161.52.12** and sign in. Check that you see the new boxes and **Rev 1.2.9** in the top-right corner. If it still looks old, press **Ctrl+F5**.
 
 ### Step 11 (optional). Set up passwords
 
@@ -230,8 +230,8 @@ You do this in the **dashboard itself**, not in the server window.
 1. Open **https://51.161.52.12** and sign in as **Admin**.
 2. Click **Settings** and scroll down to **Accounts and passwords**.
 3. **To change the Admin password:** type the current password, then the new password twice, and click **Change Admin login**. The browser asks you to sign in again. Use the new password.
-4. **To create a login for staff (Operator):** type a username (for example `operator`), type a password twice, and click **Save Operator login**. Operators can see readings, download reports and acknowledge alarms, but cannot change settings.
-5. **To stop Operators signing in,** click **Turn off Operator login**.
+4. **To create a login for a staff member (Operator):** type their username (for example `anna`), type a password twice, and click **Add or reset Operator**. Give each person their own login. Operators can see readings, download reports and acknowledge alarms, but cannot change settings.
+5. **To remove one person,** click **Remove** next to their name. **To stop all Operators signing in,** click **Turn off all Operator logins**.
 
 Passwords must be at least **6 characters for Admin** and **4 characters for Operator**.
 
@@ -243,7 +243,11 @@ Passwords must be at least **6 characters for Admin** and **4 characters for Ope
 sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin wastewater
 ```
 
-### Step 12. Disconnect from the server
+### Step 12 (weekly). Copy a backup to your computer
+
+The server backs up its data every night. Once a week, on your computer, double-click **`pull-backups.cmd`** in `C:\developer\wastewater`. It saves the newest backup in **Documents → Wastewater-Backups**.
+
+### Step 13. Disconnect from the server
 
 ```bash
 exit
@@ -259,8 +263,8 @@ exit
 - **After step 9, to go back to the old version:** connect to the server (step 5), then paste the line below. Replace the part after `rollback.sh` with the **Backup** path you saved in step 9.
 
 ```bash
-cd ~/ww-upgrade/rev1.2.8/pbf-wastewater-rev1.2.8
-sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.8-PASTE-YOUR-DATE-HERE
+cd ~/ww-upgrade/rev1.2.9/pbf-wastewater-rev1.2.9
+sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.9-PASTE-YOUR-DATE-HERE
 ```
 
 ✅ **You should see** "Previous web code restored". Readings history and settings are not affected.

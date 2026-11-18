@@ -204,7 +204,7 @@ Write-Host '  The server backs up the current version first and restores it auto
 if ((Read-Host "  Type DEPLOY to go live (anything else stops here)") -cne 'DEPLOY') {
     Say "Stopped before going live. The test copy is on the server; deploy later with:  .\release.cmd -DeployOnly"; exit 0
 }
-$deployCmd = "cd $Dir && sudo bash deploy.sh --approved && echo && echo ===== CHECKS ===== && sudo systemctl is-active pbf-wastewater-web pbf-wastewater-collector.timer pbf-wastewater-scheduler.timer && curl -s -o /dev/null -w 'HTTP check: %{http_code} (401 expected)\n' http://127.0.0.1:8001/api/summary && echo && echo SAVE THIS BACKUP PATH: && sudo sh -c 'ls -1dt /var/backups/pbf-wastewater/pre-deploy-$New-* | head -1' | tee -a ~/ww-upgrade/deploy-history.txt"
+$deployCmd = "cd $Dir && sudo bash deploy.sh --approved && echo && echo ===== CHECKS ===== && sudo systemctl is-active pbf-wastewater-web pbf-wastewater-collector.timer pbf-wastewater-scheduler.timer pbf-wastewater-backup.timer && curl -s -o /dev/null -w 'HTTP check: %{http_code} (401 expected)\n' http://127.0.0.1:8001/api/summary && echo && echo SAVE THIS BACKUP PATH: && sudo sh -c 'ls -1dt /var/backups/pbf-wastewater/pre-deploy-$New-* | head -1' | tee -a ~/ww-upgrade/deploy-history.txt"
 & ssh -t $Server $deployCmd
 if ($LASTEXITCODE -ne 0) {
     Fail 'Deployment did not complete. If deploy.sh printed "restoring previous dashboard code", the old version is running again. Copy the window text and ask for help.'
