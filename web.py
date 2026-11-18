@@ -39,7 +39,7 @@ def summary():
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             result.append(item)
         ages=[t['age_seconds'] for t in result if t['age_seconds'] is not None]
-        return {'revision':'1.2.10','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.11','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None}
     finally: db.close()
 
@@ -932,15 +932,20 @@ def historical_report(now,period):
         end=datetime(now.year,now.month,1,tzinfo=zone)
         if now.month==1:start=datetime(now.year-1,12,1,tzinfo=zone)
         else:start=datetime(now.year,now.month-1,1,tzinfo=zone)
+    daily=period=='daily'
     out=[f'Wastewater {period.title()} Historical Report',
          f'Period: {start:%Y-%m-%d %I:%M %p} through {end:%Y-%m-%d %I:%M %p} Pacific',
+         'pH average; other readings maximum (converted to display units)' if daily else
          'Sample count, minimum, average, maximum (converted to display units)', '']
     with database() as conn:
         for name,(label,unit,factor) in TAGS.items():
             row=conn.execute('SELECT COUNT(value),MIN(value),AVG(value),MAX(value) FROM samples WHERE name=? AND stamp>=? AND stamp<?',
                              (name,iso(start),iso(end))).fetchone()
             count,mn,avg,mx=row
+            if daily and name=='Total_Flow_Li':label='Daily Total Flow'
             if not count:out.append(f'{label}: no readings')
+            elif daily and name=='pH_Reading':out.append(f'{label} ({unit}): avg {avg*factor:.2f}')
+            elif daily:out.append(f'{label} ({unit}): max {mx*factor:.2f}')
             else:out.append(f'{label} ({unit}): count {count:,}; min {mn*factor:.2f}; avg {avg*factor:.2f}; max {mx*factor:.2f}')
     out.extend(['','Report uses recorded samples; missing or invalid-quality data should be reviewed separately.'])
     return '\n'.join(out)
