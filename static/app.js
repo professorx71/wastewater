@@ -28,7 +28,7 @@ function drawCards(){
  }).join('');
  const item=(key)=>lookup[key]||{};
  const set=(id,key,unit='')=>{const t=item(key);$(id).textContent=(t.status==='current'&&t.value!=null?fmt(t.value):'--.--')+(unit?' '+unit:'')};
- set('tankPh','pH_Reading');set('tankLevel','EQ_Tank_Level_Ft');set('diagramFlow','FLOW_RATE','L/min');set('diagramTotal','Total_Flow_Li','L');
+ set('tankPh','pH_Reading');set('tankLevel','EQ_Tank_Level_Ft');set('diagramFlow','FLOW_RATE','L/min');
  const ph=item('pH_Reading');const limits=summaryData.limits||{low:5.8,high:9};const banner=$('banner');banner.className='banner';
  const allCurrent=summaryData.tags.every(x=>x.status==='current');
  const outside=ph.status==='current'&&ph.value!=null&&(ph.value<limits.low||ph.value>limits.high);

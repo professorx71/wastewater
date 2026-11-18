@@ -35,7 +35,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.7'
+        assert s['revision']=='1.2.8'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -243,7 +243,7 @@ class RevisionTests(unittest.TestCase):
         self.assertNotIn('id="overviewCharts"',html)
         self.assertNotIn('class="process"',html)
         self.assertIn('id="tankPh"',html)
-        self.assertIn('id="diagramTotal"',html)
+        self.assertNotIn('id="diagramTotal"',html)
         self.assertTrue((base/'process-overview.webp').stat().st_size>10000)
 
 if __name__=='__main__':unittest.main(verbosity=2)
