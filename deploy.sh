@@ -10,7 +10,7 @@ systemctl is-active --quiet pbf-wastewater-web || { echo 'Web service not active
 for f in /opt/pbf-wastewater/web/web.py /var/lib/pbf-wastewater/history.sqlite3 /etc/pbf-wastewater/web-auth.json; do
   test -f "$f" || { echo "Missing required file: $f"; exit 1; }
 done
-BACKUP="/var/backups/pbf-wastewater/pre-deploy-1.2.4-$(date +%Y%m%d-%H%M%S)"
+BACKUP="/var/backups/pbf-wastewater/pre-deploy-1.2.5-$(date +%Y%m%d-%H%M%S)"
 install -d -m 0700 "$BACKUP"
 cp -a /opt/pbf-wastewater/web "$BACKUP/web"
 cp -p /etc/pbf-wastewater/web-auth.json "$BACKUP/web-auth.json"
@@ -47,7 +47,7 @@ sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --init || rollback
 systemctl restart pbf-wastewater-web || rollback_on_failure
 systemctl is-active --quiet pbf-wastewater-web || rollback_on_failure
 # Check code and live data source through the exact installed Python path.
-sudo -u pbf-wastewater bash -c 'cd /opt/pbf-wastewater/web && python3 -c "from web import summary; d=summary(); assert d[\"revision\"]==\"1.2.4\" and len(d[\"tags\"])==4; print(\"Rev\",d[\"revision\"],\"four tags OK\")"' || rollback_on_failure
+sudo -u pbf-wastewater bash -c 'cd /opt/pbf-wastewater/web && python3 -c "from web import summary; d=summary(); assert d[\"revision\"]==\"1.2.5\" and len(d[\"tags\"])==4; print(\"Rev\",d[\"revision\"],\"four tags OK\")"' || rollback_on_failure
 # Wait for Gunicorn to accept requests; systemd active does not mean HTTP is ready yet.
 # A 401 is the EXPECTED reply for an unauthenticated /api/summary request.
 READY=0
@@ -69,6 +69,6 @@ if [ "$READY" -ne 1 ]; then
   rollback_on_failure
 fi
 if [ "$TIMER_WAS_ACTIVE" = 1 ]; then systemctl start pbf-wastewater-scheduler.timer || rollback_on_failure; fi
-printf '\nRevision 1.2.4 deployed. Backup: %s\n' "$BACKUP"
+printf '\nRevision 1.2.5 deployed. Backup: %s\n' "$BACKUP"
 echo 'Existing production settings and email recipients preserved. Alarm confirmation defaults: 2 readings.'
 echo 'Verify logged-in production at https://51.161.52.12, and check timer/journal/email delivery.'

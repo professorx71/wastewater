@@ -38,10 +38,10 @@ def summary():
                 item['status']='stale' if age>180 else 'current'
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             result.append(item)
-        return {'revision':'1.2.4','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state}
+        return {'revision':'1.2.5','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state}
     finally: db.close()
 
-def window(params):
+def window(params,max_days=31):
     now=datetime.now(UTC)
     start=parse(params['from'][0]) if 'from' in params else now-timedelta(hours=6)
     end=parse(params['to'][0]) if 'to' in params else now
@@ -50,7 +50,7 @@ def window(params):
         start=datetime.combine(date.fromisoformat(params['startDate'][0]),time.min,zone).astimezone(UTC)
         end=datetime.combine(date.fromisoformat(params['endDate'][0])+timedelta(days=1),time.min,zone).astimezone(UTC)
     end=min(end,now)
-    if start>=end or end-start>timedelta(days=31): raise ValueError('Choose a range of up to 31 days, ending after its start.')
+    if start>=end or end-start>timedelta(days=max_days): raise ValueError(f'Choose a range of up to {max_days} days, ending after its start.')
     return start,end
 
 def history(params,export=False):
@@ -70,6 +70,164 @@ def history(params,export=False):
     for r in rows:
         series[r['name']].append({'date':r['stamp'],'value':None if r['value'] is None else r['value']*TAGS[r['name']][2]})
     return {'from':iso(start),'to':iso(end),'series':series}
+
+
+# Excel report (Reports page): one worksheet per tag plus a Summary worksheet.
+# Built with the standard library only, so the server needs no extra packages.
+import zipfile
+from xml.sax.saxutils import escape as _xml
+REPORT_TAGS=('EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li')
+RAW_UNITS={'pH_Reading':'pH','EQ_Tank_Level_Ft':'ft','FLOW_RATE':'US gal/min','Total_Flow_Li':'L'}
+_XL_EPOCH=datetime(1899,12,30)
+# Cell styles: 0 normal, 1 date-time, 2 two decimals, 3 bold, 4 date
+_XL_STYLES=('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+    '<numFmts count="2"><numFmt numFmtId="164" formatCode="yyyy-mm-dd hh:mm:ss"/><numFmt numFmtId="165" formatCode="yyyy-mm-dd"/></numFmts>'
+    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+    '<cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+    '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+    '<xf numFmtId="2" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+    '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+    '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+    '</styleSheet>')
+
+def _xl_col(i):
+    s=''
+    i+=1
+    while i:i,r=divmod(i-1,26);s=chr(65+r)+s
+    return s
+
+def _xl_cell(ref,v,style=0):
+    if v is None or v=='':return ''
+    if isinstance(v,datetime):
+        return f'<c r="{ref}" s="{style or 1}"><v>{(v.replace(tzinfo=None)-_XL_EPOCH).total_seconds()/86400!r}</v></c>'
+    if isinstance(v,date):
+        return f'<c r="{ref}" s="{style or 4}"><v>{(v-_XL_EPOCH.date()).days}</v></c>'
+    if isinstance(v,(int,float)):
+        return f'<c r="{ref}" s="{style}"><v>{v!r}</v></c>'
+    return f'<c r="{ref}" s="{style}" t="inlineStr"><is><t xml:space="preserve">{_xml(str(v))}</t></is></c>'
+
+def _xl_sheet(z,path,rows,widths):
+    """Write one worksheet into the zip, row by row (rows may be a generator)."""
+    with z.open(path,'w',force_zip64=True) as f:
+        w=lambda t:f.write(t.encode('utf-8'))
+        w('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+          '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>'
+          +''.join(f'<col min="{i+1}" max="{i+1}" width="{x}" customWidth="1"/>' for i,x in enumerate(widths))
+          +'</cols><sheetData>')
+        for n,row in enumerate(rows,1):
+            w(f'<row r="{n}">'+''.join(_xl_cell(f'{_xl_col(i)}{n}',*(c if isinstance(c,tuple) else (c,))) for i,c in enumerate(row))+'</row>')
+        w('</sheetData></worksheet>')
+
+def xlsx(sheets):
+    """sheets: list of (name, rows, column widths). A cell is a value or (value, style)."""
+    buf=io.BytesIO()
+    with zipfile.ZipFile(buf,'w',zipfile.ZIP_DEFLATED) as z:
+        z.writestr('[Content_Types].xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+            +''.join(f'<Override PartName="/xl/worksheets/sheet{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' for i in range(1,len(sheets)+1))
+            +'</Types>')
+        z.writestr('_rels/.rels','<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        z.writestr('xl/workbook.xml','<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+            +''.join(f'<sheet name="{_xml(name)}" sheetId="{i}" r:id="rId{i}"/>' for i,(name,_,_) in enumerate(sheets,1))
+            +'</sheets></workbook>')
+        z.writestr('xl/_rels/workbook.xml.rels','<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            +''.join(f'<Relationship Id="rId{i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i}.xml"/>' for i in range(1,len(sheets)+1))
+            +f'<Relationship Id="rId{len(sheets)+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>')
+        z.writestr('xl/styles.xml',_XL_STYLES)
+        for i,(_,rows,widths) in enumerate(sheets,1):_xl_sheet(z,f'xl/worksheets/sheet{i}.xml',rows,widths)
+    return buf.getvalue()
+
+REPORT_MAX_DAYS=92   # one full quarter
+SUMMARY_TAG='Total_Flow_Li'
+SUMMARY_MIN=1   # readings at or below this (e.g. 0 after a meter reset) are not valid EOD values
+from decimal import Decimal, ROUND_DOWN
+def truncate2(v):
+    """Cut to 2 decimals without rounding: 524714.2551 -> 524714.25."""
+    return Decimal(repr(v)).quantize(Decimal('0.01'),rounding=ROUND_DOWN)
+def quarter_label(d):
+    q=(d.month-1)//3
+    return f"{d.year} Q{q+1} ({('Jan-Mar','Apr-Jun','Jul-Sep','Oct-Dec')[q]})"
+
+def report_xlsx(params):
+    """Excel report for one tag or 'all'. Returns (filename, bytes).
+    Summary per tag: the end-of-day (last) reading of each day, and monthly and quarterly
+    totals that add up those end-of-day values."""
+    choice=params.get('tag',['all'])[0]
+    names=REPORT_TAGS if choice=='all' else (choice,)
+    if choice!='all' and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
+    start,end=window(params,REPORT_MAX_DAYS)
+    zone=ZoneInfo('America/Vancouver')
+    B=lambda t:(t,3)
+    local_start=start.astimezone(zone).date()
+    local_end=(end.astimezone(zone)-timedelta(microseconds=1)).date()
+    date_range=f'{local_start:%Y-%m-%d} to {local_end:%Y-%m-%d}'
+    query='SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? ORDER BY stamp'
+
+    def readings(name):  # tag worksheet, streamed straight from the database
+        unit=RAW_UNITS[name]
+        yield [B('Timestamp UTC'),B('Timestamp America/Vancouver'),B('Raw Value'),B('Unit Of Measure')]
+        db=database()
+        try:
+            for stamp,value in db.execute(query,(name,iso(start),iso(end))):
+                t=parse(stamp);yield [t,t.astimezone(zone),value,unit]
+        finally:db.close()
+
+    # Summary: Total_Flow_Li only (litres). EOD value of a day = last reading above SUMMARY_MIN
+    # that day; if the day has none (meter reads 0 or no data), the last valid reading before it.
+    tag=SUMMARY_TAG
+    db=database()
+    try:
+        prior=db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp<? AND value>? ORDER BY stamp DESC LIMIT 1',
+                         (tag,iso(start),SUMMARY_MIN)).fetchone()
+        valid={}   # local date -> (local time, value) of the day's last valid reading
+        for stamp,value in db.execute(query,(tag,iso(start),iso(end))):
+            if value is None or value<=SUMMARY_MIN:continue
+            local=parse(stamp).astimezone(zone)
+            valid[local.date()]=(local,value)
+    finally:db.close()
+    last=(parse(prior[0]).astimezone(zone),prior[1]) if prior else None
+    daily=[]
+    day=local_start
+    while day<=local_end:
+        if day in valid:last=valid[day]
+        if last:daily.append((day,truncate2(last[1]),last[0]))
+        day+=timedelta(days=1)
+    months={};quarters={}
+    for day,v,_ in daily:months[f'{day:%Y-%m}']=months.get(f'{day:%Y-%m}',Decimal(0))+v
+    for m,v in months.items():
+        q=quarter_label(date.fromisoformat(m+'-01'));quarters[q]=quarters.get(q,Decimal(0))+v
+    summary_rows=[[B('Wastewater report summary')],
+                  ['Tag',tag],['Unit Of Measure','L (litres)'],['Date range (America/Vancouver)',date_range],[]]
+    if not daily:
+        summary_rows.append(['No valid Total_Flow_Li readings in or before this date range.'])
+    else:
+        summary_rows.append([B('Quarter'),B('Total Quarterly Value (L)')])
+        summary_rows+=[[q,(float(v),2)] for q,v in sorted(quarters.items())]
+        summary_rows+=[[],[B('Month'),B('Total Monthly Value (L)')]]
+        summary_rows+=[[m,(float(v),2)] for m,v in sorted(months.items())]
+        summary_rows+=[[],[B('Date'),B('EOD Daily Value (L)'),B('Reading Used (America/Vancouver)')]]
+        summary_rows+=[[day,(float(v),2),when.replace(tzinfo=None)] for day,v,when in daily]
+    summary_rows+=[[],['EOD Daily Value is the last Total_Flow_Li reading above 1 L on that day (America/Vancouver), cut to 2 decimals. '
+                       'If a day has no reading above 1 L, the last valid reading before it is used (see Reading Used). '
+                       'Monthly total = sum of the EOD daily values in the month; quarterly total = sum of those monthly totals. '
+                       'Only days inside the selected date range are counted.']]
+    sheets=[('Summary',summary_rows,(34,22,36))]+[(n,readings(n),(22,30,14,18)) for n in names]
+    fname=f'wastewater-report-{choice}-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.xlsx'
+    return fname,xlsx(sheets)
 
 
 # Revision 1.2.1: historical samples remain read-only; settings/events live in separate SQLite.
@@ -320,6 +478,10 @@ def application(env,start_response):
                 return send('200 OK',d)
             if path in ('/api/history','/api/export'):
                 if not can(role,'export' if path.endswith('export') else 'view'):return send('403 Forbidden',{'error':'Not permitted'})
+                query=parse_qs(env.get('QUERY_STRING',''))
+                if path=='/api/export' and 'tag' in query:
+                    fname,data=report_xlsx(query)
+                    return send('200 OK',data,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',[('Content-Disposition',f'attachment; filename="{fname}"')])
                 data=history(parse_qs(env.get('QUERY_STRING','')),path.endswith('export'))
                 if isinstance(data,bytes):return send('200 OK',data,'text/csv; charset=utf-8',[('Content-Disposition','attachment; filename="wastewater-history.csv"')])
                 return send('200 OK',data)

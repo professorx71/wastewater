@@ -35,7 +35,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.4'
+        assert s['revision']=='1.2.5'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -87,6 +87,45 @@ class RevisionTests(unittest.TestCase):
         csv_content=web.history({},True).decode('utf-8-sig')
         self.assertIn('L/min',csv_content)
         self.assertIn('FLOW_RATE',csv_content)
+
+    def test_excel_report(self):
+        import zipfile
+        today=datetime.now(web.ZoneInfo('America/Vancouver')).date()
+        params={'startDate':[(today-timedelta(days=1)).isoformat()],'endDate':[today.isoformat()]}
+        fname,data=web.report_xlsx({**params,'tag':['all']})
+        self.assertTrue(fname.endswith('.xlsx'))
+        z=zipfile.ZipFile(io.BytesIO(data))
+        book=z.read('xl/workbook.xml').decode()
+        for name in ('Summary','EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li'):self.assertIn(f'name="{name}"',book)
+        self.assertNotIn('pH_Reading',book)
+        flow=z.read('xl/worksheets/sheet3.xml').decode()
+        self.assertIn('Timestamp America/Vancouver',flow)
+        self.assertIn('US gal/min',flow)
+        summary=z.read('xl/worksheets/sheet1.xml').decode()
+        self.assertIn('EOD Daily Value (L)',summary);self.assertNotIn('FLOW_RATE',summary);self.assertIn('Total_Flow_Li',summary)
+        self.assertIn('Total Quarterly Value',summary);self.assertIn('Total Monthly Value',summary)
+        _,one=web.report_xlsx({**params,'tag':['FLOW_RATE']})
+        self.assertEqual(zipfile.ZipFile(io.BytesIO(one)).read('xl/workbook.xml').decode().count('<sheet '),2)
+        with self.assertRaises(ValueError):web.report_xlsx({**params,'tag':['nope']})
+
+    def test_excel_summary_eod_total_flow(self):
+        import zipfile
+        zone=web.ZoneInfo('America/Vancouver')
+        rows=[('2026-09-29 18:00',1000.009),                        # before the range: not counted
+              ('2026-09-30 10:00',2000.5),('2026-09-30 18:00',524714.2551),('2026-09-30 23:00',0),
+              ('2026-10-01 09:00',0),('2026-10-01 20:00',0.5),     # no valid reading: carry 09-30
+              ('2026-10-02 12:00',300.129)]
+        with sqlite3.connect(web.DB) as db:
+            for local,v in rows:
+                t=datetime.strptime(local,'%Y-%m-%d %H:%M').replace(tzinfo=zone)
+                db.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('Total_Flow_Li',web.iso(t),v))
+        _,data=web.report_xlsx({'tag':['FLOW_RATE'],'startDate':['2026-09-30'],'endDate':['2026-10-02']})
+        summary=zipfile.ZipFile(io.BytesIO(data)).read('xl/worksheets/sheet1.xml').decode()
+        values=[float(v) for v in __import__('re').findall(r's="2"><v>([^<]+)</v>',summary)]
+        # quarters (Q3, Q4), months (Sep, Oct), days (09-30, 10-01 carried, 10-02)
+        self.assertEqual(values,[524714.25,525014.37,524714.25,525014.37,524714.25,524714.25,300.12])
+        self.assertIn('2026 Q3 (Jul-Sep)',summary);self.assertIn('2026 Q4 (Oct-Dec)',summary)
+        self.assertEqual(str(web.truncate2(524714.2551)),'524714.25')
 
     def test_scheduler_incident_email_dedup_and_recovery(self):
         web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
