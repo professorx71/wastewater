@@ -39,7 +39,7 @@ def summary():
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             result.append(item)
         ages=[t['age_seconds'] for t in result if t['age_seconds'] is not None]
-        return {'revision':'1.2.9','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.10','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None}
     finally: db.close()
 
