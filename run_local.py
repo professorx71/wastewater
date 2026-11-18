@@ -97,6 +97,8 @@ def main():
     ap.add_argument('--port', type=int, default=8000)
     ap.add_argument('--db', type=Path, help='existing history SQLite copy to read (disables demo data)')
     ap.add_argument('--reset', action='store_true', help='delete and regenerate .local demo data')
+    ap.add_argument('--set-admin', metavar='USERNAME', help='change the local Admin login (asks for the password), then exit')
+    ap.add_argument('--set-operator', metavar='USERNAME', help='change the local Operator login (asks for the password), then exit')
     args = ap.parse_args()
 
     try:
@@ -143,13 +145,21 @@ def main():
     sys.path.insert(0, str(ROOT))
     import web
 
+    if args.set_admin or args.set_operator:
+        web.set_login('Admin' if args.set_admin else 'Operator', args.set_admin or args.set_operator)
+        return
+
     if not args.db:
         threading.Thread(target=live_feed, args=(history,), daemon=True).start()
 
     with make_server(args.host, args.port, web.application, server_class=ThreadingWSGIServer, handler_class=QuietHandler) as httpd:
         print(f'\nWastewater dashboard running at http://{args.host}:{args.port}')
-        print(f'Admin login:     {USER} / {PASSWORD}')
-        print(f'Operator login:  {OP_USER} / {OP_PASSWORD}')
+        with web.appdb() as conn:
+            logins = web.account_summary(conn)
+        for role, default in (('admin', (USER, PASSWORD)), ('operator', (OP_USER, OP_PASSWORD))):
+            v = logins[role]
+            shown = 'turned off' if not v['enabled'] else (f'{v["username"]} / (your password)' if v['source'] == 'settings' else '%s / %s' % default)
+            print(f'{role.capitalize() + " login:":<17}{shown}')
         print(f'History DB:   {history}' + ('' if args.db else '  (demo data, new sample every 30 s)'))
         print('Press Ctrl+C to stop.\n')
         try:

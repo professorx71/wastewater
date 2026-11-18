@@ -1,4 +1,4 @@
-# Wastewater Dashboard — Rev 1.2.5
+# Wastewater Dashboard — Rev 1.2.6
 
 **Design and program by Daniel Salazar**
 
@@ -40,6 +40,8 @@ This repo contains **application source**, interface artwork, deployment scripts
 py -m pip install tzdata   # once, on Windows (time-zone data)
 py run_local.py            # then open http://127.0.0.1:8000  (Admin: local / local, Operator: operator / operator)
 py run_local.py --reset    # regenerate demo data
+py run_local.py --set-admin local        # change the local Admin password (hidden prompt)
+py run_local.py --set-operator operator  # change the local Operator password
 py run_local.py --db C:\path\to\history-copy.sqlite3   # view a copied history DB instead
 ```
 
