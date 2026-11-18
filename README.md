@@ -1,4 +1,4 @@
-# Wastewater Dashboard — Rev 1.2.6
+# Wastewater Dashboard — Rev 1.2.7
 
 **Design and program by Daniel Salazar**
 

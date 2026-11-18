@@ -38,7 +38,7 @@ def summary():
                 item['status']='stale' if age>180 else 'current'
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             result.append(item)
-        return {'revision':'1.2.6','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state}
+        return {'revision':'1.2.7','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state}
     finally: db.close()
 
 def window(params,max_days=31):
@@ -82,7 +82,7 @@ _XL_EPOCH=datetime(1899,12,30)
 # Cell styles: 0 normal, 1 date-time, 2 two decimals, 3 bold, 4 date
 _XL_STYLES=('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-    '<numFmts count="2"><numFmt numFmtId="164" formatCode="yyyy-mm-dd hh:mm:ss"/><numFmt numFmtId="165" formatCode="yyyy-mm-dd"/></numFmts>'
+    '<numFmts count="2"><numFmt numFmtId="164" formatCode="mm/dd/yyyy hh:mm:ss"/><numFmt numFmtId="165" formatCode="mm/dd/yyyy"/></numFmts>'
     '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
     '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
     '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
@@ -174,7 +174,7 @@ def report_xlsx(params):
     B=lambda t:(t,3)
     local_start=start.astimezone(zone).date()
     local_end=(end.astimezone(zone)-timedelta(microseconds=1)).date()
-    date_range=f'{local_start:%Y-%m-%d} to {local_end:%Y-%m-%d}'
+    date_range=f'{local_start:%m/%d/%Y} to {local_end:%m/%d/%Y}'
     query='SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? ORDER BY stamp'
 
     def readings(name):  # tag worksheet, streamed straight from the database
@@ -218,7 +218,7 @@ def report_xlsx(params):
         summary_rows.append([B('Quarter'),B('Total Quarterly Value (L)')])
         summary_rows+=[[q,(float(v),2)] for q,v in sorted(quarters.items())]
         summary_rows+=[[],[B('Month'),B('Total Monthly Value (L)')]]
-        summary_rows+=[[m,(float(v),2)] for m,v in sorted(months.items())]
+        summary_rows+=[[f'{m[5:]}/{m[:4]}',(float(v),2)] for m,v in sorted(months.items())]
         summary_rows+=[[],[B('Date'),B('EOD Daily Value (L)'),B('Reading Used (America/Vancouver)')]]
         summary_rows+=[[day,(float(v),2),when.replace(tzinfo=None)] for day,v,when in daily]
     summary_rows+=[[],['EOD Daily Value is the last Total_Flow_Li reading above 1 L on that day (America/Vancouver), cut to 2 decimals. '
