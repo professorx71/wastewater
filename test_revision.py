@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.19'
+        assert s['revision']=='1.2.20'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -222,6 +222,40 @@ class RevisionTests(unittest.TestCase):
         with web.appdb() as db:
             self.assertEqual(db.execute('SELECT actor FROM events WHERE id=1').fetchone()[0],'op (Operator)')
             self.assertIn('admin (Admin)',[r[0] for r in db.execute('SELECT actor FROM audit')])
+
+    def test_engineering_guest_logins_and_rights(self):
+        self._login(web.AUTH,'admin','admin-pass-1')
+        A=('admin','admin-pass-1')
+        # Admin adds Engineering and Guest logins (Engineering needs 6+ characters)
+        self.assertEqual(self.call('POST','/api/accounts/user',*A,{'role':'Engineering','username':'eng','password':'abc12'})[0],400)
+        self.assertEqual(self.call('POST','/api/accounts/user',*A,{'role':'Engineering','username':'eng','password':'eng-pass-1'})[0],200)
+        self.assertEqual(self.call('POST','/api/accounts/user',*A,{'role':'Guest','username':'visitor','password':'gst1'})[0],200)
+        self.assertEqual(self.call('POST','/api/accounts/user',*A,{'role':'Guest','username':'ENG','password':'gst1'})[0],400)
+        self.assertEqual(self.call('POST','/api/accounts/user',*A,{'role':'Admin','username':'x2','password':'long-pass'})[0],400)
+        info=json.loads(self.call('GET','/api/accounts',*A)[1])
+        self.assertEqual(sorted((u['role'],u['username']) for u in info['users']),[('Engineering','eng'),('Guest','visitor')])
+        # Default rights: Engineering gets settings and audit, Guest only views
+        eng=json.loads(self.call('GET','/api/summary','eng','eng-pass-1')[1])
+        self.assertEqual(eng['role'],'Engineering');self.assertIn('settings',eng['permissions']);self.assertNotIn('accounts',eng['permissions'])
+        self.assertEqual(self.call('GET','/api/settings','eng','eng-pass-1')[0],200)
+        self.assertEqual(self.call('GET','/api/accounts','eng','eng-pass-1')[0],403)
+        self.assertEqual(self.call('POST','/api/accounts/permissions','eng','eng-pass-1',{'Engineering':['audit'],'Operator':[],'Guest':[]})[0],403)
+        guest=json.loads(self.call('GET','/api/summary','visitor','gst1')[1])
+        self.assertEqual(guest['permissions'],['view'])
+        self.assertEqual(self.call('GET','/api/export','visitor','gst1',query='startDate=2026-11-01&endDate=2026-11-02')[0],403)
+        self.assertEqual(self.call('GET','/api/settings','visitor','gst1')[0],403)
+        # Admin changes the rights: Guest may download, Engineering loses Settings
+        self.assertEqual(self.call('POST','/api/accounts/permissions',*A,{'Engineering':['export','audit'],'Operator':['export'],'Guest':['nope']})[0],400)
+        self.assertEqual(self.call('POST','/api/accounts/permissions',*A,{'Engineering':['export','audit'],'Operator':['export'],'Guest':['export']})[0],200)
+        self.assertEqual(json.loads(self.call('GET','/api/summary','visitor','gst1')[1])['permissions'],['export','view'])
+        self.assertEqual(self.call('GET','/api/settings','eng','eng-pass-1')[0],403)
+        self.assertEqual(self.call('GET','/api/audit','eng','eng-pass-1')[0],200)
+        # Removing a login stops its sign-in
+        self.assertEqual(self.call('POST','/api/accounts/user/remove',*A,{'role':'Guest','username':'visitor'})[0],200)
+        self.assertEqual(self.call('GET','/api/summary','visitor','gst1')[0],401)
+        with web.appdb() as conn:
+            details=' '.join(r['action'] for r in conn.execute('SELECT action FROM audit'))
+        for action in ('Engineering login set','Guest login set','Role rights changed','Guest login removed'):self.assertIn(action,details)
 
     def test_accounts_admin_and_operator_logins(self):
         web.OP_AUTH=Path(self.tmp.name)/'operator.json'

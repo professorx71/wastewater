@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Wastewater Dashboard — Rev 1.2.19</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>Wastewater Dashboard — Rev 1.2.20</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body>
 <header class="topbar"><div class="brand"><h1>Wastewater Dashboard</h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.19</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.20</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -95,7 +95,7 @@
 <div class="panel"><h3>Email recipients and reports</h3><label>Recipients (one per line)<textarea rows="3" id="recipients" placeholder="name@example.com"></textarea></label><label class="check"><input id="daily_enabled" type="checkbox"> Send daily report</label><label>Daily time <input id="daily_time" type="time"></label><label class="check"><input id="monthly_enabled" type="checkbox"> Send monthly report (with Excel attachment)</label><label class="check"><input id="quarterly_enabled" type="checkbox"> Send quarterly Excel report (Jan, Apr, Jul, Oct on the monthly day and time)</label><div class="formgrid"><label>Day of month (1–28) <input id="monthly_day" type="number" min="1" max="28"></label><label>Monthly time <input id="monthly_time" type="time"></label></div><p id="smtp">SMTP: checking…</p><button id="save">Save settings (Admin only)</button><p id="saveState" role="status"></p></div>
 <div class="panel accounts"><h3>Accounts and passwords</h3>
 <p>After 10 different wrong passwords from one place within 15 minutes, sign-in from there is locked for 15 minutes.</p>
-<p><b>Admin</b> can view everything, change all settings, acknowledge alarms, view Audit and manage these logins. <b>Operator</b> can view readings, trends and alarms, download Excel reports under Reports and acknowledge alarms, but cannot see Settings or Audit.</p>
+<p><b>Admin</b> can do everything, including managing logins and choosing the rights below. <b>Engineering</b>, <b>Operator</b> and <b>Guest</b> logins always see readings, trends and alarms; tick what else each role may do.</p>
 <div class="formgrid">
 <div class="account-box"><h4>Admin login</h4><p class="account-state" id="adminState">Loading…</p>
 <label>Username<input id="adminUser" autocomplete="username" maxlength="64"></label>
@@ -103,14 +103,9 @@
 <label>New password (6+ characters)<input id="adminNew" type="password" autocomplete="new-password" maxlength="256"></label>
 <label>Repeat new password<input id="adminRepeat" type="password" autocomplete="new-password" maxlength="256"></label>
 <button id="saveAdmin" type="button">Change Admin login</button></div>
-<div class="account-box"><h4>Operator logins</h4><p class="account-state" id="operatorState">Loading…</p><ul id="operatorList" class="operator-list"></ul>
-<p>Give each person their own login so the Audit log shows who acknowledged alarms. To add someone, or reset their password, type their username and a password:</p>
-<label>Username<input id="opUser" autocomplete="off" maxlength="64"></label>
-<label>Password (4+ characters)<input id="opPass" type="password" autocomplete="new-password" maxlength="256"></label>
-<label>Repeat password<input id="opRepeat" type="password" autocomplete="new-password" maxlength="256"></label>
-<button id="saveOperator" type="button">Add or reset Operator</button> <button id="disableOperator" type="button" class="danger">Turn off all Operator logins</button></div>
-</div>
+<div class="account-box"><h4>User logins (Engineering, Operator, Guest)</h4><p class="account-state" id="userState">Loading…</p><ul id="userList" class="operator-list"></ul><p>Give each person their own login so the Audit log shows who did what. To add someone, or reset their password, choose the role and type their username and a password:</p><label>Role<select id="newRole"><option value="Engineering">Engineering</option><option value="Operator" selected>Operator</option><option value="Guest">Guest</option></select></label><label>Username<input id="opUser" autocomplete="off" maxlength="64"></label><label>Password (<span id="pwMin">4</span>+ characters)<input id="opPass" type="password" autocomplete="new-password" maxlength="256"></label><label>Repeat password<input id="opRepeat" type="password" autocomplete="new-password" maxlength="256"></label><button id="saveOperator" type="button">Add or reset login</button> <button id="disableOperator" type="button" class="danger">Turn off all Operator logins</button></div>
+<div class="account-box rights-box"><h4>Rights for each role</h4><div class="tablewrap"><table class="rights"><thead><tr><th>Right</th><th>Admin</th><th>Engineering</th><th>Operator</th><th>Guest</th></tr></thead><tbody id="rightsBody"></tbody></table></div><button id="saveRights" type="button">Save rights</button> <small>Changes apply on the person's next page refresh (within 10 seconds).</small></div></div>
 <p id="accountState" role="status"></p>
 <p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
-<footer>Rev 1.2.19 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
+<footer>Rev 1.2.20 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
 </main></body></html>

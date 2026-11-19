@@ -55,7 +55,7 @@ def summary():
                 item.update(stamp=row['stamp'],value=row['value'],status='current' if age<=180 or feed_live else 'stale')
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.19','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.20','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -357,6 +357,8 @@ def appdb():
         iterations INTEGER NOT NULL, hash TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, updated TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS operators (username TEXT PRIMARY KEY, salt TEXT NOT NULL, iterations INTEGER NOT NULL,
         hash TEXT NOT NULL, updated TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, role TEXT NOT NULL, salt TEXT NOT NULL,
+        iterations INTEGER NOT NULL, hash TEXT NOT NULL, updated TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS login_failures (client TEXT NOT NULL, attempt TEXT NOT NULL, stamp TEXT NOT NULL,
         PRIMARY KEY (client, attempt));''')
     conn.commit()
@@ -450,12 +452,41 @@ def save_operator(conn,username,password):
     _manage_operators(conn)
     if conn.execute('SELECT COUNT(*) FROM operators WHERE username!=? AND lower(username)=lower(?)',(username,username)).fetchone()[0]:
         raise AccountError('An Operator with that username (different capitals) already exists')
+    if conn.execute('SELECT COUNT(*) FROM users WHERE lower(username)=lower(?)',(username,)).fetchone()[0]:
+        raise AccountError('That username is already used by an Engineering or Guest login')
     exists=conn.execute('SELECT 1 FROM operators WHERE username=?',(username,)).fetchone()
     if not exists and conn.execute('SELECT COUNT(*) FROM operators').fetchone()[0]>=50:raise AccountError('Maximum 50 Operator logins')
     salt=secrets.token_bytes(16)
     digest=hashlib.pbkdf2_hmac('sha256',password.encode(),salt,PBKDF2_ITERATIONS).hex()
     conn.execute('INSERT OR REPLACE INTO operators(username,salt,iterations,hash,updated) VALUES (?,?,?,?,?)',
                  (username,salt.hex(),PBKDF2_ITERATIONS,digest,iso(datetime.now(UTC))))
+
+# Engineering and Guest: named logins like Operators, kept in their own table so an older
+# revision (rollback) simply ignores them instead of treating them as Operators.
+USER_ROLES=('Engineering','Operator','Guest')   # logins the Admin manages from Settings
+def user_records(conn):
+    return [dict(username=r['username'],role=r['role'],salt=r['salt'],iterations=int(r['iterations']),hash=r['hash'],source='settings')
+            for r in conn.execute('SELECT * FROM users ORDER BY role,username COLLATE NOCASE')]
+
+def save_user(conn,role,username,password):
+    if role=='Operator':return save_operator(conn,username,password)
+    if role not in USER_ROLES:raise AccountError('Choose Engineering, Operator or Guest')
+    check_username(username);check_password(role,password)
+    admin=load_account('Admin',conn)
+    if admin and admin['username'].lower()==username.lower():raise AccountError('That username is the Admin login')
+    if any(r['username'].lower()==username.lower() for r in operator_records(conn)):raise AccountError('That username is already an Operator login')
+    other=conn.execute('SELECT role FROM users WHERE lower(username)=lower(?) AND NOT (username=? AND role=?)',(username,username,role)).fetchone()
+    if other:raise AccountError(f'That username is already a {other["role"]} login')
+    exists=conn.execute('SELECT 1 FROM users WHERE username=?',(username,)).fetchone()
+    if not exists and conn.execute('SELECT COUNT(*) FROM users').fetchone()[0]>=50:raise AccountError('Maximum 50 Engineering and Guest logins')
+    salt=secrets.token_bytes(16)
+    digest=hashlib.pbkdf2_hmac('sha256',password.encode(),salt,PBKDF2_ITERATIONS).hex()
+    conn.execute('INSERT OR REPLACE INTO users(username,role,salt,iterations,hash,updated) VALUES (?,?,?,?,?,?)',
+                 (username,role,salt.hex(),PBKDF2_ITERATIONS,digest,iso(datetime.now(UTC))))
+
+def remove_user(conn,role,username):
+    if role=='Operator':return remove_operator(conn,username)
+    return conn.execute('DELETE FROM users WHERE username=? AND role=?',(username,role)).rowcount
 
 def remove_operator(conn,username):
     _manage_operators(conn)
@@ -510,6 +541,9 @@ def who_for(env):
             else:
                 for rec in operator_records(conn):
                     if hmac.compare_digest(user,rec['username']) and password_ok(rec,pwd):found=('Operator',user);break
+                else:
+                    for rec in user_records(conn):
+                        if hmac.compare_digest(user,rec['username']) and password_ok(rec,pwd):found=(rec['role'],user);break
             if found:conn.execute('DELETE FROM login_failures WHERE client=?',(client,))
             else:record_failure(conn,client,user,pwd)
             return found
@@ -527,7 +561,7 @@ def role_for(env):
     who=who_for(env)
     return who[0] if isinstance(who,tuple) else None
 
-MIN_PASSWORD_LENGTH={'Admin':6,'Operator':4}
+MIN_PASSWORD_LENGTH={'Admin':6,'Engineering':6,'Operator':4,'Guest':4}
 USERNAME_CHARS=set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
 def check_username(name):
     if not isinstance(name,str) or not 1<=len(name)<=64 or set(name)-USERNAME_CHARS:
@@ -539,7 +573,7 @@ def check_password(role,pwd):
 def save_account(conn,role,username,password):
     if role=='Operator':return save_operator(conn,username,password)
     check_username(username);check_password(role,password)
-    if any(r['username'].lower()==username.lower() for r in operator_records(conn)):
+    if any(r['username'].lower()==username.lower() for r in operator_records(conn)+user_records(conn)):
         raise AccountError('Admin and Operator usernames must be different')
     salt=secrets.token_bytes(16)
     digest=hashlib.pbkdf2_hmac('sha256',password.encode(),salt,PBKDF2_ITERATIONS).hex()
@@ -559,18 +593,36 @@ def account_summary(conn):
     return {'admin':{'enabled':admin is not None,'username':admin['username'] if admin else None,'source':admin['source'] if admin else None},
             # 'operator' is kept for older tools (set-login): all operator usernames, or off.
             'operator':{'enabled':bool(ops),'username':', '.join(r['username'] for r in ops) if ops else None,'source':ops[0]['source'] if ops else None},
-            'operators':[{'username':r['username'],'source':r['source']} for r in ops]}
+            'operators':[{'username':r['username'],'source':r['source']} for r in ops],
+            'users':[{'username':r['username'],'role':'Operator','source':r['source']} for r in ops]
+                    +[{'username':r['username'],'role':r['role'],'source':r['source']} for r in user_records(conn)],
+            'permissions':{r:sorted(p) for r,p in role_permissions(conn).items()},
+            'permission_choices':list(PERMISSION_CHOICES)}
 
 def actor(role,username):return f'{username} ({role})'
 
-# Role permissions. Admin: everything. Operator: view readings/trends/alarms, download
-# CSV history from Reports, and acknowledge alarms. Operator cannot view or change
-# settings and cannot view the audit log. Enforced server-side for every endpoint.
-ROLE_PERMISSIONS={
-    'Admin':frozenset({'view','export','acknowledge','settings','audit','accounts'}),
-    'Operator':frozenset({'view','export','acknowledge'}),
-}
-def can(role,permission): return permission in ROLE_PERMISSIONS.get(role,())
+# Role permissions, enforced server-side for every endpoint. Admin always has everything,
+# including managing logins and these rights. For Engineering, Operator and Guest the Admin
+# chooses the rights in Settings; every role can always view readings, trends and alarms.
+ADMIN_PERMISSIONS=frozenset({'view','export','acknowledge','settings','audit','accounts'})
+PERMISSION_CHOICES=('export','acknowledge','settings','audit')
+DEFAULT_ROLE_PERMISSIONS={'Engineering':('export','acknowledge','settings','audit'),
+                          'Operator':('export','acknowledge'),'Guest':()}
+def role_permissions(conn=None):
+    saved={}
+    try:
+        if conn is None:
+            with appdb() as c:return role_permissions(c)
+        row=conn.execute("SELECT value FROM settings WHERE key='role_permissions'").fetchone()
+        if row:saved=json.loads(row['value'])
+    except (OSError,sqlite3.Error,ValueError):saved={}
+    if not isinstance(saved,dict):saved={}
+    out={'Admin':ADMIN_PERMISSIONS}
+    for role in USER_ROLES:
+        chosen=saved.get(role,DEFAULT_ROLE_PERMISSIONS[role])
+        out[role]=frozenset({'view'}|{p for p in chosen if p in PERMISSION_CHOICES})
+    return out
+def can(role,permission): return permission in role_permissions().get(role,())
 
 def audit(conn,actor,action,detail):
     conn.execute('INSERT INTO audit(stamp,actor,action,detail) VALUES (?,?,?,?)',
@@ -638,6 +690,24 @@ def handle_post(path,env,role,conn,user=''):
             save_operator(conn,body.get('username'),body.get('password'))
             audit(conn,who,'Operator login set','username '+body['username']);conn.commit()
             return '200 OK',{'saved':'operator','username':body['username']}
+        if path=='/api/accounts/user':
+            role_name=body.get('role');save_user(conn,role_name,body.get('username'),body.get('password'))
+            audit(conn,who,f'{role_name} login set','username '+body['username']);conn.commit()
+            return '200 OK',{'saved':role_name,'username':body['username']}
+        if path=='/api/accounts/user/remove':
+            role_name,name=body.get('role'),body.get('username')
+            if role_name not in USER_ROLES or not isinstance(name,str) or not remove_user(conn,role_name,name):return '404 Not Found',{'error':'Login not found'}
+            audit(conn,who,f'{role_name} login removed','username '+name);conn.commit()
+            return '200 OK',{'removed':name}
+        if path=='/api/accounts/permissions':
+            new={}
+            for role_name in USER_ROLES:
+                chosen=body.get(role_name)
+                if not isinstance(chosen,list) or any(p not in PERMISSION_CHOICES for p in chosen):raise ValueError('Invalid permissions')
+                new[role_name]=sorted(set(chosen))
+            conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('role_permissions',?)",(json.dumps(new),))
+            audit(conn,who,'Role rights changed','; '.join(f"{r}: {', '.join(p) or 'view only'}" for r,p in new.items()));conn.commit()
+            return '200 OK',{'permissions':new}
         if path=='/api/accounts/operator/remove':
             name=body.get('username')
             if not isinstance(name,str) or not remove_operator(conn,name):return '404 Not Found',{'error':'Operator not found'}
@@ -683,7 +753,7 @@ def application(env,start_response):
     try:
         if method=='GET':
             if path=='/api/summary':
-                d=summary();d['role']=role;d['user']=user;d['permissions']=sorted(ROLE_PERMISSIONS[role])
+                d=summary();d['role']=role;d['user']=user;d['permissions']=sorted(role_permissions()[role])
                 with appdb() as conn:
                     cfg=settings(conn);d['limits']={'low':cfg['ph_low'],'high':cfg['ph_high'],'enabled':cfg['alarms_enabled'],'confirm_samples':cfg['alarm_confirm_samples'],
                                                     'stale_minutes':cfg['stale_alert_minutes']}
@@ -1053,6 +1123,15 @@ def historical_report(now,period):
     out.extend(['','Report uses recorded samples; missing or invalid-quality data should be reviewed separately.'])
     return '\n'.join(out)
 
+def test_email():
+    """Send one test email to the Settings recipients with the server's SMTP config (shell only)."""
+    mail=json.loads(EMAIL_CFG.read_text())
+    with appdb() as conn:recipients=settings(conn)['recipients']
+    if not recipients:sys.exit('No recipients in Settings; add one under Settings > Email recipients first.')
+    send_mail(mail,'Wastewater dashboard test email',
+              f'Test email from the wastewater dashboard.\nSender: {mail["sender"]}\nSMTP: {mail["host"]}:{mail.get("port",587)}\n',recipients)
+    print('Test email sent from',mail['sender'],'to',', '.join(recipients))
+
 def set_login(role,username):
     """Create or replace a login from the server shell (also the lockout-recovery path).
     The password is prompted, never passed on the command line."""
@@ -1072,5 +1151,6 @@ if __name__=='__main__':
         with appdb() as conn: print('App database ready:',APP_DB)
     elif len(sys.argv)>2 and sys.argv[1]=='--set-operator':set_login('Operator',sys.argv[2])
     elif len(sys.argv)>2 and sys.argv[1]=='--set-admin':set_login('Admin',sys.argv[2])
+    elif len(sys.argv)>1 and sys.argv[1]=='--test-email':test_email()
     elif len(sys.argv)>1 and sys.argv[1]=='--backup':backup(sys.argv[2] if len(sys.argv)>2 else None)
     else: print('Usage: python3 web.py --init|--scheduler|--backup [DIR]|--set-admin USERNAME|--set-operator USERNAME')

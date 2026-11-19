@@ -10,7 +10,7 @@ const $=id=>document.getElementById(id);
 const fmt=x=>x==null?'--.--':Number(x).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2});
 const local=x=>{try{return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(x))}catch{return '—'}};
 let summaryData=null;let historyData=null;let userRole='Operator';let userName='';let clockOffset=0;let perms=new Set();let config={};
-const VIEW_PERMS={settings:'settings',audit:'audit'};
+const VIEW_PERMS={settings:'settings',audit:'audit',reports:'export'};
 const can=p=>perms.has(p);
 // Discharge flow display unit, remembered per browser. The server sends L/min (raw US gal/min x 3.78541).
 const GAL_PER_L=1/3.78541;
@@ -18,7 +18,7 @@ let flowUnit='L/min';try{if(localStorage.getItem('ww.flowUnit')==='gal/min')flow
 const flowValue=v=>v==null?v:(flowUnit==='gal/min'?v*GAL_PER_L:v);
 const unitFor=(key,unit)=>key==='FLOW_RATE'?flowUnit:unit;
 function setFlowUnit(u){flowUnit=u==='gal/min'?'gal/min':'L/min';try{localStorage.setItem('ww.flowUnit',flowUnit)}catch{};drawCards();if(historyData&&!$('trends').hidden)chartRows('historyCharts')}
-function applyRole(){document.querySelectorAll('nav button').forEach(b=>{const need=VIEW_PERMS[b.dataset.view];b.hidden=!!need&&!can(need)});const open=document.querySelector('.view:not([hidden])');if(open&&VIEW_PERMS[open.id]&&!can(VIEW_PERMS[open.id]))view('overview')}
+function applyRole(){document.querySelectorAll('.accounts').forEach(p=>p.hidden=!can('accounts'));document.querySelectorAll('nav button').forEach(b=>{const need=VIEW_PERMS[b.dataset.view];b.hidden=!!need&&!can(need)});const open=document.querySelector('.view:not([hidden])');if(open&&VIEW_PERMS[open.id]&&!can(VIEW_PERMS[open.id]))view('overview')}
 async function api(path,opts={}){const response=await fetch(path,{cache:'no-store',...opts});if(!response.ok)throw Error('HTTP '+response.status);return response.json()}
 function ageText(stamp){if(!stamp)return 'No readings';const s=Math.max(0,Math.round((Date.now()+clockOffset-Date.parse(stamp))/1000));return 'Updated '+(s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min')+' ago'}
 function tickAges(){document.querySelectorAll('[data-stamp]').forEach(el=>el.textContent=ageText(el.dataset.stamp))}
@@ -85,20 +85,24 @@ async function loadAudit(){try{const data=await api('/api/audit');$('auditlist')
 const KEYS=['ph_low','ph_high','alarms_enabled','email_enabled','email_recovery_enabled','alarm_confirm_samples','alarm_recovery_samples','alarm_on','alarm_off','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time',
  'stale_alert_enabled','stale_alert_minutes','level_alarm_enabled','level_high_ft','flow_alarm_enabled','flow_low_lpm','flow_low_minutes','quarterly_enabled'];
 const dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];$('alarmDays').innerHTML=dayNames.map((d,i)=>`<label><input type="checkbox" data-day="${i}"> ${d}</label>`).join('');
-async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input,#settings textarea,#settings button').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
+async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input:not([data-fixed]),#settings textarea,#settings button').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
 // ---- Accounts and passwords (Admin only; server enforces the same rule) ----
 const postJSON=(path,body)=>fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d});
 function accountMsg(text,ok){const el=$('accountState');el.textContent=text;el.className=ok?'ok-text':'error-text'}
 async function loadAccounts(){try{const a=await api('/api/accounts');
  $('adminState').textContent=`Signed-in Admin: ${a.admin.username||'—'}`+(a.admin.source==='file'?' (original server login)':'');
  $('adminUser').value=a.admin.username||'';
- const ops=a.operators||[];
- $('operatorState').textContent=ops.length?`${ops.length} Operator login${ops.length>1?'s':''}:`:'None set up — Operator sign-in is off';
- $('operatorList').innerHTML=ops.map(o=>`<li><span>${escapeHTML(o.username)}${o.source==='file'?' <small>(original server login)</small>':''}</span><button type="button" class="danger" data-remove-op="${escapeHTML(o.username)}">Remove</button></li>`).join('');
- document.querySelectorAll('[data-remove-op]').forEach(b=>b.onclick=async()=>{const name=b.dataset.removeOp;if(!confirm(`Remove the Operator login "${name}"? They will no longer be able to sign in.`))return;
-  try{await postJSON('/api/accounts/operator/remove',{username:name});accountMsg(`Operator login ${name} removed.`,true);loadAccounts()}catch(e){accountMsg('Not removed: '+e.message)}});
- $('opUser').value='';$('disableOperator').disabled=!ops.length;
-}catch(e){$('adminState').textContent=$('operatorState').textContent='Unavailable: '+e.message}}
+ const users=a.users||[];
+ $('userState').textContent=users.length?`${users.length} login${users.length>1?'s':''}:`:'None set up — only the Admin can sign in';
+ $('userList').innerHTML=users.map(u=>`<li><span><b class="role-tag">${escapeHTML(u.role)}</b> ${escapeHTML(u.username)}${u.source==='file'?' <small>(original server login)</small>':''}</span><button type="button" class="danger" data-remove-user="${escapeHTML(u.username)}" data-remove-role="${escapeHTML(u.role)}">Remove</button></li>`).join('');
+ document.querySelectorAll('[data-remove-user]').forEach(b=>b.onclick=async()=>{const name=b.dataset.removeUser,role=b.dataset.removeRole;if(!confirm(`Remove the ${role} login "${name}"? They will no longer be able to sign in.`))return;
+  try{await postJSON('/api/accounts/user/remove',{role,username:name});accountMsg(`${role} login ${name} removed.`,true);loadAccounts()}catch(e){accountMsg('Not removed: '+e.message)}});
+ $('opUser').value='';$('disableOperator').disabled=!users.some(u=>u.role==='Operator');
+ const P=a.permissions||{},choices=a.permission_choices||[];
+ $('rightsBody').innerHTML=[['view','View readings, trends and alarms']].concat(choices.map(c=>[c,RIGHT_LABELS[c]||c])).map(([key,label])=>
+  `<tr><th>${escapeHTML(label)}</th>`+RIGHT_ROLES.map(r=>{const fixed=r==='Admin'||key==='view';const on=fixed||(P[r]||[]).includes(key);
+   return `<td><input type="checkbox" aria-label="${escapeHTML(r+': '+label)}" data-right="${key}" data-right-role="${r}"${on?' checked':''}${fixed?' disabled data-fixed':''}></td>`}).join('')+'</tr>').join('');
+}catch(e){$('adminState').textContent=$('userState').textContent='Unavailable: '+e.message}}
 $('saveAdmin').addEventListener('click',async()=>{
  if($('adminNew').value!==$('adminRepeat').value){accountMsg('New Admin passwords do not match.');return}
  if(!confirm('Change the Admin login? You will be asked to sign in again with the new password.'))return;
@@ -107,11 +111,20 @@ $('saveAdmin').addEventListener('click',async()=>{
   accountMsg('Admin login changed. Sign in again with the new password…',true);
   setTimeout(()=>window.location.reload(),1500);
  }catch(e){accountMsg('Not changed: '+e.message)}});
+const RIGHT_ROLES=['Admin','Engineering','Operator','Guest'];
+const RIGHT_LABELS={export:'Download reports (Excel and CSV)',acknowledge:'Acknowledge alarms',settings:'View and change Settings (alarms, email reports)',audit:'View the Audit log'};
+const MIN_PW={Engineering:6,Operator:4,Guest:4};
+$('newRole').addEventListener('change',()=>{$('pwMin').textContent=MIN_PW[$('newRole').value]});
 $('saveOperator').addEventListener('click',async()=>{
- if($('opPass').value!==$('opRepeat').value){accountMsg('Operator passwords do not match.');return}
- try{const r=await postJSON('/api/accounts/operator',{username:$('opUser').value.trim(),password:$('opPass').value});
-  ['opPass','opRepeat'].forEach(id=>$(id).value='');$('opUser').value='';accountMsg(`Operator login saved for ${r.username}.`,true);loadAccounts();
+ const role=$('newRole').value;
+ if($('opPass').value!==$('opRepeat').value){accountMsg('Passwords do not match.');return}
+ try{const r=await postJSON('/api/accounts/user',{role,username:$('opUser').value.trim(),password:$('opPass').value});
+  ['opPass','opRepeat'].forEach(id=>$(id).value='');$('opUser').value='';accountMsg(`${role} login saved for ${r.username}.`,true);loadAccounts();
  }catch(e){accountMsg('Not saved: '+e.message)}});
+$('saveRights').addEventListener('click',async()=>{
+ const body={Engineering:[],Operator:[],Guest:[]};
+ document.querySelectorAll('[data-right]').forEach(x=>{const r=x.dataset.rightRole,k=x.dataset.right;if(x.checked&&body[r]&&k!=='view')body[r].push(k)});
+ try{await postJSON('/api/accounts/permissions',body);accountMsg('Rights saved.',true);loadAccounts()}catch(e){accountMsg('Rights not saved: '+e.message)}});
 $('disableOperator').addEventListener('click',async()=>{
  if(!confirm('Turn off ALL Operator logins? No Operator will be able to sign in until you add one again.'))return;
  try{await postJSON('/api/accounts/operator/disable',{});accountMsg('Operator login turned off.',true);loadAccounts()}catch(e){accountMsg('Not changed: '+e.message)}});
