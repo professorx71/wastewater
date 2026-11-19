@@ -41,16 +41,19 @@ def summary():
             result.append(item)
         ages=[t['age_seconds'] for t in result if t['age_seconds'] is not None]
         # Diagram-only readings: kept out of 'tags' so cards, banner, trends and reports are unchanged.
+        # The Ewon logs on change, so a steady value (e.g. rake stopped at 0 Hz) gets no new samples.
+        # Its last good reading still holds while the collector keeps receiving other tags.
+        feed_live=bool(ages) and min(ages)<=180
         extras={}
         for name,(label,unit) in DIAGRAM_TAGS.items():
             row=db.execute('SELECT stamp,value,quality FROM samples WHERE name=? AND stamp<=? ORDER BY stamp DESC LIMIT 1',(name,iso(now))).fetchone()
             item={'name':name,'label':label,'unit':unit,'value':None,'stamp':None,'status':'missing'}
             if row:
                 age=(now-parse(row['stamp'])).total_seconds()
-                item.update(stamp=row['stamp'],value=row['value'],status='stale' if age>180 else 'current')
+                item.update(stamp=row['stamp'],value=row['value'],status='current' if age<=180 or feed_live else 'stale')
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.12','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.13','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
