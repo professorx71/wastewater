@@ -42,7 +42,8 @@ def reading(t, total):
     rake = max(0.0, 30.0 + 2.0 * math.sin(h / 1.7) + random.gauss(0, 0.2))
     return {'pH_Reading': ph, 'EQ_Tank_Level_Ft': level, 'FLOW_RATE': gpm, 'Total_Flow_Li': total, 'Rake_Speed_VFD': rake,
             'Coag_Pump_Rate_Percent': 15 + random.gauss(0, 0.3), 'Coag_Pump_Run': 9.5 + random.gauss(0, 0.1),
-            'Floc_Pump_Rate_Percent': 51 + random.gauss(0, 0.5), 'Floc_Pump_Run': 1.6 + random.gauss(0, 0.03)}
+            'Floc_Pump_Rate_Percent': 51 + random.gauss(0, 0.5), 'Floc_Pump_Run': 1.6 + random.gauss(0, 0.03),
+            'SLUDGE_TANK_LEVEL': float(int(t.timestamp() // 120) % 2)}  # full / not full every 2 minutes
 
 
 def insert(db, t, total):

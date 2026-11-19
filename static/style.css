@@ -9,3 +9,12 @@
 .dosing-bar{position:relative;width:100%;min-width:860px;height:clamp(46px,4.2vw,72px);background:#031324}.pump-box{position:absolute;top:10%;height:84%;width:7.6%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#092436ee;border:1px solid #0fe4e8;border-radius:7px;box-shadow:0 0 9px #00ccdf55;color:var(--green);font-weight:750;font-variant-numeric:tabular-nums;white-space:nowrap;line-height:1.15;font-size:clamp(10px,.95vw,16px)}.pump-box.coag{left:52.7%}.pump-box.floc{left:60.7%}
 .trendmetric{display:flex;align-items:center;gap:14px}.trend-icon{flex:none;width:44px;height:44px;color:#e6f5fe}.trend-icon svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .rights-box{grid-column:1/-1}.rights{width:100%;border-collapse:collapse;margin:6px 0 12px}.rights th,.rights td{padding:7px 10px;border-bottom:1px solid var(--line);text-align:center}.rights tbody th{text-align:left;font-weight:500}.rights input{width:18px;height:18px}.role-tag{display:inline-block;min-width:92px;color:var(--green);font-weight:700}
+.sludge-ribbon{border:2px solid #ff5d57;background:#7a1016;color:#fff;border-radius:8px;padding:12px 14px;margin:-6px 0 16px;text-align:center;font-weight:800;font-size:clamp(15px,1.4vw,22px);letter-spacing:.04em;animation:sludgeFlash 1s steps(1,end) infinite}
+.sludge-ribbon[hidden]{display:none}
+.sludge-tank{position:absolute;left:70.6%;top:79.5%;width:9.4%;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3px 2px;border-radius:7px;border:1px solid #82a7b4;background:#081b28;color:#9fb3bf;line-height:1.1}
+.sludge-tank small{font-size:clamp(7px,.62vw,11px);letter-spacing:.06em;font-weight:700}
+.sludge-tank strong{font-size:clamp(13px,1.35vw,23px);font-weight:800}
+.sludge-tank.normal{border-color:#2a967f;color:#6ef9b0}
+.sludge-tank.full{border:2px solid #ff5d57;background:#b3151d;color:#fff;box-shadow:0 0 0 4px rgba(255,93,87,.45),0 0 22px rgba(255,60,60,.9);animation:sludgeFlash 1s steps(1,end) infinite}
+@keyframes sludgeFlash{50%{background:#2b0508;color:#ffb8b5;box-shadow:none}}
+@media (prefers-reduced-motion:reduce){.sludge-ribbon,.sludge-tank.full{animation:none}}
