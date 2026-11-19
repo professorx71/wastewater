@@ -55,7 +55,7 @@ def summary():
                 item.update(stamp=row['stamp'],value=row['value'],status='current' if age<=180 or feed_live else 'stale')
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.17','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.18','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 

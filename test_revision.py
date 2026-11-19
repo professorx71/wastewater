@@ -2,6 +2,7 @@
 import io
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -35,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.17'
+        assert s['revision']=='1.2.18'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -88,6 +89,20 @@ class RevisionTests(unittest.TestCase):
         self.assertIn('L/min',csv_content)
         self.assertIn('FLOW_RATE',csv_content)
 
+    def test_chemical_usage_litres(self):
+        import zipfile
+        zone=web.ZoneInfo('America/Vancouver');at=lambda d,h:web.iso(datetime(2026,11,d,h,tzinfo=zone))
+        with sqlite3.connect(web.DB) as db:
+            db.execute("DELETE FROM samples WHERE name IN ('Coag_Pump_Run','Floc_Pump_Run')")
+            for name,stamp,v in [('Coag_Pump_Run',at(16,23),10.0),('Coag_Pump_Run',at(17,1),0.0),
+                                 ('Floc_Pump_Run',at(17,12),2.0),('Floc_Pump_Run',at(18,12),0.0)]:
+                db.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',(name,stamp,v))
+        q={'tag':['chemical'],'startDate':['2026-11-17'],'endDate':['2026-11-18']}
+        rows=web.report_csv(q)[1].decode('utf-8-sig').splitlines()
+        self.assertEqual(rows[1:],['2026-11-17,0.60,1.44','2026-11-18,0.00,1.44','Total,0.60,2.88'])
+        book=zipfile.ZipFile(io.BytesIO(web.report_xlsx(q)[1])).read('xl/workbook.xml').decode()
+        self.assertEqual(re.findall(r'<sheet name="([^"]+)"',book),['Chemical Usage','Coag_Pump_Run','Floc_Pump_Run'])
+
     def test_excel_report(self):
         import zipfile
         today=datetime.now(web.ZoneInfo('America/Vancouver')).date()
@@ -96,9 +111,10 @@ class RevisionTests(unittest.TestCase):
         self.assertTrue(fname.endswith('.xlsx'))
         z=zipfile.ZipFile(io.BytesIO(data))
         book=z.read('xl/workbook.xml').decode()
-        for name in ('Summary','EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li'):self.assertIn(f'name="{name}"',book)
+        for name in ('Summary','Chemical Usage','EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li'):self.assertIn(f'name="{name}"',book)
         self.assertNotIn('pH_Reading',book)
-        flow=z.read('xl/worksheets/sheet3.xml').decode()
+        sheets=re.findall(r'<sheet name="([^"]+)"',book)
+        flow=z.read(f'xl/worksheets/sheet{sheets.index("FLOW_RATE")+1}.xml').decode()
         self.assertIn('Timestamp America/Vancouver',flow)
         self.assertIn('US gal/min',flow)
         summary=z.read('xl/worksheets/sheet1.xml').decode()
