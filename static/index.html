@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Wastewater Dashboard — Rev 1.2.11</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>Wastewater Dashboard — Rev 1.2.12</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body>
 <header class="topbar"><div class="brand"><h1>Wastewater Dashboard</h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.11</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.12</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -74,11 +74,11 @@
         <div><span>pH</span><strong id="tankPh">--.--</strong></div>
         <div><span>Level</span><strong id="tankLevel">--.--</strong><small>ft</small></div>
       </div>
-      <div class="motor-mask" title="Rake motor telemetry is not connected">Not connected</div>
+      <div class="motor-mask" id="rakeSpeed" title="Rake motor speed (Rake_Speed_VFD)">--.- Hz</div>
       <div class="flow-overlay" aria-label="Live discharge flow"><small>DISCHARGE FLOW</small><strong id="diagramFlow">--.-- L/min</strong></div>
       <div class="pickup-mask">Sludge pickup<br><strong>Not connected</strong></div>
     </div></div>
-    <p class="disclaimer">Process equipment, pumps (including caustic and acid dosing), motor status, chemical dosing and sludge pickup are illustrative only—not connected to PLC tags. EQ tank water fill is schematic; numeric values are API-backed.</p>
+    <p class="disclaimer">Process equipment, pumps (including caustic and acid dosing), motor status, chemical dosing and sludge pickup are illustrative only—not connected to PLC tags. EQ tank water fill is schematic; numeric values (including rake motor speed) are API-backed.</p>
   </div>
 </section>
 <section id="trends" class="view" hidden><div class="panel"><h2>Separate wastewater history trends</h2><label>Window <select id="period"><option value="6">6 hours</option><option value="24">24 hours</option><option value="168">7 days</option></select></label> <button id="reload">Refresh</button><p>Four independent trends. All times are Vancouver local time; gaps longer than 3 minutes are not connected.</p></div><div id="historyCharts" class="trendlist"></div></section>
@@ -112,5 +112,5 @@
 </div>
 <p id="accountState" role="status"></p>
 <p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
-<footer>Rev 1.2.11 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
+<footer>Rev 1.2.12 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
 </main></body></html>

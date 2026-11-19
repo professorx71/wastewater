@@ -39,7 +39,8 @@ def reading(t, total):
     ph = 7.0 + 0.35 * math.sin(h / 3.1) + random.gauss(0, 0.04)
     level = 2.5 + 0.45 * math.sin(h / 5.3) + random.gauss(0, 0.02)
     gpm = max(0.0, 13.2 + 1.6 * math.sin(h / 2.2) + random.gauss(0, 0.25))
-    return {'pH_Reading': ph, 'EQ_Tank_Level_Ft': level, 'FLOW_RATE': gpm, 'Total_Flow_Li': total}
+    rake = max(0.0, 30.0 + 2.0 * math.sin(h / 1.7) + random.gauss(0, 0.2))
+    return {'pH_Reading': ph, 'EQ_Tank_Level_Ft': level, 'FLOW_RATE': gpm, 'Total_Flow_Li': total, 'Rake_Speed_VFD': rake}
 
 
 def insert(db, t, total):

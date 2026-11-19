@@ -9,6 +9,7 @@ DB=Path(os.environ.get('PBF_DB','/var/lib/pbf-wastewater/history.sqlite3'))
 AUTH=Path(os.environ.get('PBF_WEB_AUTH','/etc/pbf-wastewater/web-auth.json'))
 TAGS={'pH_Reading':('EQ pH','pH',1), 'EQ_Tank_Level_Ft':('EQ tank level','ft',1),
       'FLOW_RATE':('Discharge flow','L/min',3.78541), 'Total_Flow_Li':('Total flow','L',1)}
+DIAGRAM_TAGS={'Rake_Speed_VFD':('Rake motor speed','Hz')}
 UTC=timezone.utc
 
 def iso(t): return t.astimezone(UTC).isoformat(timespec='microseconds').replace('+00:00','Z')
@@ -39,8 +40,18 @@ def summary():
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             result.append(item)
         ages=[t['age_seconds'] for t in result if t['age_seconds'] is not None]
-        return {'revision':'1.2.11','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
-                'data_age_seconds':min(ages) if ages else None}
+        # Diagram-only readings: kept out of 'tags' so cards, banner, trends and reports are unchanged.
+        extras={}
+        for name,(label,unit) in DIAGRAM_TAGS.items():
+            row=db.execute('SELECT stamp,value,quality FROM samples WHERE name=? AND stamp<=? ORDER BY stamp DESC LIMIT 1',(name,iso(now))).fetchone()
+            item={'name':name,'label':label,'unit':unit,'value':None,'stamp':None,'status':'missing'}
+            if row:
+                age=(now-parse(row['stamp'])).total_seconds()
+                item.update(stamp=row['stamp'],value=row['value'],status='stale' if age>180 else 'current')
+                if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
+            extras[name]=item
+        return {'revision':'1.2.12','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+                'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
 def window(params,max_days=31):
