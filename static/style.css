@@ -29,7 +29,7 @@
 .pump-pill.transfer{left:22.2%}.pump-pill.mixer{left:42.6%}
 .pump-pill.on{border-color:#22c55e;background:#0b3d23;color:#6ef9b0;animation:pumpBlink 1.2s ease-in-out infinite}
 .pump-pill.off{color:#e2e8ec;border-color:#9aa5ad}
-@keyframes pumpSpin{to{transform:rotate(360deg)}}
+@keyframes pumpSpin{to{transform:rotate(-360deg)}}
 @keyframes pumpBlink{50%{box-shadow:0 0 12px rgba(74,222,128,.9);background:#14532d}}
 @media (prefers-reduced-motion:reduce){.pump-fan.on svg,.pump-pill.on{animation:none}}
 .pickup-mask{gap:2px;line-height:1.25}.pickup-mask small{font-size:clamp(8px,.7vw,12px);font-weight:800;letter-spacing:.05em;color:#9fb3bf}

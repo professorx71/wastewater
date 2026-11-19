@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Wastewater Dashboard — Rev 1.2.22</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>Wastewater Dashboard — Rev 1.2.23</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body>
 <header class="topbar"><div class="brand"><h1>Wastewater Dashboard</h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.22</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.23</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="sludgeRibbon" class="sludge-ribbon" role="alert" hidden>⚠ SLUDGE TANK FULL · arrange a sludge pickup</div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -77,8 +77,8 @@
       <div class="motor-mask" id="rakeSpeed" title="Rake motor speed (Rake_Speed_VFD)">--.- Hz</div>
       <div class="sludge-tank" id="sludgeTank" title="Sludge tank level switch (SLUDGE_TANK_LEVEL, PLC B3:0/13)"><small>SLUDGE TANK</small><strong id="sludgeState">--</strong></div>
       <div class="flow-overlay" aria-label="Live discharge flow"><small>DISCHARGE FLOW</small><strong id="diagramFlow">--.-- L/min</strong></div>
-      <div class="pump-fan transfer" id="sumpPump" title="Electric transfer pump / sump pump (SUMP_PUMP_STATUS, PLC B3:1/9)"><svg viewBox="-10 -10 20 20" aria-hidden="true"><circle r="9" class="ring"/><path class="blade" d="M0 0C2.6-1.6 3.6-5 1.2-8.2C-1.4-6.6-2-3 0 0Z"/><path class="blade" transform="rotate(120)" d="M0 0C2.6-1.6 3.6-5 1.2-8.2C-1.4-6.6-2-3 0 0Z"/><path class="blade" transform="rotate(240)" d="M0 0C2.6-1.6 3.6-5 1.2-8.2C-1.4-6.6-2-3 0 0Z"/><circle r="1.9" class="hub"/></svg></div><div class="pump-pill transfer" id="sumpPumpPill" role="status">--</div>
-      <div class="pump-fan mixer" id="mixerPump" title="Electric circulation pump / mixer pump (Mixer_Pump_Staus, PLC N142:0)"><svg viewBox="-10 -10 20 20" aria-hidden="true"><circle r="9" class="ring"/><path class="blade" d="M0 0C2.6-1.6 3.6-5 1.2-8.2C-1.4-6.6-2-3 0 0Z"/><path class="blade" transform="rotate(120)" d="M0 0C2.6-1.6 3.6-5 1.2-8.2C-1.4-6.6-2-3 0 0Z"/><path class="blade" transform="rotate(240)" d="M0 0C2.6-1.6 3.6-5 1.2-8.2C-1.4-6.6-2-3 0 0Z"/><circle r="1.9" class="hub"/></svg></div><div class="pump-pill mixer" id="mixerPumpPill" role="status">--</div>
+      <div class="pump-fan transfer" id="sumpPump" title="Electric transfer pump / sump pump (SUMP_PUMP_STATUS, PLC B3:1/9)"><svg viewBox="-10 -10 20 20" aria-hidden="true"><circle r="9" class="ring"/><path class="blade" d="M0 0C-2.6-1.6-3.6-5-1.2-8.2C1.4-6.6 2-3 0 0Z"/><path class="blade" transform="rotate(120)" d="M0 0C-2.6-1.6-3.6-5-1.2-8.2C1.4-6.6 2-3 0 0Z"/><path class="blade" transform="rotate(240)" d="M0 0C-2.6-1.6-3.6-5-1.2-8.2C1.4-6.6 2-3 0 0Z"/><circle r="1.9" class="hub"/></svg></div><div class="pump-pill transfer" id="sumpPumpPill" role="status">--</div>
+      <div class="pump-fan mixer" id="mixerPump" title="Electric circulation pump / mixer pump (Mixer_Pump_Staus, PLC N142:0)"><svg viewBox="-10 -10 20 20" aria-hidden="true"><circle r="9" class="ring"/><path class="blade" d="M0 0C-2.6-1.6-3.6-5-1.2-8.2C1.4-6.6 2-3 0 0Z"/><path class="blade" transform="rotate(120)" d="M0 0C-2.6-1.6-3.6-5-1.2-8.2C1.4-6.6 2-3 0 0Z"/><path class="blade" transform="rotate(240)" d="M0 0C-2.6-1.6-3.6-5-1.2-8.2C1.4-6.6 2-3 0 0Z"/><circle r="1.9" class="hub"/></svg></div><div class="pump-pill mixer" id="mixerPumpPill" role="status">--</div>
       <div class="pickup-mask" id="pickupMask" title="From the sludge pickup log on the Alarms page"><small>PICKUP EVERY 3 DAYS</small><span>Last pickup: <b id="lastPickup">—</b></span><span>Next due: <b id="nextPickup">—</b></span></div>
     </div></div>
     <p class="disclaimer">Process equipment, pumps (including caustic and acid dosing), motor status and chemical dosing are illustrative only—not connected to PLC tags. Live from the PLC: sludge tank FULL / NORMAL (B3:0/13), electric transfer (sump) pump running (B3:1/9) and electric circulation (mixer) pump running (N142:0). Last and next sludge pickup come from the pickup log on the Alarms page. EQ tank water fill is schematic; numeric values (including rake motor speed and dosing pump rates) are API-backed.</p>
@@ -110,5 +110,5 @@
 <div class="account-box rights-box"><h4>Rights for each role</h4><div class="tablewrap"><table class="rights"><thead><tr><th>Right</th><th>Admin</th><th>Engineering</th><th>Operator</th><th>Guest</th></tr></thead><tbody id="rightsBody"></tbody></table></div><button id="saveRights" type="button">Save rights</button> <small>Changes apply on the person's next page refresh (within 10 seconds).</small></div></div>
 <p id="accountState" role="status"></p>
 <p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
-<footer>Rev 1.2.22 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
+<footer>Rev 1.2.23 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
 </main></body></html>
