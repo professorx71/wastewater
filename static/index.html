@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Wastewater Dashboard — Rev 1.2.15</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>Wastewater Dashboard — Rev 1.2.16</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body>
 <header class="topbar"><div class="brand"><h1>Wastewater Dashboard</h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.15</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.16</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -12,7 +12,7 @@
   <button type="button" id="toggleDiagram" class="diagram-toggle" aria-expanded="false">Show process diagram</button>
   <div class="process-panel" id="processPanel">
     <div class="process-heading"><h2>Wastewater treatment process</h2><span class="process-note">Readings from Talk2M DataMailbox history • refreshed every 10 seconds</span></div>
-    <div class="process-scroll"><div class="process-stage" aria-label="Wastewater treatment process schematic with real-time telemetry overlays">
+    <div class="process-scroll"><div class="dosing-bar" aria-label="Live chemical dosing pump readings"><div class="pump-box coag"><span id="coagRate" title="Coagulant pump rate (Coag_Pump_Rate_Percent)">--.- %</span><span id="coagRun" title="Coagulant pump run (Coag_Pump_Run)">--.-- ml/min</span></div><div class="pump-box floc"><span id="flocRate" title="Flocculant pump rate (Floc_Pump_Rate_Percent)">--.- %</span><span id="flocRun" title="Flocculant pump run (Floc_Pump_Run)">--.-- ml/min</span></div></div><div class="process-stage" aria-label="Wastewater treatment process schematic with real-time telemetry overlays">
       <img class="process-art" src="/process-overview.webp" width="1672" height="597" alt="Waste collection sump, EQ tank, dissolved air flotation unit, sludge transfer and treated-water discharge process illustration">
       <svg class="dosing-art" viewBox="0 0 1672 597" aria-hidden="true" font-family="system-ui,'Segoe UI',sans-serif">
       <g>
@@ -78,7 +78,7 @@
       <div class="flow-overlay" aria-label="Live discharge flow"><small>DISCHARGE FLOW</small><strong id="diagramFlow">--.-- L/min</strong></div>
       <div class="pickup-mask">Sludge pickup<br><strong>Not connected</strong></div>
     </div></div>
-    <p class="disclaimer">Process equipment, pumps (including caustic and acid dosing), motor status, chemical dosing and sludge pickup are illustrative only—not connected to PLC tags. EQ tank water fill is schematic; numeric values (including rake motor speed) are API-backed.</p>
+    <p class="disclaimer">Process equipment, pumps (including caustic and acid dosing), motor status, chemical dosing and sludge pickup are illustrative only—not connected to PLC tags. EQ tank water fill is schematic; numeric values (including rake motor speed and dosing pump rates) are API-backed.</p>
   </div>
 </section>
 <section id="trends" class="view" hidden><div class="panel"><h2>Separate wastewater history trends</h2><label>Window <select id="period"><option value="6">6 hours</option><option value="24">24 hours</option><option value="168">7 days</option></select></label> <button id="reload">Refresh</button><p>Four independent trends. All times are Vancouver local time; gaps longer than 3 minutes are not connected.</p></div><div id="historyCharts" class="trendlist"></div></section>
@@ -112,5 +112,5 @@
 </div>
 <p id="accountState" role="status"></p>
 <p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
-<footer>Rev 1.2.15 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
+<footer>Rev 1.2.16 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
 </main></body></html>

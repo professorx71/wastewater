@@ -9,7 +9,9 @@ DB=Path(os.environ.get('PBF_DB','/var/lib/pbf-wastewater/history.sqlite3'))
 AUTH=Path(os.environ.get('PBF_WEB_AUTH','/etc/pbf-wastewater/web-auth.json'))
 TAGS={'pH_Reading':('EQ pH','pH',1), 'EQ_Tank_Level_Ft':('EQ tank level','ft',1),
       'FLOW_RATE':('Discharge flow','L/min',3.78541), 'Total_Flow_Li':('Total flow','L',1)}
-DIAGRAM_TAGS={'Rake_Speed_VFD':('Rake motor speed','Hz')}
+DIAGRAM_TAGS={'Rake_Speed_VFD':('Rake motor speed','Hz'),
+              'Coag_Pump_Rate_Percent':('Coagulant pump rate','%'),'Coag_Pump_Run':('Coagulant pump run','ml/min'),
+              'Floc_Pump_Rate_Percent':('Flocculant pump rate','%'),'Floc_Pump_Run':('Flocculant pump run','ml/min')}
 UTC=timezone.utc
 
 def iso(t): return t.astimezone(UTC).isoformat(timespec='microseconds').replace('+00:00','Z')
@@ -53,7 +55,7 @@ def summary():
                 item.update(stamp=row['stamp'],value=row['value'],status='current' if age<=180 or feed_live else 'stale')
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.15','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.16','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -92,8 +94,10 @@ def history(params,export=False):
 # Built with the standard library only, so the server needs no extra packages.
 import zipfile
 from xml.sax.saxutils import escape as _xml
-REPORT_TAGS=('EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li','Rake_Speed_VFD')
-RAW_UNITS={'pH_Reading':'pH','EQ_Tank_Level_Ft':'ft','FLOW_RATE':'US gal/min','Total_Flow_Li':'L','Rake_Speed_VFD':'Hz'}
+REPORT_TAGS=('EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li','Rake_Speed_VFD',
+             'Coag_Pump_Rate_Percent','Coag_Pump_Run','Floc_Pump_Rate_Percent','Floc_Pump_Run')
+RAW_UNITS={'pH_Reading':'pH','EQ_Tank_Level_Ft':'ft','FLOW_RATE':'US gal/min','Total_Flow_Li':'L','Rake_Speed_VFD':'Hz',
+           'Coag_Pump_Rate_Percent':'%','Coag_Pump_Run':'ml/min','Floc_Pump_Rate_Percent':'%','Floc_Pump_Run':'ml/min'}
 _XL_EPOCH=datetime(1899,12,30)
 # Cell styles: 0 normal, 1 date-time, 2 two decimals, 3 bold, 4 date
 _XL_STYLES=('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'

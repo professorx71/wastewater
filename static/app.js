@@ -38,7 +38,8 @@ function drawCards(){
  const item=(key)=>lookup[key]||{};
  const set=(id,key,unit='')=>{const t=item(key);$(id).textContent=(t.status==='current'&&t.value!=null?fmt(t.value):'--.--')+(unit?' '+unit:'')};
  set('tankPh','pH_Reading');set('tankLevel','EQ_Tank_Level_Ft');{const t=item('FLOW_RATE');$('diagramFlow').textContent=(t.status==='current'&&t.value!=null?fmt(flowValue(t.value)):'--.--')+' '+flowUnit}
- {const r=(summaryData.extras||{}).Rake_Speed_VFD||{};const ok=r.status==='current'&&r.value!=null;const el=$('rakeSpeed');el.textContent=(ok?Number(r.value).toFixed(1):'--.-')+' Hz';el.classList.toggle('live',ok);el.title=`Rake motor speed (Rake_Speed_VFD): ${r.status||'missing'}${r.stamp?' · '+local(r.stamp):''}`}
+ {const ex=summaryData.extras||{};const show=(id,tag,unit,dec)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=(ok?Number(r.value).toFixed(dec):'--.'+'-'.repeat(dec))+' '+unit;el.classList.toggle('live',ok);el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.stamp?' · '+local(r.stamp):''}`};
+  show('rakeSpeed','Rake_Speed_VFD','Hz',1);show('coagRate','Coag_Pump_Rate_Percent','%',1);show('coagRun','Coag_Pump_Run','ml/min',2);show('flocRate','Floc_Pump_Rate_Percent','%',1);show('flocRun','Floc_Pump_Run','ml/min',2)}
  const ph=item('pH_Reading');const limits=summaryData.limits||{low:5.8,high:9};const banner=$('banner');banner.className='banner';
  const allCurrent=summaryData.tags.every(x=>x.status==='current');
  const outside=ph.status==='current'&&ph.value!=null&&(ph.value<limits.low||ph.value>limits.high);
