@@ -55,7 +55,7 @@ def summary():
                 item.update(stamp=row['stamp'],value=row['value'],status='current' if age<=180 or feed_live else 'stale')
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.16','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.17','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -182,14 +182,66 @@ def quarter_label(d):
     q=(d.month-1)//3
     return f"{d.year} Q{q+1} ({('Jan-Mar','Apr-Jun','Jul-Sep','Oct-Dec')[q]})"
 
+
+CHEMICAL_TAGS=(('Coag_Pump_Run','Coagulant'),('Floc_Pump_Run','Flocculant'))
+def chemical_usage(start,end,zone):
+    """Litres used per local day for each dosing pump: the pump's ml/min reading is held until the
+    next reading (the Ewon logs on change) and multiplied by the time it was held."""
+    end=min(end,datetime.now(UTC))
+    used={tag:{} for tag,_ in CHEMICAL_TAGS}
+    db=database()
+    try:
+        for tag,_ in CHEMICAL_TAGS:
+            prior=db.execute('SELECT value FROM samples WHERE name=? AND stamp<? ORDER BY stamp DESC LIMIT 1',(tag,iso(start))).fetchone()
+            points=[(start,prior[0])] if prior else []
+            points+=[(parse(t),v) for t,v in db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? ORDER BY stamp',(tag,iso(start),iso(end)))]
+            acc=used[tag]
+            for i,(a,v) in enumerate(points):
+                b=points[i+1][0] if i+1<len(points) else end
+                if v is None or v<=0:continue
+                while a<b:
+                    day=a.astimezone(zone).date()
+                    seg=min(b,datetime.combine(day+timedelta(days=1),time.min,zone).astimezone(UTC))
+                    acc[day]=acc.get(day,0.0)+v*(seg-a).total_seconds()/60/1000
+                    a=seg
+    finally:db.close()
+    return used
+
+def chemical_rows(start,end,zone,date_range):
+    B=lambda t:(t,3);num=lambda v:(round(v,3),2)
+    used=chemical_usage(start,end,zone)
+    first=start.astimezone(zone).date();last=(end.astimezone(zone)-timedelta(microseconds=1)).date()
+    days=[];d=first
+    while d<=last:days.append(d);d+=timedelta(days=1)
+    names=[n for _,n in CHEMICAL_TAGS]
+    rows=[[B('Chemical usage (litres)')],['Tags','Coag_Pump_Run, Floc_Pump_Run (ml/min)'],['Date range (America/Vancouver)',date_range],[]]
+    totals=[sum(used[t].values()) for t,_ in CHEMICAL_TAGS]
+    rows+=[[B('Total for date range')]+[B(f'{n} (L)') for n in names],['All days']+[num(v) for v in totals],[]]
+    groups={}
+    for d in days:
+        for k in (('Quarter',quarter_label(d)),('Month',f'{d:%m/%Y}')):
+            g=groups.setdefault(k,[0.0]*len(CHEMICAL_TAGS))
+            for i,(t,_) in enumerate(CHEMICAL_TAGS):g[i]+=used[t].get(d,0.0)
+    for kind in ('Quarter','Month'):
+        rows.append([B(kind)]+[B(f'{n} (L)') for n in names])
+        rows+=[[key]+[num(v) for v in vals] for (k,key),vals in groups.items() if k==kind]
+        rows.append([])
+    rows.append([B('Date')]+[B(f'{n} (L)') for n in names])
+    rows+=[[d]+[num(used[t].get(d,0.0)) for t,_ in CHEMICAL_TAGS] for d in days]
+    rows+=[[],['Litres = pump reading (ml/min) x minutes it was held, / 1000. Each reading is held until the next reading, '
+               'because the Ewon logs on change; the first day uses the last reading before the range. Readings of 0 or below count as 0. '
+               'Days without data show 0.']]
+    return rows
+
 def report_xlsx(params,data_tags=None):
     """Excel report for one tag or 'all'. Returns (filename, bytes).
     Summary: Total_Flow_Li end-of-day (last valid) reading of each day, the usage since the
     previous EOD, and monthly and quarterly totals. data_tags overrides which tag worksheets
     are included (emails use fewer to keep attachments small)."""
     choice=params.get('tag',['all'])[0]
-    if choice!='all' and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
-    names=tuple(data_tags) if data_tags is not None else REPORT_TAGS if choice=='all' else (choice,)
+    if choice not in ('all','chemical') and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
+    names=(tuple(data_tags) if data_tags is not None else REPORT_TAGS if choice=='all'
+           else tuple(t for t,_ in CHEMICAL_TAGS) if choice=='chemical' else (choice,))
     start,end=window(params,REPORT_MAX_DAYS)
     zone=ZoneInfo('America/Vancouver')
     B=lambda t:(t,3)
@@ -257,7 +309,9 @@ def report_xlsx(params,data_tags=None):
                        'Monthly total = sum of the EOD daily values in the month; quarterly total = sum of those monthly totals. '
                        'Daily Usage = EOD value minus the previous EOD value (litres that went through the meter that day); '
                        'monthly and quarterly usage add up the daily usage. Only days inside the selected date range are counted.']]
-    sheets=[('Summary',summary_rows,(34,22,20,30,60))]+[(n,readings(n),(22,30,14,18)) for n in names]
+    chem=[('Chemical Usage',chemical_rows(start,end,zone,date_range),(34,22,22))]
+    sheets=(chem if choice=='chemical' else [('Summary',summary_rows,(34,22,20,30,60))]+(chem if choice=='all' and data_tags is None else []))
+    sheets+=[(n,readings(n),(22,30,14,18)) for n in names]
     fname=f'wastewater-report-{choice}-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.xlsx'
     return fname,xlsx(sheets)
 
@@ -848,11 +902,20 @@ CONDITION_SUBJECTS={'data':'Wastewater ALERT: no new data','level':'Wastewater E
 def report_csv(params):
     """CSV download (Reports page) of the raw readings for one tag or 'all'. Returns (filename, bytes)."""
     choice=params.get('tag',['all'])[0]
-    if choice!='all' and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
+    if choice not in ('all','chemical') and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
     names=REPORT_TAGS if choice=='all' else (choice,)
     start,end=window(params,REPORT_MAX_DAYS)
     zone=ZoneInfo('America/Vancouver')
     out=io.StringIO(newline='');writer=csv.writer(out)
+    local_start=start.astimezone(zone).date();local_end=(end.astimezone(zone)-timedelta(microseconds=1)).date()
+    if choice=='chemical':
+        used=chemical_usage(start,end,zone)
+        writer.writerow(['Date (America/Vancouver)']+[f'{n} used (L)' for _,n in CHEMICAL_TAGS])
+        d=local_start
+        while d<=local_end:
+            writer.writerow([d.isoformat()]+[f'{used[t].get(d,0.0):.2f}' for t,_ in CHEMICAL_TAGS]);d+=timedelta(days=1)
+        writer.writerow(['Total']+[f'{sum(used[t].values()):.2f}' for t,_ in CHEMICAL_TAGS])
+        return f'wastewater-chemical-usage-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.csv',out.getvalue().encode('utf-8-sig')
     writer.writerow(['Tag','Timestamp UTC','Timestamp America/Vancouver','Raw Value','Unit Of Measure'])
     db=database()
     try:
@@ -861,7 +924,6 @@ def report_csv(params):
                 t=parse(stamp)
                 writer.writerow([name,t.strftime('%Y-%m-%d %H:%M:%S'),t.astimezone(zone).strftime('%Y-%m-%d %H:%M:%S'),'' if value is None else value,RAW_UNITS[name]])
     finally:db.close()
-    local_start=start.astimezone(zone).date();local_end=(end.astimezone(zone)-timedelta(microseconds=1)).date()
     return f'wastewater-{choice}-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.csv',out.getvalue().encode('utf-8-sig')
 
 
