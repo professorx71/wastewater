@@ -36,3 +36,4 @@
 .pickup-mask span{font-size:clamp(9px,.82vw,14px)}.pickup-mask b{color:#6ef9b0}.pickup-mask.overdue #nextPickup{color:#ff8a85}
 .pickup-form{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;margin:10px 0}.pickup-form[hidden]{display:none}.pickup-form label{display:flex;flex-direction:column;gap:4px}.pickup-form .grow{flex:1 1 240px}
 .ok-text{color:#6ef9b0}.err-text{color:#ffb8b5}
+.run-line{display:inline-flex;align-items:baseline;gap:4px}.run-line b{font-weight:750}.pump-box .dose-unit{font-size:inherit;font-weight:700;color:var(--green);border-bottom-color:#4ade8088}

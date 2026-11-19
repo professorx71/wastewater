@@ -22,6 +22,10 @@ def parse(t):
     d=datetime.fromisoformat(t.replace('Z','+00:00'))
     if d.tzinfo is None: raise ValueError('Timezone required')
     return d.astimezone(UTC)
+def good_quality(q):
+    """Ewon quality: none, 'good' or 'initialGood' (first value after a change or restart) are good."""
+    return not q or q.lower() in ('good','initialgood')
+
 def database():
     db=sqlite3.connect(f'file:{DB}?mode=ro',uri=True,timeout=5)
     db.row_factory=sqlite3.Row
@@ -42,7 +46,7 @@ def summary():
                 age=(now-parse(row['stamp'])).total_seconds()
                 item.update(stamp=row['stamp'],value=None if row['value'] is None else row['value']*factor,age_seconds=round(age),quality=row['quality'])
                 item['status']='stale' if age>180 else 'current'
-                if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
+                if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             result.append(item)
         ages=[t['age_seconds'] for t in result if t['age_seconds'] is not None]
         # Diagram-only readings: kept out of 'tags' so cards, banner, trends and reports are unchanged.
@@ -56,9 +60,11 @@ def summary():
             if row:
                 age=(now-parse(row['stamp'])).total_seconds()
                 item.update(stamp=row['stamp'],value=row['value'],status='current' if age<=180 or feed_live else 'stale')
-                if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
+                if name in DOSING_RUN_TAGS:   # sent as ml/min whatever unit the PLC uses
+                    item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
+                if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.23','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.24','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -102,6 +108,19 @@ REPORT_TAGS=('EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li','Rake_Speed_VFD',
 RAW_UNITS={'pH_Reading':'pH','EQ_Tank_Level_Ft':'ft','FLOW_RATE':'US gal/min','Total_Flow_Li':'L','Rake_Speed_VFD':'Hz',
            'Coag_Pump_Rate_Percent':'%','Coag_Pump_Run':'ml/min','Floc_Pump_Rate_Percent':'%','Floc_Pump_Run':'ml/min',
            'SLUDGE_TANK_LEVEL':'1 = full'}
+# Unit changes made in the PLC/Ewon: (UTC time from which the new unit applies, unit), oldest first.
+# Coag_Pump_Run (F192:0) changed from ml/min to ml/h on 11/19/2026 at 11:01 Vancouver time.
+UNIT_CHANGES={'Coag_Pump_Run':(('2026-11-19T18:01:00.000000Z','ml/h'),)}
+DOSING_RUN_TAGS=('Coag_Pump_Run','Floc_Pump_Run')
+_PER_MIN={'ml/min':1.0,'ml/h':1/60}
+def raw_unit(name,stamp):
+    """Unit the Ewon used for this tag at this time (stamp: stored ISO UTC text)."""
+    unit=RAW_UNITS[name]
+    for since,u in UNIT_CHANGES.get(name,()):
+        if stamp>=since:unit=u
+    return unit
+def ml_per_min(name,stamp,value):
+    return None if value is None else value*_PER_MIN[raw_unit(name,stamp)]
 _XL_EPOCH=datetime(1899,12,30)
 # Cell styles: 0 normal, 1 date-time, 2 two decimals, 3 bold, 4 date
 _XL_STYLES=('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -189,16 +208,16 @@ def quarter_label(d):
 
 CHEMICAL_TAGS=(('Coag_Pump_Run','Coagulant'),('Floc_Pump_Run','Flocculant'))
 def chemical_usage(start,end,zone):
-    """Litres used per local day for each dosing pump: the pump's ml/min reading is held until the
+    """Litres used per local day for each dosing pump: the pump's reading (converted to ml/min) is held until the
     next reading (the Ewon logs on change) and multiplied by the time it was held."""
     end=min(end,datetime.now(UTC))
     used={tag:{} for tag,_ in CHEMICAL_TAGS}
     db=database()
     try:
         for tag,_ in CHEMICAL_TAGS:
-            prior=db.execute('SELECT value FROM samples WHERE name=? AND stamp<? ORDER BY stamp DESC LIMIT 1',(tag,iso(start))).fetchone()
-            points=[(start,prior[0])] if prior else []
-            points+=[(parse(t),v) for t,v in db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? ORDER BY stamp',(tag,iso(start),iso(end)))]
+            prior=db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp<? ORDER BY stamp DESC LIMIT 1',(tag,iso(start))).fetchone()
+            points=[(start,ml_per_min(tag,*prior))] if prior else []
+            points+=[(parse(t),ml_per_min(tag,t,v)) for t,v in db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? ORDER BY stamp',(tag,iso(start),iso(end)))]
             acc=used[tag]
             for i,(a,v) in enumerate(points):
                 b=points[i+1][0] if i+1<len(points) else end
@@ -218,7 +237,7 @@ def chemical_rows(start,end,zone,date_range):
     days=[];d=first
     while d<=last:days.append(d);d+=timedelta(days=1)
     names=[n for _,n in CHEMICAL_TAGS]
-    rows=[[B('Chemical usage (litres)')],['Tags','Coag_Pump_Run, Floc_Pump_Run (ml/min)'],['Date range (America/Vancouver)',date_range],[]]
+    rows=[[B('Chemical usage (litres)')],['Tags','Coag_Pump_Run (ml/h from 11/19/2026 11:01, ml/min before), Floc_Pump_Run (ml/min)'],['Date range (America/Vancouver)',date_range],[]]
     totals=[sum(used[t].values()) for t,_ in CHEMICAL_TAGS]
     rows+=[[B('Total for date range')]+[B(f'{n} (L)') for n in names],['All days']+[num(v) for v in totals],[]]
     groups={}
@@ -232,7 +251,7 @@ def chemical_rows(start,end,zone,date_range):
         rows.append([])
     rows.append([B('Date')]+[B(f'{n} (L)') for n in names])
     rows+=[[d]+[num(used[t].get(d,0.0)) for t,_ in CHEMICAL_TAGS] for d in days]
-    rows+=[[],['Litres = pump reading (ml/min) x minutes it was held, / 1000. Each reading is held until the next reading, '
+    rows+=[[],['Litres = pump reading in ml/min (ml/h readings divided by 60) x minutes it was held, / 1000. Each reading is held until the next reading, '
                'because the Ewon logs on change; the first day uses the last reading before the range. Readings of 0 or below count as 0. '
                'Days without data show 0.']]
     return rows
@@ -329,12 +348,11 @@ def report_xlsx(params,data_tags=None):
     query='SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? ORDER BY stamp'
 
     def readings(name):  # tag worksheet, streamed straight from the database
-        unit=RAW_UNITS[name]
         yield [B('Timestamp UTC'),B('Timestamp America/Vancouver'),B('Raw Value'),B('Unit Of Measure')]
         db=database()
         try:
             for stamp,value in db.execute(query,(name,iso(start),iso(end))):
-                t=parse(stamp);yield [t,t.astimezone(zone),value,unit]
+                t=parse(stamp);yield [t,t.astimezone(zone),value,raw_unit(name,stamp)]
         finally:db.close()
 
     # Summary: Total_Flow_Li only (litres). EOD value of a day = last reading above SUMMARY_MIN
@@ -1120,7 +1138,7 @@ def report_csv(params):
         for name in names:
             for stamp,value in db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? ORDER BY stamp',(name,iso(start),iso(end))):
                 t=parse(stamp)
-                writer.writerow([name,t.strftime('%Y-%m-%d %H:%M:%S'),t.astimezone(zone).strftime('%Y-%m-%d %H:%M:%S'),'' if value is None else value,RAW_UNITS[name]])
+                writer.writerow([name,t.strftime('%Y-%m-%d %H:%M:%S'),t.astimezone(zone).strftime('%Y-%m-%d %H:%M:%S'),'' if value is None else value,raw_unit(name,stamp)])
     finally:db.close()
     return f'wastewater-{choice}-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.csv',out.getvalue().encode('utf-8-sig')
 

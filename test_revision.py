@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.23'
+        assert s['revision']=='1.2.24'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -149,6 +149,38 @@ class RevisionTests(unittest.TestCase):
         # ...and once the Admin saves rights without it, it is off
         self.assertEqual(self.call('POST','/api/accounts/permissions',*A,{'Engineering':['audit'],'Operator':['export'],'Guest':[]})[0],200)
         self.assertEqual(sorted(web.role_permissions()['Operator']),['export','view'])
+
+    def test_coag_unit_change_to_ml_per_hour(self):
+        import zipfile
+        # Coag_Pump_Run switched from ml/min to ml/h at 2026-11-19 18:01 UTC
+        with sqlite3.connect(web.DB) as db:
+            for stamp,v,q in [('2026-11-19T17:00:00.000000Z',10.0,None),('2026-11-19T18:01:02.000000Z',600.0,'initialGood')]:
+                db.execute('INSERT INTO samples(name,stamp,value,quality) VALUES(?,?,?,?)',('Coag_Pump_Run',stamp,v,q))
+        self.assertEqual(web.ml_per_min('Coag_Pump_Run','2026-11-19T18:00:59.000000Z',600.0),600.0)
+        self.assertEqual(web.ml_per_min('Coag_Pump_Run','2026-11-19T18:01:02.000000Z',600.0),10.0)
+        self.assertEqual(web.ml_per_min('Floc_Pump_Run','2026-11-20T00:00:00.000000Z',1.5),1.5)
+        # Litres: 10 ml/min held 61 min 2 s, then 600 ml/h (= 10 ml/min) to the end of the Vancouver day
+        start=datetime(2026,11,19,17,tzinfo=timezone.utc);end=datetime(2026,11,19,19,tzinfo=timezone.utc)
+        # Summary sends ml/min; 'initialGood' counts as a good reading
+        real=web.datetime
+        class Fixed(real):
+            @classmethod
+            def now(cls,tz=None):return real(2026,11,19,18,2,tzinfo=timezone.utc)
+        web.datetime=Fixed
+        try:item=web.summary()['extras']['Coag_Pump_Run']
+        finally:web.datetime=real
+        class Later(real):
+            @classmethod
+            def now(cls,tz=None):return real(2026,11,19,20,tzinfo=timezone.utc)
+        web.datetime=Later
+        try:used=web.chemical_usage(start,end,web.ZoneInfo('America/Vancouver'))['Coag_Pump_Run']
+        finally:web.datetime=real
+        self.assertAlmostEqual(sum(used.values()),10*120/1000)
+        self.assertEqual((item['status'],item['value'],item['raw_value'],item['raw_unit']),('current',10.0,600.0,'ml/h'))
+        # Worksheet rows show the unit used at the time
+        q={'tag':['Coag_Pump_Run'],'from':[web.iso(start)],'to':[web.iso(end)]}
+        rows=web.report_csv(q)[1].decode('utf-8-sig').splitlines()[1:]
+        self.assertEqual([r.split(',')[-1] for r in rows],['ml/min','ml/h'])
 
     def test_excel_report(self):
         import zipfile

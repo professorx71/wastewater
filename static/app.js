@@ -14,6 +14,7 @@ const VIEW_PERMS={settings:'settings',audit:'audit',reports:'export'};
 const can=p=>perms.has(p);
 // Discharge flow display unit, remembered per browser. The server sends L/min (raw US gal/min x 3.78541).
 const GAL_PER_L=1/3.78541;
+let doseUnit='ml/min';try{if(localStorage.getItem('ww.doseUnit')==='ml/h')doseUnit='ml/h'}catch{}
 let flowUnit='L/min';try{if(localStorage.getItem('ww.flowUnit')==='gal/min')flowUnit='gal/min'}catch{}
 const flowValue=v=>v==null?v:(flowUnit==='gal/min'?v*GAL_PER_L:v);
 const unitFor=(key,unit)=>key==='FLOW_RATE'?flowUnit:unit;
@@ -39,7 +40,11 @@ function drawCards(){
  const set=(id,key,unit='')=>{const t=item(key);$(id).textContent=(t.status==='current'&&t.value!=null?fmt(t.value):'--.--')+(unit?' '+unit:'')};
  set('tankPh','pH_Reading');set('tankLevel','EQ_Tank_Level_Ft');{const t=item('FLOW_RATE');$('diagramFlow').textContent=(t.status==='current'&&t.value!=null?fmt(flowValue(t.value)):'--.--')+' '+flowUnit}
  {const ex=summaryData.extras||{};const show=(id,tag,unit,dec)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=(ok?Number(r.value).toFixed(dec):'--.'+'-'.repeat(dec))+' '+unit;el.classList.toggle('live',ok);el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.stamp?' · '+local(r.stamp):''}`};
-  show('rakeSpeed','Rake_Speed_VFD','Hz',1);show('coagRate','Coag_Pump_Rate_Percent','%',1);show('coagRun','Coag_Pump_Run','ml/min',2);show('flocRate','Floc_Pump_Rate_Percent','%',1);show('flocRun','Floc_Pump_Run','ml/min',2);
+  // Dosing run rates arrive in ml/min (the server converts PLC ml/h); shown in the unit picked here.
+  const dose=(id,tag)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=ok?(doseUnit==='ml/h'?(r.value*60).toFixed(1):Number(r.value).toFixed(2)):'--.--';el.classList.toggle('live',ok);
+   el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.raw_value!=null?' · PLC value '+Number(r.raw_value).toFixed(2)+' '+r.raw_unit:''}${r.stamp?' · '+local(r.stamp):''}`};
+  document.querySelectorAll('[data-dose-unit]').forEach(s=>{if(s.value!==doseUnit)s.value=doseUnit;s.onchange=()=>{doseUnit=s.value==='ml/h'?'ml/h':'ml/min';try{localStorage.setItem('ww.doseUnit',doseUnit)}catch{};drawCards()}});
+  show('rakeSpeed','Rake_Speed_VFD','Hz',1);show('coagRate','Coag_Pump_Rate_Percent','%',1);dose('coagRun','Coag_Pump_Run');show('flocRate','Floc_Pump_Rate_Percent','%',1);dose('flocRun','Floc_Pump_Run');
   {const r=ex.SLUDGE_TANK_LEVEL||{};const known=r.status==='current'&&r.value!=null;const full=known&&Number(r.value)>=1;
    $('sludgeState').textContent=known?(full?'FULL':'NORMAL'):'--';$('sludgeTank').className='sludge-tank'+(full?' full':known?' normal':'');
    $('sludgeTank').title=`Sludge tank level switch (SLUDGE_TANK_LEVEL, PLC B3:0/13): ${known?(full?'FULL':'not full'):(r.status||'missing')}${r.stamp?' · since '+local(r.stamp):''}`;
