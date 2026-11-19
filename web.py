@@ -53,7 +53,7 @@ def summary():
                 item.update(stamp=row['stamp'],value=row['value'],status='current' if age<=180 or feed_live else 'stale')
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.13','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.14','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -92,8 +92,8 @@ def history(params,export=False):
 # Built with the standard library only, so the server needs no extra packages.
 import zipfile
 from xml.sax.saxutils import escape as _xml
-REPORT_TAGS=('EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li')
-RAW_UNITS={'pH_Reading':'pH','EQ_Tank_Level_Ft':'ft','FLOW_RATE':'US gal/min','Total_Flow_Li':'L'}
+REPORT_TAGS=('EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li','Rake_Speed_VFD')
+RAW_UNITS={'pH_Reading':'pH','EQ_Tank_Level_Ft':'ft','FLOW_RATE':'US gal/min','Total_Flow_Li':'L','Rake_Speed_VFD':'Hz'}
 _XL_EPOCH=datetime(1899,12,30)
 # Cell styles: 0 normal, 1 date-time, 2 two decimals, 3 bold, 4 date
 _XL_STYLES=('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -634,6 +634,9 @@ def application(env,start_response):
             if path in ('/api/history','/api/export'):
                 if not can(role,'export' if path.endswith('export') else 'view'):return send('403 Forbidden',{'error':'Not permitted'})
                 query=parse_qs(env.get('QUERY_STRING',''))
+                if path=='/api/export' and 'tag' in query and query.get('format',[''])[0]=='csv':
+                    fname,data=report_csv(query)
+                    return send('200 OK',data,'text/csv; charset=utf-8',[('Content-Disposition',f'attachment; filename="{fname}"')])
                 if path=='/api/export' and 'tag' in query:
                     fname,data=report_xlsx(query)
                     return send('200 OK',data,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',[('Content-Disposition',f'attachment; filename="{fname}"')])
@@ -837,6 +840,26 @@ def check_conditions(conn,cfg,readings,now):
     return out
 
 CONDITION_SUBJECTS={'data':'Wastewater ALERT: no new data','level':'Wastewater EQ tank HIGH level alarm','flow':'Wastewater NO DISCHARGE FLOW alarm'}
+
+def report_csv(params):
+    """CSV download (Reports page) of the raw readings for one tag or 'all'. Returns (filename, bytes)."""
+    choice=params.get('tag',['all'])[0]
+    if choice!='all' and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
+    names=REPORT_TAGS if choice=='all' else (choice,)
+    start,end=window(params,REPORT_MAX_DAYS)
+    zone=ZoneInfo('America/Vancouver')
+    out=io.StringIO(newline='');writer=csv.writer(out)
+    writer.writerow(['Tag','Timestamp UTC','Timestamp America/Vancouver','Raw Value','Unit Of Measure'])
+    db=database()
+    try:
+        for name in names:
+            for stamp,value in db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? ORDER BY stamp',(name,iso(start),iso(end))):
+                t=parse(stamp)
+                writer.writerow([name,t.strftime('%Y-%m-%d %H:%M:%S'),t.astimezone(zone).strftime('%Y-%m-%d %H:%M:%S'),'' if value is None else value,RAW_UNITS[name]])
+    finally:db.close()
+    local_start=start.astimezone(zone).date();local_end=(end.astimezone(zone)-timedelta(microseconds=1)).date()
+    return f'wastewater-{choice}-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.csv',out.getvalue().encode('utf-8-sig')
+
 
 def period_report(start,end,data_tags):
     """Excel report for Vancouver dates start..end inclusive, for email attachments."""
