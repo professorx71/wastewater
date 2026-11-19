@@ -23,7 +23,7 @@ async function api(path,opts={}){const response=await fetch(path,{cache:'no-stor
 function ageText(stamp){if(!stamp)return 'No readings';const s=Math.max(0,Math.round((Date.now()+clockOffset-Date.parse(stamp))/1000));return 'Updated '+(s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min')+' ago'}
 function tickAges(){document.querySelectorAll('[data-stamp]').forEach(el=>el.textContent=ageText(el.dataset.stamp))}
 function escapeHTML(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function view(name){if(VIEW_PERMS[name]&&!can(VIEW_PERMS[name]))name='overview';document.querySelectorAll('.view').forEach(n=>n.hidden=n.id!==name);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('selected',n.dataset.view===name));if(name==='events')loadEvents();if(name==='audit')loadAudit();if(name==='settings')loadSettings();if(name==='trends')loadHistory()}
+function view(name){if(VIEW_PERMS[name]&&!can(VIEW_PERMS[name]))name='overview';document.querySelectorAll('.view').forEach(n=>n.hidden=n.id!==name);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('selected',n.dataset.view===name));if(name==='events'){loadEvents();loadPickups()}if(name==='audit')loadAudit();if(name==='settings')loadSettings();if(name==='trends')loadHistory()}
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>view(b.dataset.view)));
 function drawCards(){
  if(!summaryData)return;
@@ -43,7 +43,13 @@ function drawCards(){
   {const r=ex.SLUDGE_TANK_LEVEL||{};const known=r.status==='current'&&r.value!=null;const full=known&&Number(r.value)>=1;
    $('sludgeState').textContent=known?(full?'FULL':'NORMAL'):'--';$('sludgeTank').className='sludge-tank'+(full?' full':known?' normal':'');
    $('sludgeTank').title=`Sludge tank level switch (SLUDGE_TANK_LEVEL, PLC B3:0/13): ${known?(full?'FULL':'not full'):(r.status||'missing')}${r.stamp?' · since '+local(r.stamp):''}`;
-   $('sludgeRibbon').hidden=!full;if(full)$('sludgeRibbon').textContent=`⚠ SLUDGE TANK FULL${r.stamp?' since '+local(r.stamp):''} · arrange a sludge pickup`}}
+   $('sludgeRibbon').hidden=!full;
+   const pump=(id,tag)=>{const r=ex[tag]||{};const known=r.status==='current'&&r.value!=null;const on=known&&Number(r.value)!==0;
+    for(const el of [$(id),$(id+'Pill')]){el.classList.toggle('on',on);el.classList.toggle('off',known&&!on);el.title=`${r.label||tag} (${tag}): ${known?(on?'RUNNING':'OFF'):(r.status||'missing')}${r.stamp?' · since '+local(r.stamp):''}`}
+    $(id+'Pill').textContent=known?(on?'● RUNNING':'OFF'):'--'};
+   pump('sumpPump','SUMP_PUMP_STATUS');pump('mixerPump','Mixer_Pump_Staus');
+   {const last=summaryData.last_pickup,every=summaryData.pickup_every_days||3;$('lastPickup').textContent=last?local(last):'none logged';
+    const due=last?Date.parse(last)+every*864e5:null;$('nextPickup').textContent=due?local(due):'—';$('pickupMask').classList.toggle('overdue',!!due&&Date.now()+clockOffset>due)}if(full)$('sludgeRibbon').textContent=`⚠ SLUDGE TANK FULL${r.stamp?' since '+local(r.stamp):''} · arrange a sludge pickup`}}
  const ph=item('pH_Reading');const limits=summaryData.limits||{low:5.8,high:9};const banner=$('banner');banner.className='banner';
  const allCurrent=summaryData.tags.every(x=>x.status==='current');
  const outside=ph.status==='current'&&ph.value!=null&&(ph.value<limits.low||ph.value>limits.high);
@@ -116,7 +122,7 @@ $('saveAdmin').addEventListener('click',async()=>{
   setTimeout(()=>window.location.reload(),1500);
  }catch(e){accountMsg('Not changed: '+e.message)}});
 const RIGHT_ROLES=['Admin','Engineering','Operator','Guest'];
-const RIGHT_LABELS={export:'Download reports (Excel and CSV)',acknowledge:'Acknowledge alarms',settings:'View and change Settings (alarms, email reports)',audit:'View the Audit log'};
+const RIGHT_LABELS={pickup:'Log sludge pickups',export:'Download reports (Excel and CSV)',acknowledge:'Acknowledge alarms',settings:'View and change Settings (alarms, email reports)',audit:'View the Audit log'};
 const MIN_PW={Engineering:6,Operator:4,Guest:4};
 $('newRole').addEventListener('change',()=>{$('pwMin').textContent=MIN_PW[$('newRole').value]});
 $('saveOperator').addEventListener('click',async()=>{
@@ -134,6 +140,22 @@ $('disableOperator').addEventListener('click',async()=>{
  try{await postJSON('/api/accounts/operator/disable',{});accountMsg('Operator login turned off.',true);loadAccounts()}catch(e){accountMsg('Not changed: '+e.message)}});
 $('save').addEventListener('click',async()=>{const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));body.recipients=$('recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)});$('saveState').textContent='Settings saved to server.';loadSummary()}catch(e){$('saveState').textContent='Save failed: '+e.message}});
 function reportDownload(fmt){const a=$('from').value,b=$('to').value;if(!a||!b||a>b){alert('Choose a valid date range.');return}let days=(Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/86400000;if(days>91){alert('Maximum 92 inclusive days (one quarter)');return}window.location.href='/api/export?tag='+encodeURIComponent($('reportTag').value)+'&startDate='+encodeURIComponent(a)+'&endDate='+encodeURIComponent(b)+(fmt?'&format='+fmt:'')}
+const vanNow=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(Date.now()+clockOffset)).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`};
+const pickupMsg=(t,ok)=>{const el=$('pickupState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
+async function loadPickups(){
+ $('pickupForm').hidden=!can('pickup');$('pickupReport').hidden=!can('export');
+ const now=vanNow();$('pickupWhen').max=now;if(!$('pickupWhen').value)$('pickupWhen').value=now;if(!$('pickupMonth').value)$('pickupMonth').value=now.slice(0,7);$('pickupMonth').max=now.slice(0,7);
+ try{const d=await api('/api/pickups');const rows=d.rows||[];
+  $('pickupList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Pickup (Vancouver)</th><th>Days since previous</th><th>Logged by</th><th>Note</th><th>Action</th></tr></thead><tbody>${rows.map((r,i)=>{const prev=rows[i+1];const gap=prev?((Date.parse(r.picked_at)-Date.parse(prev.picked_at))/864e5).toFixed(1):'—';
+   return `<tr><td>${local(r.picked_at)}</td><td>${gap}</td><td>${escapeHTML(r.logged_by)}</td><td>${escapeHTML(r.note)||'—'}</td><td>${can('pickup')?`<button type="button" class="danger" data-pickup="${r.id}">Remove</button>`:'—'}</td></tr>`}).join('')||'<tr><td colspan="5">No sludge pickups logged yet.</td></tr>'}</tbody></table></div>`;
+  document.querySelectorAll('[data-pickup]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this pickup from the log? Use this only to fix a mistake.'))return;
+   try{await postJSON('/api/pickups/remove',{id:Number(b.dataset.pickup)});pickupMsg('Pickup removed.',true);loadPickups();loadSummary()}catch(e){pickupMsg('Not removed: '+e.message)}});
+ }catch(e){$('pickupList').textContent='Unable to load the pickup log: '+e.message}}
+$('logPickup').addEventListener('click',async()=>{const when=$('pickupWhen').value;if(!when){pickupMsg('Enter the pickup date and time.');return}
+ try{await postJSON('/api/pickups',{when,note:$('pickupNote').value});$('pickupNote').value='';$('pickupWhen').value=vanNow();pickupMsg(`Pickup logged for ${when.replace('T',' ')}.`,true);loadPickups();loadSummary()}catch(e){pickupMsg('Not logged: '+e.message)}});
+$('pickupExcel').addEventListener('click',()=>{const m=$('pickupMonth').value;const today=vanNow().slice(0,10);if(!m||m+'-01'>today){alert('Choose this month or an earlier month.');return}
+ const [y,mo]=m.split('-').map(Number);let end=`${m}-${String(new Date(Date.UTC(y,mo,0)).getUTCDate()).padStart(2,'0')}`;if(end>today)end=today;
+ window.location.href=`/api/export?tag=sludge&startDate=${m}-01&endDate=${end}`});
 $('export').addEventListener('click',()=>reportDownload(''));$('exportCsv').addEventListener('click',()=>reportDownload('csv'));
 // /switch refuses the current role so the browser re-prompts; a different login returns to '/'.
 $('switchUser').addEventListener('click',()=>{window.location.href='/switch?from='+encodeURIComponent(userName||userRole)});

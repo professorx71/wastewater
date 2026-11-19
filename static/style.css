@@ -18,3 +18,21 @@
 .sludge-tank.full{border:2px solid #ff5d57;background:#b3151d;color:#fff;box-shadow:0 0 0 4px rgba(255,93,87,.45),0 0 22px rgba(255,60,60,.9);animation:sludgeFlash 1s steps(1,end) infinite}
 @keyframes sludgeFlash{50%{background:#2b0508;color:#ffb8b5;box-shadow:none}}
 @media (prefers-reduced-motion:reduce){.sludge-ribbon,.sludge-tank.full{animation:none}}
+.pump-fan{position:absolute;width:3.5%;aspect-ratio:1;transform:translate(-50%,-50%);border-radius:50%;background:rgba(3,19,36,.6);border:2px solid #6b7c88}
+.pump-fan svg{display:block;width:100%;height:100%}
+.pump-fan .ring{fill:none;stroke:#6b7c88;stroke-width:1.2}.pump-fan .blade{fill:#7d8c96}.pump-fan .hub{fill:#cfd8de}
+.pump-fan.on{border-color:#4ade80;box-shadow:0 0 14px rgba(74,222,128,.85)}.pump-fan.on .blade{fill:#4ade80}.pump-fan.on .ring{stroke:#4ade80}
+.pump-fan.on svg{animation:pumpSpin 1.1s linear infinite}
+.pump-fan.off{border-color:#c7d0d6}.pump-fan.off .blade{fill:#c7d0d6}
+.pump-fan.transfer{left:21.9%;top:76%}.pump-fan.mixer{left:43.4%;top:74.6%}
+.pump-pill{position:absolute;top:93.3%;transform:translateX(-50%);min-width:6.2%;padding:2px 8px;border-radius:999px;border:1px solid #6b7c88;background:#081b28;color:#9fb3bf;font-weight:800;font-size:clamp(9px,.85vw,15px);text-align:center;white-space:nowrap}
+.pump-pill.transfer{left:22.2%}.pump-pill.mixer{left:42.6%}
+.pump-pill.on{border-color:#22c55e;background:#0b3d23;color:#6ef9b0;animation:pumpBlink 1.2s ease-in-out infinite}
+.pump-pill.off{color:#e2e8ec;border-color:#9aa5ad}
+@keyframes pumpSpin{to{transform:rotate(360deg)}}
+@keyframes pumpBlink{50%{box-shadow:0 0 12px rgba(74,222,128,.9);background:#14532d}}
+@media (prefers-reduced-motion:reduce){.pump-fan.on svg,.pump-pill.on{animation:none}}
+.pickup-mask{gap:2px;line-height:1.25}.pickup-mask small{font-size:clamp(8px,.7vw,12px);font-weight:800;letter-spacing:.05em;color:#9fb3bf}
+.pickup-mask span{font-size:clamp(9px,.82vw,14px)}.pickup-mask b{color:#6ef9b0}.pickup-mask.overdue #nextPickup{color:#ff8a85}
+.pickup-form{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;margin:10px 0}.pickup-form[hidden]{display:none}.pickup-form label{display:flex;flex-direction:column;gap:4px}.pickup-form .grow{flex:1 1 240px}
+.ok-text{color:#6ef9b0}.err-text{color:#ffb8b5}

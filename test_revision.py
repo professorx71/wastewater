@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.21'
+        assert s['revision']=='1.2.22'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -102,6 +102,53 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(rows[1:],['2026-11-17,0.60,1.44','2026-11-18,0.00,1.44','Total,0.60,2.88'])
         book=zipfile.ZipFile(io.BytesIO(web.report_xlsx(q)[1])).read('xl/workbook.xml').decode()
         self.assertEqual(re.findall(r'<sheet name="([^"]+)"',book),['Chemical Usage','Coag_Pump_Run','Floc_Pump_Run'])
+
+    def test_sludge_pickup_log_and_report(self):
+        import zipfile
+        web.OP_AUTH=Path(self.tmp.name)/'operator.json'
+        self._login(web.AUTH,'admin','admin-pass');self._login(web.OP_AUTH,'op','op-pass')
+        zone=web.ZoneInfo('America/Vancouver');now=datetime.now(zone).replace(second=0,microsecond=0)
+        day=now-timedelta(days=3)
+        at=lambda h,m=0:day.replace(hour=h,minute=m)
+        # Tank FULL 08:00, still full until the 11:30 pickup empties it (bit back to 0 at 11:40)
+        with sqlite3.connect(web.DB) as db:
+            for t,v in [(at(6),0.0),(at(8),1.0),(at(9),1.0),(at(11,40),0.0),(at(20),1.0)]:
+                db.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('SLUDGE_TANK_LEVEL',web.iso(t),v))
+        A=('admin','admin-pass');O=('op','op-pass')
+        # Operator may log pickups by default; Guest may not
+        self.assertIn('pickup',json.loads(self.call('GET','/api/summary',*O)[1])['permissions'])
+        when=lambda t:t.strftime('%Y-%m-%dT%H:%M')
+        self.assertEqual(self.call('POST','/api/pickups',*O,{'when':when(at(11,30)),'note':'Truck 7'})[0],200)
+        self.assertEqual(self.call('POST','/api/pickups',*O,{'when':when(at(11,30))})[0],400)          # duplicate
+        self.assertEqual(self.call('POST','/api/pickups',*O,{'when':when(now+timedelta(hours=2))})[0],400)  # future
+        self.assertEqual(self.call('POST','/api/pickups',*O,{'when':'yesterday'})[0],400)
+        self.assertEqual(self.call('POST','/api/accounts/user',*A,{'role':'Guest','username':'g','password':'gst1'})[0],200)
+        self.assertEqual(self.call('POST','/api/pickups','g','gst1',{'when':when(at(12))})[0],403)
+        rows=json.loads(self.call('GET','/api/pickups','g','gst1')[1])['rows']
+        self.assertEqual([(r['note'],r['logged_by']) for r in rows],[('Truck 7','op (Operator)')])
+        self.assertEqual(json.loads(self.call('GET','/api/summary',*O)[1])['last_pickup'],rows[0]['picked_at'])
+        # Report: pickup 3.5 h after FULL; the 20:00 FULL alarm is not picked up yet
+        q={'tag':['sludge'],'startDate':[day.date().isoformat()],'endDate':[now.date().isoformat()]}
+        csv_rows=web.report_csv(q)[1].decode('utf-8-sig').splitlines()
+        self.assertEqual(csv_rows[1],f"{at(11,30):%Y-%m-%d %H:%M},{at(8):%Y-%m-%d %H:%M},3.50,,op (Operator),Truck 7")
+        pickups,alarms=web.sludge_analysis(*web.window(q,92))
+        self.assertEqual([(a['full_from'],a['picked']) for a in alarms],[(at(8).astimezone(timezone.utc),at(11,30).astimezone(timezone.utc)),(at(20).astimezone(timezone.utc),None)])
+        book=zipfile.ZipFile(io.BytesIO(web.report_xlsx(q)[1]))
+        self.assertEqual(re.findall(r'<sheet name="([^"]+)"',book.read('xl/workbook.xml').decode()),['Sludge Pickups','SLUDGE_TANK_LEVEL'])
+        self.assertIn('Not picked up yet',book.read('xl/worksheets/sheet1.xml').decode())
+        # Removing a pickup is audited
+        self.assertEqual(self.call('POST','/api/pickups/remove',*O,{'id':rows[0]['id']})[0],200)
+        with web.appdb() as conn:
+            acts=[r['action'] for r in conn.execute('SELECT action FROM audit')]
+        self.assertIn('Sludge pickup logged',acts);self.assertIn('Sludge pickup removed',acts)
+        # Rights saved before the pickup right existed still give Operator the pickup right
+        with web.appdb() as conn:
+            conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('role_permissions',?)",(json.dumps({'Engineering':['audit'],'Operator':['export'],'Guest':[]}),))
+        self.assertEqual(sorted(web.role_permissions()['Operator']),['export','pickup','view'])
+        self.assertEqual(sorted(web.role_permissions()['Guest']),['view'])
+        # ...and once the Admin saves rights without it, it is off
+        self.assertEqual(self.call('POST','/api/accounts/permissions',*A,{'Engineering':['audit'],'Operator':['export'],'Guest':[]})[0],200)
+        self.assertEqual(sorted(web.role_permissions()['Operator']),['export','view'])
 
     def test_excel_report(self):
         import zipfile

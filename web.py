@@ -12,7 +12,9 @@ TAGS={'pH_Reading':('EQ pH','pH',1), 'EQ_Tank_Level_Ft':('EQ tank level','ft',1)
 DIAGRAM_TAGS={'Rake_Speed_VFD':('Rake motor speed','Hz'),
               'Coag_Pump_Rate_Percent':('Coagulant pump rate','%'),'Coag_Pump_Run':('Coagulant pump run','ml/min'),
               'Floc_Pump_Rate_Percent':('Flocculant pump rate','%'),'Floc_Pump_Run':('Flocculant pump run','ml/min'),
-              'SLUDGE_TANK_LEVEL':('Sludge tank full (PLC B3:0/13, 1 = full)','')}
+              'SLUDGE_TANK_LEVEL':('Sludge tank full (PLC B3:0/13, 1 = full)',''),
+              'SUMP_PUMP_STATUS':('Electric transfer pump / sump pump running (PLC B3:1/9, 1 = on)',''),
+              'Mixer_Pump_Staus':('Electric circulation pump / mixer pump running (PLC N142:0, not 0 = on)','')}
 UTC=timezone.utc
 
 def iso(t): return t.astimezone(UTC).isoformat(timespec='microseconds').replace('+00:00','Z')
@@ -56,7 +58,7 @@ def summary():
                 item.update(stamp=row['stamp'],value=row['value'],status='current' if age<=180 or feed_live else 'stale')
                 if row['value'] is None or (row['quality'] and row['quality'].lower()!='good'): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.21','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.22','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -98,7 +100,8 @@ from xml.sax.saxutils import escape as _xml
 REPORT_TAGS=('EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li','Rake_Speed_VFD',
              'Coag_Pump_Rate_Percent','Coag_Pump_Run','Floc_Pump_Rate_Percent','Floc_Pump_Run')
 RAW_UNITS={'pH_Reading':'pH','EQ_Tank_Level_Ft':'ft','FLOW_RATE':'US gal/min','Total_Flow_Li':'L','Rake_Speed_VFD':'Hz',
-           'Coag_Pump_Rate_Percent':'%','Coag_Pump_Run':'ml/min','Floc_Pump_Rate_Percent':'%','Floc_Pump_Run':'ml/min'}
+           'Coag_Pump_Rate_Percent':'%','Coag_Pump_Run':'ml/min','Floc_Pump_Rate_Percent':'%','Floc_Pump_Run':'ml/min',
+           'SLUDGE_TANK_LEVEL':'1 = full'}
 _XL_EPOCH=datetime(1899,12,30)
 # Cell styles: 0 normal, 1 date-time, 2 two decimals, 3 bold, 4 date
 _XL_STYLES=('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -234,15 +237,89 @@ def chemical_rows(start,end,zone,date_range):
                'Days without data show 0.']]
     return rows
 
+SLUDGE_TAG='SLUDGE_TANK_LEVEL'
+PICKUP_EVERY_DAYS=3   # matches "Pickup every 3 days" on the process picture
+
+def sludge_full_periods(start,end):
+    """FULL periods (bit = 1) of the sludge tank that overlap start..end, as [(full_from, cleared_at or None)].
+    A period that began before the range keeps its real start time."""
+    db=database()
+    try:
+        empty=db.execute('SELECT stamp FROM samples WHERE name=? AND stamp<? AND value<1 ORDER BY stamp DESC LIMIT 1',(SLUDGE_TAG,iso(start))).fetchone()
+        rows=db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? AND value IS NOT NULL ORDER BY stamp',
+                        (SLUDGE_TAG,empty[0] if empty else iso(start-timedelta(days=30)),iso(end))).fetchall()
+    finally:db.close()
+    periods=[];since=None
+    for stamp,value in rows:
+        if value>=1 and since is None:since=parse(stamp)
+        elif value<1 and since is not None:periods.append((since,parse(stamp)));since=None
+    if since is not None:periods.append((since,None))
+    return [(a,b) for a,b in periods if b is None or b>start]
+
+def pickup_records(conn,start=None,end=None):
+    q='SELECT * FROM sludge_pickups';args=()
+    if start is not None:q+=' WHERE picked_at>=? AND picked_at<?';args=(iso(start),iso(end))
+    return [dict(r) for r in conn.execute(q+' ORDER BY picked_at',args)]
+
+def sludge_analysis(start,end):
+    """Pickups in the range matched to the FULL alarm that came before each one."""
+    with appdb() as conn:
+        pickups=pickup_records(conn,start,end)
+        before=conn.execute('SELECT picked_at FROM sludge_pickups WHERE picked_at<? ORDER BY picked_at DESC LIMIT 1',(iso(start),)).fetchone()
+    periods=sludge_full_periods(start,end)
+    prev=parse(before[0]) if before else None
+    out=[]
+    for p in pickups:
+        t=parse(p['picked_at'])
+        # the FULL alarm this pickup answered: the latest one that started before it and after the previous pickup
+        full=max((a for a,_ in periods if a<=t and (prev is None or a>prev)),default=None)
+        if full is None and prev is None:full=max((a for a,_ in sludge_full_periods(t-timedelta(days=30),t) if a<=t),default=None)
+        out.append(dict(p,at=t,full_since=full,wait_h=(t-full).total_seconds()/3600 if full else None,
+                        since_prev_d=(t-prev).total_seconds()/86400 if prev else None))
+        prev=t
+    alarms=[]
+    for a,b in periods:
+        if a>=end:continue
+        picked=next((x['at'] for x in out if x['at']>=a),None)
+        alarms.append(dict(full_from=a,cleared=b,picked=picked))
+    return out,alarms
+
+def sludge_rows(start,end,zone,date_range):
+    B=lambda t:(t,3);num=lambda v:'' if v is None else (round(v,2),2)
+    L=lambda t:t.astimezone(zone) if t else ''
+    pickups,alarms=sludge_analysis(start,end)
+    waits=[p['wait_h'] for p in pickups if p['wait_h'] is not None]
+    gaps=[p['since_prev_d'] for p in pickups if p['since_prev_d'] is not None]
+    rows=[[B('Sludge pickups and sludge tank FULL alarms')],['Tag',f'{SLUDGE_TAG} (PLC B3:0/13, 1 = full)'],
+          ['Date range (America/Vancouver)',date_range],[],
+          [B('Summary'),B('Value')],['Pickups logged',len(pickups)],['Sludge tank FULL alarms',len(alarms)],
+          ['Average hours from FULL to pickup',num(sum(waits)/len(waits) if waits else None)],
+          ['Longest hours from FULL to pickup',num(max(waits) if waits else None)],
+          ['Average days between pickups',num(sum(gaps)/len(gaps) if gaps else None)],
+          ['FULL alarms not picked up yet',sum(1 for a in alarms if a['picked'] is None)],[],
+          [B('Pickup (America/Vancouver)'),B('Tank FULL since'),B('Hours FULL to pickup'),B('Days since previous pickup'),B('Logged by'),B('Note')]]
+    rows+=[[L(p['at']),L(p['full_since']),num(p['wait_h']),num(p['since_prev_d']),p['logged_by'],p['note']] for p in pickups]
+    if not pickups:rows.append(['No pickups logged in this date range.'])
+    rows+=[[],[B('Tank FULL from'),B('FULL cleared (bit back to 0)'),B('Hours FULL'),B('Picked up at'),B('Hours FULL to pickup')]]
+    for a in alarms:
+        upto=a['cleared'] or min(end,datetime.now(UTC))
+        rows.append([L(a['full_from']),L(a['cleared']) or 'Still FULL',num((upto-a['full_from']).total_seconds()/3600),
+                     L(a['picked']) or 'Not picked up yet',num((a['picked']-a['full_from']).total_seconds()/3600 if a['picked'] else None)])
+    if not alarms:rows.append(['No sludge tank FULL alarms in this date range.'])
+    rows+=[[],['Pickups are logged by operators on the Alarms page (date and time of the pickup). Tank FULL since is the start of the latest '
+               'FULL alarm before the pickup and after the previous pickup; blank if the tank was not reported FULL first. '
+               'FULL alarms come from the PLC level switch SLUDGE_TANK_LEVEL (B3:0/13) via the Ewon.']]
+    return rows
+
 def report_xlsx(params,data_tags=None):
     """Excel report for one tag or 'all'. Returns (filename, bytes).
     Summary: Total_Flow_Li end-of-day (last valid) reading of each day, the usage since the
     previous EOD, and monthly and quarterly totals. data_tags overrides which tag worksheets
     are included (emails use fewer to keep attachments small)."""
     choice=params.get('tag',['all'])[0]
-    if choice not in ('all','chemical') and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
+    if choice not in ('all','chemical','sludge') and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
     names=(tuple(data_tags) if data_tags is not None else REPORT_TAGS if choice=='all'
-           else tuple(t for t,_ in CHEMICAL_TAGS) if choice=='chemical' else (choice,))
+           else tuple(t for t,_ in CHEMICAL_TAGS) if choice=='chemical' else (SLUDGE_TAG,) if choice=='sludge' else (choice,))
     start,end=window(params,REPORT_MAX_DAYS)
     zone=ZoneInfo('America/Vancouver')
     B=lambda t:(t,3)
@@ -311,7 +388,8 @@ def report_xlsx(params,data_tags=None):
                        'Daily Usage = EOD value minus the previous EOD value (litres that went through the meter that day); '
                        'monthly and quarterly usage add up the daily usage. Only days inside the selected date range are counted.']]
     chem=[('Chemical Usage',chemical_rows(start,end,zone,date_range),(34,22,22))]
-    sheets=(chem if choice=='chemical' else [('Summary',summary_rows,(34,22,20,30,60))]+(chem if choice=='all' and data_tags is None else []))
+    sheets=(chem if choice=='chemical' else [('Sludge Pickups',sludge_rows(start,end,zone,date_range),(30,26,22,24,22,40))] if choice=='sludge'
+            else [('Summary',summary_rows,(34,22,20,30,60))]+(chem if choice=='all' and data_tags is None else []))
     sheets+=[(n,readings(n),(22,30,14,18)) for n in names]
     fname=f'wastewater-report-{choice}-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.xlsx'
     return fname,xlsx(sheets)
@@ -360,6 +438,8 @@ def appdb():
         hash TEXT NOT NULL, updated TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, role TEXT NOT NULL, salt TEXT NOT NULL,
         iterations INTEGER NOT NULL, hash TEXT NOT NULL, updated TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS sludge_pickups (id INTEGER PRIMARY KEY AUTOINCREMENT, picked_at TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '', logged_by TEXT NOT NULL, logged_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS login_failures (client TEXT NOT NULL, attempt TEXT NOT NULL, stamp TEXT NOT NULL,
         PRIMARY KEY (client, attempt));''')
     conn.commit()
@@ -605,10 +685,12 @@ def actor(role,username):return f'{username} ({role})'
 # Role permissions, enforced server-side for every endpoint. Admin always has everything,
 # including managing logins and these rights. For Engineering, Operator and Guest the Admin
 # chooses the rights in Settings; every role can always view readings, trends and alarms.
-ADMIN_PERMISSIONS=frozenset({'view','export','acknowledge','settings','audit','accounts'})
-PERMISSION_CHOICES=('export','acknowledge','settings','audit')
-DEFAULT_ROLE_PERMISSIONS={'Engineering':('export','acknowledge','settings','audit'),
-                          'Operator':('export','acknowledge'),'Guest':()}
+ADMIN_PERMISSIONS=frozenset({'view','export','acknowledge','pickup','settings','audit','accounts'})
+PERMISSION_CHOICES=('export','acknowledge','pickup','settings','audit')
+DEFAULT_ROLE_PERMISSIONS={'Engineering':('export','acknowledge','pickup','settings','audit'),
+                          'Operator':('export','acknowledge','pickup'),'Guest':()}
+# Rights saved before a choice existed get that choice's default (saves record which choices they knew).
+_FIRST_CHOICES=('export','acknowledge','settings','audit')
 def role_permissions(conn=None):
     saved={}
     try:
@@ -619,10 +701,14 @@ def role_permissions(conn=None):
     except (OSError,sqlite3.Error,ValueError):saved={}
     if not isinstance(saved,dict):saved={}
     out={'Admin':ADMIN_PERMISSIONS}
+    known=saved.get('_choices',_FIRST_CHOICES) if role_saved(saved) else ()
     for role in USER_ROLES:
         chosen=saved.get(role,DEFAULT_ROLE_PERMISSIONS[role])
+        if not isinstance(chosen,list):chosen=DEFAULT_ROLE_PERMISSIONS[role]
+        chosen=set(chosen)|{p for p in DEFAULT_ROLE_PERMISSIONS[role] if p not in known and role in saved}
         out[role]=frozenset({'view'}|{p for p in chosen if p in PERMISSION_CHOICES})
     return out
+def role_saved(saved):return any(r in saved for r in USER_ROLES)
 def can(role,permission): return permission in role_permissions().get(role,())
 
 def audit(conn,actor,action,detail):
@@ -657,6 +743,20 @@ def val_settings(data,old):
 
 def records(conn,table,limit=200):
     return [dict(r) for r in conn.execute('SELECT * FROM '+table+' ORDER BY id DESC LIMIT ?', (min(limit,500),))]
+
+def save_pickup(conn,when,note,who):
+    """Log a sludge pickup. when = 'YYYY-MM-DDTHH:MM' in Vancouver time (from the form)."""
+    if not isinstance(when,str) or len(when)!=16:raise AccountError('Enter the pickup date and time')
+    try:local=datetime.strptime(when,'%Y-%m-%dT%H:%M').replace(tzinfo=ZoneInfo('America/Vancouver'))
+    except ValueError:raise AccountError('Enter the pickup date and time')
+    t=local.astimezone(UTC);now=datetime.now(UTC)
+    if t>now+timedelta(minutes=10):raise AccountError('The pickup time is in the future')
+    if t<now-timedelta(days=366):raise AccountError('The pickup time is more than a year ago')
+    if not isinstance(note,str) or len(note.strip())>200:raise AccountError('Note: up to 200 characters')
+    note=' '.join(note.split())
+    if conn.execute('SELECT 1 FROM sludge_pickups WHERE picked_at=?',(iso(t),)).fetchone():raise AccountError('That pickup is already logged')
+    conn.execute('INSERT INTO sludge_pickups(picked_at,note,logged_by,logged_at) VALUES (?,?,?,?)',(iso(t),note,who,iso(now)))
+    return t,note
 
 def handle_post(path,env,role,conn,user=''):
     who=actor(role,user)
@@ -706,7 +806,7 @@ def handle_post(path,env,role,conn,user=''):
                 chosen=body.get(role_name)
                 if not isinstance(chosen,list) or any(p not in PERMISSION_CHOICES for p in chosen):raise ValueError('Invalid permissions')
                 new[role_name]=sorted(set(chosen))
-            conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('role_permissions',?)",(json.dumps(new),))
+            conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('role_permissions',?)",(json.dumps({**new,'_choices':list(PERMISSION_CHOICES)}),))
             audit(conn,who,'Role rights changed','; '.join(f"{r}: {', '.join(p) or 'view only'}" for r,p in new.items()));conn.commit()
             return '200 OK',{'permissions':new}
         if path=='/api/accounts/operator/remove':
@@ -718,6 +818,20 @@ def handle_post(path,env,role,conn,user=''):
             disable_operator(conn);audit(conn,who,'Operator login disabled','all Operator logins');conn.commit()
             return '200 OK',{'disabled':'operator'}
         return '404 Not Found',{'error':'Not found'}
+    if path=='/api/pickups':
+        if not can(role,'pickup'):return '403 Forbidden',{'error':'Not permitted to log sludge pickups'}
+        t,note=save_pickup(conn,body.get('when'),body.get('note',''),who)
+        audit(conn,who,'Sludge pickup logged',f"{t.astimezone(ZoneInfo('America/Vancouver')):%Y-%m-%d %H:%M}"+(' · '+note if note else ''));conn.commit()
+        return '200 OK',{'picked_at':iso(t)}
+    if path=='/api/pickups/remove':
+        if not can(role,'pickup'):return '403 Forbidden',{'error':'Not permitted to change sludge pickups'}
+        pid=body.get('id')
+        if type(pid)!=int or pid<1:raise ValueError('Invalid pickup ID')
+        row=conn.execute('SELECT picked_at FROM sludge_pickups WHERE id=?',(pid,)).fetchone()
+        if not row:return '404 Not Found',{'error':'Pickup not found'}
+        conn.execute('DELETE FROM sludge_pickups WHERE id=?',(pid,))
+        audit(conn,who,'Sludge pickup removed',f"{parse(row['picked_at']).astimezone(ZoneInfo('America/Vancouver')):%Y-%m-%d %H:%M}");conn.commit()
+        return '200 OK',{'removed':pid}
     if path=='/api/ack':
         if not can(role,'acknowledge'):return '403 Forbidden',{'error':'Not permitted'}
         eid=body.get('id')
@@ -759,6 +873,8 @@ def application(env,start_response):
                     cfg=settings(conn);d['limits']={'low':cfg['ph_low'],'high':cfg['ph_high'],'enabled':cfg['alarms_enabled'],'confirm_samples':cfg['alarm_confirm_samples'],
                                                     'stale_minutes':cfg['stale_alert_minutes']}
                     d['active_alarms']=[dict(r) for r in conn.execute("SELECT id,stamp,kind,detail,state FROM events WHERE state IN ('open','acknowledged') ORDER BY id DESC LIMIT 10")]
+                    last=conn.execute('SELECT picked_at FROM sludge_pickups ORDER BY picked_at DESC LIMIT 1').fetchone()
+                    d['last_pickup']=last[0] if last else None;d['pickup_every_days']=PICKUP_EVERY_DAYS
                 return send('200 OK',d)
             if path in ('/api/history','/api/export'):
                 if not can(role,'export' if path.endswith('export') else 'view'):return send('403 Forbidden',{'error':'Not permitted'})
@@ -779,6 +895,10 @@ def application(env,start_response):
             if path=='/api/accounts':
                 if not can(role,'accounts'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:return send('200 OK',account_summary(conn))
+            if path=='/api/pickups':
+                with appdb() as conn:
+                    rows=[dict(r) for r in conn.execute('SELECT * FROM sludge_pickups ORDER BY picked_at DESC LIMIT 100')]
+                return send('200 OK',{'rows':rows,'every_days':PICKUP_EVERY_DAYS})
             if path in ('/api/events','/api/audit'):
                 if not can(role,'audit' if path.endswith('audit') else 'view'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:return send('200 OK',{'rows':records(conn,'events' if path.endswith('events') else 'audit')})
@@ -973,7 +1093,7 @@ CONDITION_SUBJECTS={'data':'Wastewater ALERT: no new data','level':'Wastewater E
 def report_csv(params):
     """CSV download (Reports page) of the raw readings for one tag or 'all'. Returns (filename, bytes)."""
     choice=params.get('tag',['all'])[0]
-    if choice not in ('all','chemical') and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
+    if choice not in ('all','chemical','sludge') and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
     names=REPORT_TAGS if choice=='all' else (choice,)
     start,end=window(params,REPORT_MAX_DAYS)
     zone=ZoneInfo('America/Vancouver')
@@ -987,6 +1107,13 @@ def report_csv(params):
             writer.writerow([d.isoformat()]+[f'{used[t].get(d,0.0):.2f}' for t,_ in CHEMICAL_TAGS]);d+=timedelta(days=1)
         writer.writerow(['Total']+[f'{sum(used[t].values()):.2f}' for t,_ in CHEMICAL_TAGS])
         return f'wastewater-chemical-usage-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.csv',out.getvalue().encode('utf-8-sig')
+    if choice=='sludge':
+        f=lambda t:t.astimezone(zone).strftime('%Y-%m-%d %H:%M') if t else ''
+        writer.writerow(['Pickup (America/Vancouver)','Tank FULL since','Hours FULL to pickup','Days since previous pickup','Logged by','Note'])
+        for p in sludge_analysis(start,end)[0]:
+            writer.writerow([f(p['at']),f(p['full_since']),'' if p['wait_h'] is None else f"{p['wait_h']:.2f}",
+                             '' if p['since_prev_d'] is None else f"{p['since_prev_d']:.2f}",p['logged_by'],p['note']])
+        return f'wastewater-sludge-pickups-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.csv',out.getvalue().encode('utf-8-sig')
     writer.writerow(['Tag','Timestamp UTC','Timestamp America/Vancouver','Raw Value','Unit Of Measure'])
     db=database()
     try:
