@@ -279,4 +279,4 @@ $('toggleDiagram').onclick=()=>{const open=$('processPanel').classList.toggle('o
 $('openAlarms').onclick=()=>view('events');
 try{$('activeAlarms').open=localStorage.getItem('ww.alarmsOpen')==='1'}catch{}
 $('activeAlarms').addEventListener('toggle',()=>{try{localStorage.setItem('ww.alarmsOpen',$('activeAlarms').open?'1':'0')}catch{};if(summaryData)drawCards()});setInterval(tickAges,5000);
-loadSummary();setInterval(loadSummary,10000);setInterval(()=>{if(!$('trends').hidden)loadHistory()},30000);window.addEventListener('resize',()=>{if(historyData&&!$('trends').hidden)chartRows('historyCharts')});
+loadSummary();setInterval(loadSummary,5000);setInterval(()=>{if(!$('trends').hidden)loadHistory()},30000);window.addEventListener('resize',()=>{if(historyData&&!$('trends').hidden)chartRows('historyCharts')});
