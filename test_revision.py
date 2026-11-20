@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.28'
+        assert s['revision']=='1.2.29'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -626,6 +626,32 @@ class RevisionTests(unittest.TestCase):
             self.assertIn(f'name="{sheet}"',zipfile.ZipFile(io.BytesIO(data)).read('xl/workbook.xml').decode())
             code,data=self.call('GET','/api/export','admin','admin-pass',query=f'tag={tag}&startDate=2026-11-10&endDate=2026-11-10&format=csv')
             self.assertEqual(code,200,tag);self.assertTrue(data.decode('utf-8-sig').strip())
+
+    def _collector(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('collector',Path(__file__).parent/'collector'/'collector.py')
+        mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+        return mod
+
+    def test_collector_saves_every_tag_the_dashboard_uses(self):
+        # A tag missing from the collector's list is silently dropped (the SYSTEM_ENABLED circle stayed grey).
+        needed=set(web.TAGS)|set(web.DIAGRAM_TAGS)|{t for t,*_ in web.PLC_ALARMS}|{t for t,_ in web.PUMP_TAGS}|{t for _,t,_ in web.STOCK_CHEMS.values()}
+        missing=needed-set(self._collector().TAGS)
+        self.assertFalse(missing,f'Add these tags to TAGS in collector/collector.py: {sorted(missing)}')
+
+    def test_collector_save_page(self):
+        col=self._collector()
+        db=col.connect(Path(self.tmp.name)/'collector.sqlite3')
+        page={'success':True,'transactionId':42,'moreDataAvailable':False,'ewons':[
+            {'id':745123,'lastSynchroDate':'2026-11-20T18:00:00Z','tags':[
+                {'id':1,'name':'SYSTEM_ENABLED','history':[{'date':'2026-11-20T17:59:00Z','value':1,'quality':'good'}]},
+                {'id':2,'name':'NOT_A_DASHBOARD_TAG','history':[{'date':'2026-11-20T17:59:00Z','value':5}]}]},
+            {'id':999,'tags':[{'id':3,'name':'pH_Reading','history':[{'date':'2026-11-20T17:59:00Z','value':7}]}]}]}
+        self.assertEqual(col.save_page(db,page),1)
+        self.assertEqual(db.execute('SELECT name,value FROM samples').fetchall(),[('SYSTEM_ENABLED',1.0)])
+        self.assertEqual(db.execute("SELECT value FROM state WHERE key='cursor'").fetchone()[0],'42')
+        with self.assertRaises(ValueError):col.save_page(db,{'success':False})
+        db.close()
 
     def test_monthly_email_has_excel_attachment(self):
         web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'

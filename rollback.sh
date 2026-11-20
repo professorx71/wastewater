@@ -7,8 +7,9 @@ TIMER_WAS_ACTIVE=0
 if systemctl is-active --quiet pbf-wastewater-scheduler.timer; then TIMER_WAS_ACTIVE=1; fi
 systemctl stop pbf-wastewater-scheduler.timer || true
 cp -a "$BACKUP/web/." /opt/pbf-wastewater/web/
+if [ -f "$BACKUP/collector.py" ]; then cat "$BACKUP/collector.py" > /opt/pbf-wastewater/collector.py; echo 'Previous Talk2M collector restored.'; fi
 systemctl restart pbf-wastewater-web
 systemctl is-active --quiet pbf-wastewater-web
 if [ "$TIMER_WAS_ACTIVE" = 1 ]; then systemctl start pbf-wastewater-scheduler.timer; fi
 echo "Previous web code restored from $BACKUP"
-echo 'History database, metadata, email configuration and Talk2M collector were not overwritten.'
+echo 'History database, metadata, email configuration and Talk2M credentials were not overwritten.'
