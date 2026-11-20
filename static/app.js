@@ -24,7 +24,7 @@ async function api(path,opts={}){const response=await fetch(path,{cache:'no-stor
 function ageText(stamp){if(!stamp)return 'No readings';const s=Math.max(0,Math.round((Date.now()+clockOffset-Date.parse(stamp))/1000));return 'Updated '+(s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min')+' ago'}
 function tickAges(){document.querySelectorAll('[data-stamp]').forEach(el=>el.textContent=ageText(el.dataset.stamp))}
 function escapeHTML(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function view(name){if(VIEW_PERMS[name]&&!can(VIEW_PERMS[name]))name='overview';document.querySelectorAll('.view').forEach(n=>n.hidden=n.id!==name);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('selected',n.dataset.view===name));if(name==='events'){loadEvents();loadPickups();loadStock();loadShelves()}if(name==='audit'){loadAudit();loadCalibrations()}if(name==='settings')loadSettings();if(name==='trends')loadHistory()}
+function view(name){if(VIEW_PERMS[name]&&!can(VIEW_PERMS[name]))name='overview';document.querySelectorAll('.view').forEach(n=>n.hidden=n.id!==name);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('selected',n.dataset.view===name));if(name==='events'){loadEvents();loadShelves()}if(name==='reports'){loadPickups();loadPurchases();loadStock()}if(name==='audit'){loadAudit();loadCalibrations()}if(name==='settings')loadSettings();if(name==='trends')loadHistory()}
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>view(b.dataset.view)));
 function drawCards(){
  if(!summaryData)return;
@@ -110,9 +110,9 @@ async function loadEvents(){try{const data=await api('/api/events');$('eventlist
 async function loadAudit(){try{const data=await api('/api/audit');$('auditlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.actor)}</td><td>${escapeHTML(r.action)}</td><td>${escapeHTML(r.detail)}</td></tr>`).join('')||'<tr><td colspan="4">No audit entries.</td></tr>'}</tbody></table></div>`}catch(e){$('auditlist').textContent='Admin required or audit unavailable: '+e.message}}
 const KEYS=['ph_low','ph_high','alarms_enabled','email_enabled','email_recovery_enabled','alarm_confirm_samples','alarm_recovery_samples','alarm_on','alarm_off','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time',
  'stale_alert_enabled','stale_alert_minutes','level_alarm_enabled','level_high_ft','flow_alarm_enabled','flow_low_lpm','flow_low_minutes','quarterly_enabled','plc_alarms_enabled','cal_reminders_enabled','cal_ph_days','cal_level_days','cal_remind_days',
- 'stock_alarm_enabled','stock_low_coag_l','stock_low_floc_l','sms_enabled'];
+ 'stock_alarm_enabled','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l','sms_enabled'];
 const dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];$('alarmDays').innerHTML=dayNames.map((d,i)=>`<label><input type="checkbox" data-day="${i}"> ${d}</label>`).join('');
-async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('sms_recipients').value=(config.sms_recipients||[]).join('\n');$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input:not([data-fixed]),#settings textarea,#settings button').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
+async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('sms_recipients').value=(config.sms_recipients||[]).join('\n');document.querySelectorAll('[data-price]').forEach(x=>{const v=(config.chemical_prices||{})[x.dataset.price];x.value=v==null?'':v});$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input:not([data-fixed]),#settings textarea,#settings button').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
 // ---- Accounts and passwords (Admin only; server enforces the same rule) ----
 const postJSON=(path,body)=>fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d});
 function accountMsg(text,ok){const el=$('accountState');el.textContent=text;el.className=ok?'ok-text':'error-text'}
@@ -155,7 +155,7 @@ $('saveRights').addEventListener('click',async()=>{
 $('disableOperator').addEventListener('click',async()=>{
  if(!confirm('Turn off ALL Operator logins? No Operator will be able to sign in until you add one again.'))return;
  try{await postJSON('/api/accounts/operator/disable',{});accountMsg('Operator login turned off.',true);loadAccounts()}catch(e){accountMsg('Not changed: '+e.message)}});
-$('save').addEventListener('click',async()=>{const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));body.recipients=$('recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);body.sms_recipients=$('sms_recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)});$('saveState').textContent='Settings saved to server.';loadSummary()}catch(e){$('saveState').textContent='Save failed: '+e.message}});
+$('save').addEventListener('click',async()=>{const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));body.recipients=$('recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);body.sms_recipients=$('sms_recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);body.chemical_prices=Object.fromEntries(Array.from(document.querySelectorAll('[data-price]'),x=>[x.dataset.price,x.value===''?null:Number(x.value)]));try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)});$('saveState').textContent='Settings saved to server.';loadSummary()}catch(e){$('saveState').textContent='Save failed: '+e.message}});
 function reportDownload(fmt){const a=$('from').value,b=$('to').value;if(!a||!b||a>b){alert('Choose a valid date range.');return}let days=(Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/86400000;if(days>91){alert('Maximum 92 inclusive days (one quarter)');return}window.location.href='/api/export?tag='+encodeURIComponent($('reportTag').value)+'&startDate='+encodeURIComponent(a)+'&endDate='+encodeURIComponent(b)+(fmt?'&format='+fmt:'')}
 const vanNow=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(Date.now()+clockOffset)).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`};
 const pickupMsg=(t,ok)=>{const el=$('pickupState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
@@ -201,22 +201,58 @@ $('logCal').addEventListener('click',async()=>{const f=$('calFile').files[0];
  catch(e){calMsg('Not logged: '+e.message)}finally{btn.disabled=false}});
 $('calExcel').addEventListener('click',()=>{window.location.href='/api/export?tag=calibration'});
 $('calCsv').addEventListener('click',()=>{window.location.href='/api/export?tag=calibration&format=csv'});
-// ---- Chemical stock (Alarms page) ----
+// ---- Chemical stock and consumption (Reports page) ----
+let stockProducts={},stockLabels={};
+const GAL=3.785411784;
+const toLitres=(q,unit,key)=>unit==='L'?q:unit==='gal'?q*GAL:q*((stockProducts[key]||{}).container_l||0);
 const stockMsg=(t,ok)=>{const el=$('stockState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
 async function loadStock(){
- $('stockForm').hidden=!can('pickup');if(!$('stockWhen').value)$('stockWhen').value=vanNow();$('stockWhen').max=vanNow();
- try{const d=await api('/api/stock');const st=d.status||{},rows=d.rows||[];
-  $('stockCards').innerHTML=Object.values(st).map(s=>{if(s.litres==null)return `<div><b>${escapeHTML(s.label)}</b><span>No delivery or tank count logged yet</span></div>`;
-   const low=s.low_l>0&&s.litres<s.low_l;
-   return `<div class="${low?'overdue':'ok'}"><b>${escapeHTML(s.label)}: ${fmt(s.litres)} L${low?' — LOW':''}</b><span>Using about ${fmt(s.per_day)} L/day${s.days_left!=null?` · about ${Math.floor(s.days_left)} days left`:''}${s.low_l>0?` · low below ${fmt(s.low_l)} L`:''}</span><span>Since ${escapeHTML(local(s.since))}: start ${fmt(s.base)} L + delivered ${fmt(s.added)} L − used ${fmt(s.used)} L</span></div>`}).join('');
+ $('stockForm').hidden=!can('pickup');$('consReport').hidden=!can('export');if(!$('stockWhen').value)$('stockWhen').value=vanNow();$('stockWhen').max=vanNow();
+ if(!$('consYear').value)$('consYear').value=vanNow().slice(0,4);
+ try{const d=await api('/api/stock');const st=d.status||{},rows=d.rows||[];stockProducts=d.products||{};stockLabels=d.labels||{};
+  $('stockCards').innerHTML=Object.values(st).map(s=>{const head=`<b>${escapeHTML(s.name||s.label)}</b><span>${escapeHTML(s.container||'')} · Part # ${escapeHTML(s.part||'')}</span>`;
+   if(s.litres==null)return `<div>${head}<span>No delivery or tank count logged yet</span></div>`;
+   const low=s.low_l>0&&s.litres<s.low_l;const cont=s.container_l?s.litres/s.container_l:null;
+   return `<div class="${low?'overdue':'ok'}">${head}<b>${fmt(s.litres)} L${cont!=null?` (${fmt(cont)} ${s.container.includes('drum')?'drums':'pails'})`:''}${low?' — LOW':''}</b>`+
+    `<span>${s.per_day!=null?`Using about ${fmt(s.per_day)} L/day${s.days_left!=null?` · about ${Math.floor(s.days_left)} days left`:''}`:'No pump reading: usage shows at each tank count'}${s.low_l>0?` · low below ${fmt(s.low_l)} L`:''}</span>`+
+    `<span>Since ${escapeHTML(local(s.since))}: start ${fmt(s.base)} L + delivered ${fmt(s.added)} L${s.tag?` − pump used ${fmt(s.used)} L`:''}</span></div>`}).join('');
   $('stockList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time (Vancouver)</th><th>Chemical</th><th>Entry</th><th>Litres</th><th>Note</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${rows.map(r=>
-   `<tr><td>${escapeHTML(local(r.at))}</td><td>${r.chemical==='coag'?'Coagulant':'Flocculant'}</td><td>${r.kind==='delivery'?'Delivery':'Tank count'}</td><td>${fmt(r.litres)}</td><td>${escapeHTML(r.note)||'—'}</td><td>${escapeHTML(r.logged_by)}</td><td>${can('pickup')?`<button type="button" class="danger" data-stock="${r.id}">Remove</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="7">No chemical deliveries or tank counts logged yet.</td></tr>'}</tbody></table></div>`;
+   `<tr><td>${escapeHTML(local(r.at))}</td><td>${escapeHTML(stockLabels[r.chemical]||r.chemical)}</td><td>${r.kind==='delivery'?'Delivery':'Tank count'}</td><td>${fmt(r.litres)}${(stockProducts[r.chemical]||{}).container_l?` <small>(${fmt(r.litres/stockProducts[r.chemical].container_l)} cont.)</small>`:''}</td><td>${escapeHTML(r.note)||'—'}</td><td>${escapeHTML(r.logged_by)}</td><td>${can('pickup')?`<button type="button" class="danger" data-stock="${r.id}">Remove</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="7">No chemical deliveries or tank counts logged yet.</td></tr>'}</tbody></table></div>`;
   document.querySelectorAll('[data-stock]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this stock entry? Use this only to fix a mistake.'))return;
    try{await postJSON('/api/stock/remove',{id:Number(b.dataset.stock)});stockMsg('Entry removed.',true);loadStock()}catch(e){stockMsg('Not removed: '+e.message)}});
  }catch(e){$('stockList').textContent='Unable to load chemical stock: '+e.message}}
-$('logStock').addEventListener('click',async()=>{const litres=Number($('stockLitres').value);if(!$('stockLitres').value){stockMsg('Enter the litres.');return}
+$('logStock').addEventListener('click',async()=>{if(!$('stockLitres').value){stockMsg('Enter the quantity.');return}
+ const litres=Math.round(toLitres(Number($('stockLitres').value),$('stockUnit').value,$('stockChem').value)*100)/100;
  try{await postJSON('/api/stock',{chemical:$('stockChem').value,kind:$('stockKind').value,litres,when:$('stockWhen').value,note:$('stockNote').value});
   ['stockLitres','stockNote'].forEach(id=>$(id).value='');$('stockWhen').value=vanNow();stockMsg('Entry logged.',true);loadStock()}catch(e){stockMsg('Not logged: '+e.message)}});
+// ---- Chemical purchases (Reports page) ----
+const buyMsg=(t,ok)=>{const el=$('buyState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
+const money=v=>v==null?'—':'$'+Number(v).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2});
+async function loadPurchases(){
+ $('purchaseForm').hidden=!can('pickup');$('buyReport').hidden=!can('export');const now=vanNow();
+ if(!$('buyDate').value)$('buyDate').value=now.slice(0,10);$('buyDate').max=now.slice(0,10);$('buyReceived').max=now;if(!$('buyYear').value)$('buyYear').value=now.slice(0,4);
+ try{const d=await api('/api/purchases');const rows=d.rows||[],prod=d.products||{};Object.assign(stockProducts,prod);
+  $('buyList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Purchased</th><th>Product</th><th>Quantity</th><th>Cost</th><th>PO / invoice</th><th>Supplier</th><th>Received</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${rows.map(r=>{const p=prod[r.chemical]||{};
+   const cont=p.container_l?r.litres/p.container_l:null;const unit=(p.container||'').includes('drum')?'drums':'pails';
+   const cost=r.cost!=null?money(r.cost):r.est_cost!=null?money(r.est_cost)+' <small>(est.)</small>':'—';
+   const recv=r.received_at?escapeHTML(local(r.received_at)):`<b class="warn-text">Not received yet</b>${can('pickup')?` <button type="button" data-receive="${r.id}">Mark received</button>`:''}`;
+   return `<tr><td>${escapeHTML(calDay(r.purchased_on))}</td><td>${escapeHTML(p.name||r.chemical)}<br><small>Part # ${escapeHTML(p.part||'')}</small></td><td>${cont!=null?fmt(cont)+' '+unit:''}<br><small>${fmt(r.litres)} L</small></td>`+
+    `<td>${cost}</td><td>${escapeHTML(r.po)||'—'}</td><td>${escapeHTML(r.supplier)||'—'}</td><td>${recv}</td><td>${escapeHTML(r.logged_by)}</td>`+
+    `<td>${can('pickup')?`<button type="button" class="danger" data-buy="${r.id}">Remove</button>`:'—'}</td></tr>`}).join('')||'<tr><td colspan="9">No chemical purchases logged yet.</td></tr>'}</tbody></table></div>`;
+  document.querySelectorAll('[data-buy]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this purchase? If it was received, it is also taken off the chemical stock. Use this only to fix a mistake.'))return;
+   try{await postJSON('/api/purchases/remove',{id:Number(b.dataset.buy)});buyMsg('Purchase removed.',true);loadPurchases();loadStock()}catch(e){buyMsg('Not removed: '+e.message)}});
+  document.querySelectorAll('[data-receive]').forEach(b=>b.onclick=async()=>{const when=prompt('Received date and time (YYYY-MM-DD HH:MM, Vancouver time):',vanNow().replace('T',' '));if(!when)return;
+   try{await postJSON('/api/purchases/receive',{id:Number(b.dataset.receive),received:when.trim().replace(' ','T')});buyMsg('Purchase marked received and added to stock.',true);loadPurchases();loadStock()}catch(e){buyMsg('Not changed: '+e.message)}});
+ }catch(e){$('buyList').textContent='Unable to load chemical purchases: '+e.message}}
+$('logBuy').addEventListener('click',async()=>{if(!$('buyQty').value){buyMsg('Enter the quantity.');return}if(!$('buyDate').value){buyMsg('Enter the purchase date.');return}
+ const litres=Math.round(toLitres(Number($('buyQty').value),$('buyUnit').value,$('buyChem').value)*100)/100;
+ try{await postJSON('/api/purchases',{chemical:$('buyChem').value,purchased_on:$('buyDate').value,litres,cost:$('buyCost').value===''?null:Number($('buyCost').value),
+   po:$('buyPo').value,supplier:$('buySupplier').value,received:$('buyReceived').value||null,note:$('buyNote').value});
+  ['buyQty','buyCost','buyPo','buyReceived','buyNote'].forEach(id=>$(id).value='');buyMsg('Purchase logged.',true);loadPurchases();loadStock()}catch(e){buyMsg('Not logged: '+e.message)}});
+$('buyExcel').addEventListener('click',()=>{window.location.href='/api/export?tag=purchases&year='+encodeURIComponent($('buyYear').value)});
+$('buyCsv').addEventListener('click',()=>{window.location.href='/api/export?tag=purchases&format=csv&year='+encodeURIComponent($('buyYear').value)});
+$('consExcel').addEventListener('click',()=>{window.location.href='/api/export?tag=consumption&year='+encodeURIComponent($('consYear').value)});
+$('consCsv').addEventListener('click',()=>{window.location.href='/api/export?tag=consumption&format=csv&year='+encodeURIComponent($('consYear').value)});
 // ---- Alarm shelving (Alarms page) ----
 const shelfMsg=(t,ok)=>{const el=$('shelfState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
 async function loadShelves(){const manage=can('settings');$('shelfForm').hidden=!manage;

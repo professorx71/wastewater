@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.29'
+        assert s['revision']=='1.2.30'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -580,14 +580,14 @@ class RevisionTests(unittest.TestCase):
             self.assertIsNone(st['floc']['litres'])
             cfg=dict(web.DEFAULTS,stock_low_coag_l=20.0)
             web.check_stock(db,cfg)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Coagulant stock low' AND state='open'").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Coagulant (PROTECT 7000) stock low' AND state='open'").fetchone()[0],1)
             web.save_stock(db,{'chemical':'coag','kind':'delivery','litres':50,'when':when},'a')   # same time as the count: not added
             self.assertAlmostEqual(web.stock_status(db)['coag']['litres'],10-0.6,delta=0.02)
             later=(now-timedelta(hours=1)).astimezone(web.ZoneInfo('America/Vancouver')).strftime('%Y-%m-%dT%H:%M')
             web.save_stock(db,{'chemical':'coag','kind':'delivery','litres':50,'when':later},'a')
             self.assertAlmostEqual(web.stock_status(db)['coag']['litres'],60-0.6,delta=0.02)
             web.check_stock(db,cfg,now+timedelta(minutes=1))
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Coagulant stock restored'").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Coagulant (PROTECT 7000) stock restored'").fetchone()[0],1)
             for bad in ({'chemical':'x','kind':'count','litres':1,'when':when},{'chemical':'coag','kind':'delivery','litres':0,'when':when},
                         {'chemical':'coag','kind':'count','litres':1,'when':'2099-01-01T00:00'}):
                 with self.assertRaises(web.AccountError):web.save_stock(db,bad,'a')
@@ -627,6 +627,92 @@ class RevisionTests(unittest.TestCase):
             code,data=self.call('GET','/api/export','admin','admin-pass',query=f'tag={tag}&startDate=2026-11-10&endDate=2026-11-10&format=csv')
             self.assertEqual(code,200,tag);self.assertTrue(data.decode('utf-8-sig').strip())
 
+    def test_chemical_purchases_receive_stock_and_report(self):
+        zone=web.ZoneInfo('America/Vancouver');now=datetime.now(zone)
+        drum=web.CHEM_PRODUCTS['caustic']['container_l'];pail=web.CHEM_PRODUCTS['sa93']['container_l']
+        bought=now-timedelta(hours=3)   # purchase date 3 h back, so 'received 2 h ago' is never before it (safe just after midnight)
+        today=bought.date().isoformat();earlier=(now-timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M')
+        web.OP_AUTH=Path(self.tmp.name)/'operator.json'
+        self._login(web.AUTH,'admin','admin-pass');self._login(web.OP_AUTH,'op','op-pass')
+        post=lambda path,body,user='op':self.call('POST',path,user,user+'-pass' if user=='op' else 'admin-pass',body)
+        with web.appdb() as db:   # tank count of caustic 3 hours ago: 100 L
+            web.save_stock(db,{'chemical':'caustic','kind':'count','litres':100,'when':(now-timedelta(hours=3)).strftime('%Y-%m-%dT%H:%M')},'a')
+        # received straight away, with a cost
+        self.assertEqual(post('/api/purchases',{'chemical':'caustic','purchased_on':today,'litres':2*drum,'cost':900,'po':'PO-1','supplier':'CESCO','received':earlier})[0],200)
+        # ordered, not received yet, no cost (estimated from the price per container)
+        self.assertEqual(post('/api/purchases',{'chemical':'sa93','purchased_on':today,'litres':4*pail,'po':'PO-2'})[0],200)
+        with web.appdb() as db:
+            st=web.stock_status(db)
+            self.assertAlmostEqual(st['caustic']['litres'],100+2*drum);self.assertIsNone(st['sa93']['litres'])   # not received: not in stock
+            sa=db.execute("SELECT id FROM chemical_purchases WHERE chemical='sa93'").fetchone()[0]
+            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('chemical_prices',?)",(json.dumps({'caustic':None,'floc':None,'coag':None,'sa93':60.0}),))
+        for bad in ({'chemical':'bleach','purchased_on':today,'litres':1},{'chemical':'sa93','purchased_on':'2099-01-01','litres':1},
+                    {'chemical':'sa93','purchased_on':today,'litres':0},{'chemical':'sa93','purchased_on':today,'litres':1,'cost':-5},
+                    {'chemical':'sa93','purchased_on':today,'litres':1,'received':'2020-01-01T00:00'}):   # received before purchased
+            self.assertEqual(post('/api/purchases',bad)[0],400,bad)
+        self.assertEqual(post('/api/purchases/receive',{'id':sa,'received':now.strftime('%Y-%m-%dT%H:%M')})[0],200)
+        self.assertEqual(post('/api/purchases/receive',{'id':sa,'received':now.strftime('%Y-%m-%dT%H:%M')})[0],400)   # only once
+        with web.appdb() as db:
+            self.assertAlmostEqual(web.stock_status(db)['sa93']['litres'],4*pail)
+            year=bought.year;cfg=web.settings(db)
+        rows=web.purchase_rows(year,cfg);flat=[[c[0] if isinstance(c,tuple) else c for c in r] for r in rows]
+        qtr=f'{year} Q{(bought.month-1)//3+1}'
+        caustic=[r for r in flat if r[:2]==[qtr,'CESCO NEUTRO 5045 50% Caustic']][0]
+        self.assertEqual((caustic[2],caustic[3],caustic[5]),(1,2.0,900.0))
+        sa93=[r for r in flat if r[:2]==[f'{bought.month:02d}/{year}','CESCO SA-93']][0]
+        self.assertEqual(sa93[5],'240.00 (estimated)')   # 4 pails x $60
+        self.assertIn([str(year),'CESCO SA-93',1,4.0,round(4*pail,2),'240.00 (estimated)'],flat)
+        code,book=self.call('GET','/api/export','admin','admin-pass',query=f'tag=purchases&year={year}')
+        self.assertEqual(code,200)
+        import zipfile
+        sheet=zipfile.ZipFile(io.BytesIO(book)).read('xl/worksheets/sheet1.xml').decode()
+        self.assertIn('PO-1',sheet);self.assertIn('FSA93-P5',sheet)
+        self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query=f'tag=purchases&year={year}&format=csv')[0],200)
+        rows=json.loads(self.call('GET','/api/purchases','op','op-pass')[1])['rows']
+        self.assertEqual(len(rows),2)
+        self.assertEqual(post('/api/purchases/remove',{'id':sa})[0],200)
+        with web.appdb() as db:
+            self.assertIsNone(web.stock_status(db)['sa93']['litres'])
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action LIKE 'Chemical purchase%'").fetchone()[0],4)
+
+    def test_chemical_consumption_month_and_year(self):
+        zone=web.ZoneInfo('America/Vancouver');year=datetime.now(zone).year-1   # last year: complete, nothing in the future
+        at=lambda m,d:web.iso(datetime(year,m,d,9,0,tzinfo=zone))
+        drum=web.CHEM_PRODUCTS['caustic']['container_l']
+        with web.appdb() as db:
+            for chem,kind,litres,when in (('caustic','count',300.0,at(1,5)),('caustic','delivery',drum,at(2,1)),('caustic','count',250.0,at(3,1)),
+                                          ('caustic','count',100.0,at(3,20)),('sa93','delivery',18.0,at(6,3))):
+                db.execute('INSERT INTO chemical_stock(chemical,kind,litres,at,note,logged_by,logged_at) VALUES (?,?,?,?,?,?,?)',(chem,kind,litres,when,'','a','x'))
+            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('chemical_prices',?)",(json.dumps({'caustic':500.0,'floc':None,'coag':None,'sa93':None}),))
+            cfg=web.settings(db)
+        data=web.chemical_consumption(year,cfg)
+        march=data['caustic'][3]
+        self.assertAlmostEqual(march['counted'],(300+drum-250)+(250-100))   # both intervals end in March
+        self.assertAlmostEqual(march['used'],march['counted'])               # no pump tag: tank counts are the usage
+        self.assertAlmostEqual(march['cost_used'],march['counted']/drum*500)
+        self.assertAlmostEqual(data['caustic'][2]['delivered'],drum);self.assertAlmostEqual(data['caustic'][2]['cost_delivered'],500)
+        self.assertAlmostEqual(data['sa93'][6]['delivered'],18.0);self.assertIsNone(data['sa93'][6]['cost_delivered'])   # no price yet
+        self.assertIsNone(data['caustic'][3]['pump'])
+        self._login(web.AUTH,'admin','admin-pass')
+        import zipfile
+        code,book=self.call('GET','/api/export','admin','admin-pass',query=f'tag=consumption&year={year}')
+        self.assertEqual(code,200)
+        sheet=zipfile.ZipFile(io.BytesIO(book)).read('xl/worksheets/sheet1.xml').decode()
+        for text in ('CESCO NEUTRO 5045 50% Caustic','FPF875AH-P5','FPROT7000-Dr55','FSA93-P5',f'03/{year}'):self.assertIn(text,sheet)
+        code,csvdata=self.call('GET','/api/export','admin','admin-pass',query=f'tag=consumption&year={year}&format=csv')
+        self.assertEqual(code,200);self.assertIn('CESCO SA-93',csvdata.decode('utf-8-sig'))
+        self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
+        with web.appdb() as db:   # prices: validated, unknown products refused
+            with self.assertRaises(ValueError):web.val_settings({'chemical_prices':{'caustic':-1}},web.settings(db))
+            with self.assertRaises(ValueError):web.val_settings({'chemical_prices':{'bleach':5}},web.settings(db))
+            # the Settings page always sends all four prices; any left out are saved as not set
+            self.assertEqual(web.val_settings({'chemical_prices':{'floc':42.5}},web.settings(db))['chemical_prices'],
+                             {'caustic':None,'floc':42.5,'coag':None,'sa93':None})
+
+    def test_every_shelvable_alarm_has_an_email_subject(self):
+        for key in web.shelf_choices():
+            if key!='ph':self.assertIn(key,web.CONDITION_SUBJECTS)
+
     def _collector(self):
         import importlib.util
         spec=importlib.util.spec_from_file_location('collector',Path(__file__).parent/'collector'/'collector.py')
@@ -635,7 +721,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_collector_saves_every_tag_the_dashboard_uses(self):
         # A tag missing from the collector's list is silently dropped (the SYSTEM_ENABLED circle stayed grey).
-        needed=set(web.TAGS)|set(web.DIAGRAM_TAGS)|{t for t,*_ in web.PLC_ALARMS}|{t for t,_ in web.PUMP_TAGS}|{t for _,t,_ in web.STOCK_CHEMS.values()}
+        needed=set(web.TAGS)|set(web.DIAGRAM_TAGS)|{t for t,*_ in web.PLC_ALARMS}|{t for t,_ in web.PUMP_TAGS}|{t for _,t,_ in web.STOCK_CHEMS.values() if t}
         missing=needed-set(self._collector().TAGS)
         self.assertFalse(missing,f'Add these tags to TAGS in collector/collector.py: {sorted(missing)}')
 

@@ -58,3 +58,4 @@
 .cal-last div.overdue{border-color:#d36d68;background:#2a1820}.cal-last div.soon{border-color:#b68a30}
 .shelf-note{border:1px dashed #9aa5ad;border-radius:8px;padding:8px 14px;margin:-6px 0 16px;color:#c7d0d6;font-size:13px;text-align:center}
 .shelf-note[hidden]{display:none}
+.warn-text{color:#ffd178}
