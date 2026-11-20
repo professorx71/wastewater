@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.25'
+        assert s['revision']=='1.2.26'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -439,28 +439,28 @@ class RevisionTests(unittest.TestCase):
         cfg=dict(web.DEFAULTS)
         bit=lambda v,m:{'value':v,'status':'current','stamp':f'2026-11-16T12:{m:02d}:00Z'}
         with web.appdb() as db:
-            web.check_plc_alarms(db,cfg,{'E_Stop_Status':bit(1,0),'SLUDGE_TANK_LEVEL':bit(1,0),'Mixer_Pump_Faulted':bit(0,0)})
+            web.check_plc_alarms(db,cfg,{'E_STOP_STATUS':bit(1,0),'SLUDGE_TANK_LEVEL':bit(1,0),'MIXER_PUMP_FAULTED':bit(0,0)})
             ev={r['kind']:r for r in db.execute("SELECT * FROM events")}
             self.assertEqual(set(ev),{'E-Stop active','Sludge tank FULL'})
             self.assertTrue(all(r['state']=='open' for r in ev.values()))
             self.assertIn('N7:1/0',ev['E-Stop active']['detail'])
-            web.check_plc_alarms(db,cfg,{'E_Stop_Status':bit(1,0),'SLUDGE_TANK_LEVEL':bit(1,0)})   # same stamps: no duplicates
+            web.check_plc_alarms(db,cfg,{'E_STOP_STATUS':bit(1,0),'SLUDGE_TANK_LEVEL':bit(1,0)})   # same stamps: no duplicates
             self.assertEqual(db.execute('SELECT COUNT(*) FROM events').fetchone()[0],2)
             # Both clear: the sludge alarm acknowledges itself, the E-Stop waits for an operator
-            web.check_plc_alarms(db,cfg,{'E_Stop_Status':bit(0,1),'SLUDGE_TANK_LEVEL':bit(0,1)})
+            web.check_plc_alarms(db,cfg,{'E_STOP_STATUS':bit(0,1),'SLUDGE_TANK_LEVEL':bit(0,1)})
             sludge=db.execute("SELECT * FROM events WHERE id=?",(ev['Sludge tank FULL']['id'],)).fetchone()
             self.assertEqual(sludge['state'],'closed');self.assertIn('auto-acknowledged',sludge['actor']);self.assertTrue(sludge['ack_at'])
             estop=db.execute("SELECT * FROM events WHERE id=?",(ev['E-Stop active']['id'],)).fetchone()
             self.assertEqual(estop['state'],'open');self.assertTrue(estop['cleared_at'])
             self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind IN ('E-Stop active cleared','Sludge tank FULL cleared')").fetchone()[0],2)
             # An acknowledged fault closes as soon as it clears
-            web.check_plc_alarms(db,cfg,{'Rake_Motor_Faulted':bit(1,2)})
+            web.check_plc_alarms(db,cfg,{'RAKE_MOTOR_FAULTED':bit(1,2)})
             rid=db.execute("SELECT id FROM events WHERE kind='Rake motor faulted'").fetchone()[0]
             db.execute("UPDATE events SET state='acknowledged',actor='op (Operator)' WHERE id=?",(rid,))
-            web.check_plc_alarms(db,cfg,{'Rake_Motor_Faulted':bit(0,3)})
+            web.check_plc_alarms(db,cfg,{'RAKE_MOTOR_FAULTED':bit(0,3)})
             self.assertEqual(db.execute('SELECT state FROM events WHERE id=?',(rid,)).fetchone()[0],'closed')
             # Stale readings are not judged
-            web.check_plc_alarms(db,cfg,{'Mixer_Pump_Faulted':dict(bit(1,4),status='stale')})
+            web.check_plc_alarms(db,cfg,{'MIXER_PUMP_FAULTED':dict(bit(1,4),status='stale')})
             self.assertFalse(db.execute("SELECT 1 FROM events WHERE kind='Mixer pump faulted'").fetchone())
             report=web.alarm_report(datetime(2000,1,1,tzinfo=timezone.utc),datetime.now(timezone.utc)+timedelta(days=1))
         self.assertIn('Alarms in this period: 3',report);self.assertIn('E-Stop active',report);self.assertNotIn('cleared:',report)

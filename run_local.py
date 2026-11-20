@@ -46,8 +46,8 @@ def reading(t, total):
             'SLUDGE_TANK_LEVEL': float(int(t.timestamp() // 120) % 2),  # full / not full every 2 minutes
             'SUMP_PUMP_STATUS': float(int(t.timestamp() // 90) % 2), 'Mixer_Pump_Staus': 1.0,
             # PLC alarm bits (1 = alarm): the E-Stop trips for 2 minutes every 10; the faults stay good.
-            'SYSTEM_ENABLED': 1.0, 'E_Stop_Status': float(int(t.timestamp() // 120) % 5 == 0),
-            'Mixer_Pump_Faulted': 0.0, 'Rake_Motor_Faulted': 0.0, 'MAx_RGT_Pump_Faulted': 0.0, 'FLOC_COAG_PUMP_FAULTED': 0.0}
+            'SYSTEM_ENABLED': 1.0, 'E_STOP_STATUS': float(int(t.timestamp() // 120) % 5 == 0),
+            'MIXER_PUMP_FAULTED': 0.0, 'RAKE_MOTOR_FAULTED': 0.0, 'MAX_RGT_PUMP_FAULTED': 0.0, 'FLOC_COAG_PUMP_FAULTED': 0.0, 'EQ_TANK_FULL': 0.0}
 
 
 def insert(db, t, total):

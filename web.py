@@ -18,14 +18,15 @@ DIAGRAM_TAGS={'Rake_Speed_VFD':('Rake motor speed','Hz'),
               'SYSTEM_ENABLED':('System enabled (PLC B3:0/4, 1 = on)','')}
 # PLC alarm bits (1 = alarm, 0 = good): tag, Alarms-page event name, banner text, PLC address, help for the email.
 # Each one is an alarm on the Alarms page, shows on the overview alarm banner and is emailed to the recipients.
-# The sludge tank FULL alarm acknowledges itself once the tank is emptied; the others need an operator.
+# The sludge tank FULL and EQ tank FULL alarms acknowledge themselves once they clear; the others need an operator.
 PLC_ALARMS=(('SLUDGE_TANK_LEVEL','Sludge tank FULL','SLUDGE TANK FULL · arrange a sludge pickup','B3:0/13','Arrange a sludge pickup.'),
-            ('E_Stop_Status','E-Stop active','E-STOP ACTIVE','N7:1/0','Check the E-Stop buttons before restarting the system.'),
-            ('Mixer_Pump_Faulted','Mixer pump faulted','MIXER PUMP FAULTED','N7:1/2','Check the mixer (circulation) pump.'),
-            ('Rake_Motor_Faulted','Rake motor faulted','RAKE MOTOR FAULTED','N7:1/8','Check the DAF rake motor and its VFD.'),
-            ('MAx_RGT_Pump_Faulted','MAX RGT pump faulted','MAX RGT PUMP FAULTED','N7:1/10','Check the MAX RGT pump.'),
-            ('FLOC_COAG_PUMP_FAULTED','Floc / Coag pump faulted','FLOC / COAG PUMP FAULTED','N7:0/14','Check the flocculant and coagulant dosing pumps.'))
-AUTO_ACK_ON_CLEAR={'SLUDGE_TANK_LEVEL':'system (auto-acknowledged: sludge tank emptied)'}
+            ('E_STOP_STATUS','E-Stop active','E-STOP ACTIVE','N7:1/0','Check the E-Stop buttons before restarting the system.'),
+            ('MIXER_PUMP_FAULTED','Mixer pump faulted','MIXER PUMP FAULTED','N7:1/2','Check the mixer (circulation) pump.'),
+            ('RAKE_MOTOR_FAULTED','Rake motor faulted','RAKE MOTOR FAULTED','N7:1/8','Check the DAF rake motor and its VFD.'),
+            ('MAX_RGT_PUMP_FAULTED','MAX RGT pump faulted','MAX RGT PUMP FAULTED','N7:1/10','Check the MAX RGT pump.'),
+            ('FLOC_COAG_PUMP_FAULTED','Floc / Coag pump faulted','FLOC / COAG PUMP FAULTED','N7:0/14','Check the flocculant and coagulant dosing pumps.'),
+            ('EQ_TANK_FULL','EQ tank FULL','EQ TANK FULL','N7:1/5','Check the EQ tank level and the discharge.'))
+AUTO_ACK_ON_CLEAR={'SLUDGE_TANK_LEVEL':'system (auto-acknowledged: sludge tank emptied)','EQ_TANK_FULL':'system (auto-acknowledged: EQ tank no longer full)'}
 for _tag,_kind,_banner,_addr,_ in PLC_ALARMS:
     DIAGRAM_TAGS.setdefault(_tag,(f'{_kind} (PLC {_addr}, 1 = alarm)',''))
 UTC=timezone.utc
@@ -77,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.25','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.26','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -1152,11 +1153,12 @@ def check_conditions(conn,cfg,readings,now):
 
 # Email wording for each PLC alarm (as specified by the plant): tag -> (email title, alarm code).
 PLC_EMAIL_WORDING={'SLUDGE_TANK_LEVEL':('Wastewater Sludge Tank are Full','SLUDGE_TANK_FULL'),
-                   'Mixer_Pump_Faulted':('Circulating Mixer Pump Stop Faulted','MIXER_PUMP_FAULTED'),
-                   'Rake_Motor_Faulted':('Sludge Rake Gear Motor Stop Faulted','RAKE_MOTOR_FAULTED'),
+                   'MIXER_PUMP_FAULTED':('Circulating Mixer Pump Stop Faulted','MIXER_PUMP_FAULTED'),
+                   'RAKE_MOTOR_FAULTED':('Sludge Rake Gear Motor Stop Faulted','RAKE_MOTOR_FAULTED'),
                    'FLOC_COAG_PUMP_FAULTED':('Flocculant and Coagulant Pump Motor Stop Faulted','FLOC_COAG_PUMP_FAULTED'),
-                   'E_Stop_Status':('Emergency Stop Activated','E_STOP_STATUS'),
-                   'MAx_RGT_Pump_Faulted':('Regenerative Turbine Pump Stop Faulted','MAX_RGT_PUMP_FAULTED')}
+                   'E_STOP_STATUS':('Emergency Stop Activated','E_STOP_STATUS'),
+                   'MAX_RGT_PUMP_FAULTED':('Regenerative Turbine Pump Stop Faulted','MAX_RGT_PUMP_FAULTED'),
+                   'EQ_TANK_FULL':('Wastewater EQ Tank Full','EQ_TANK_FULL')}
 CONDITION_SUBJECTS={'data':'Wastewater ALERT: no new data','level':'Wastewater EQ tank HIGH level alarm','flow':'Wastewater NO DISCHARGE FLOW alarm',
                     **{'plc:'+t:f'{w} ({c})' for t,(w,c) in PLC_EMAIL_WORDING.items()}}
 RECOVERY_SUBJECTS={'plc:'+t:f'CLEARED: {w} ({c})' for t,(w,c) in PLC_EMAIL_WORDING.items()}
