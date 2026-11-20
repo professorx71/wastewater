@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.32','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.33','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -136,19 +136,20 @@ def raw_unit(name,stamp):
 def ml_per_min(name,stamp,value):
     return None if value is None else value*_PER_MIN[raw_unit(name,stamp)]
 _XL_EPOCH=datetime(1899,12,30)
-# Cell styles: 0 normal, 1 date-time, 2 two decimals, 3 bold, 4 date
+# Cell styles: 0 normal, 1 date-time, 2 two decimals, 3 bold, 4 date, 5 three decimals
 _XL_STYLES=('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-    '<numFmts count="2"><numFmt numFmtId="164" formatCode="mm/dd/yyyy hh:mm:ss"/><numFmt numFmtId="165" formatCode="mm/dd/yyyy"/></numFmts>'
+    '<numFmts count="3"><numFmt numFmtId="164" formatCode="mm/dd/yyyy hh:mm:ss"/><numFmt numFmtId="165" formatCode="mm/dd/yyyy"/><numFmt numFmtId="166" formatCode="0.000"/></numFmts>'
     '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>'
     '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
     '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-    '<cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+    '<cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
     '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
     '<xf numFmtId="2" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
     '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
-    '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
+    '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+    '<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs>'
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
     '</styleSheet>')
 
@@ -407,7 +408,14 @@ def report_xlsx(params,data_tags=None):
             if value is None or value<=SUMMARY_MIN:continue
             local=parse(stamp).astimezone(zone)
             valid[local.date()]=(local,value)
+        ph={}   # local date -> [sum, count] of the pH readings that day
+        for stamp,value in db.execute(query,('pH_Reading',iso(start),iso(end))):
+            if value is None:continue
+            x=ph.setdefault(parse(stamp).astimezone(zone).date(),[0.0,0]);x[0]+=value;x[1]+=1
     finally:db.close()
+    def ph_avg(days):
+        tot=sum(ph[d][0] for d in days if d in ph);n=sum(ph[d][1] for d in days if d in ph)
+        return tot/n if n else None
     last=(parse(prior[0]).astimezone(zone),prior[1]) if prior else None
     prev=truncate2(last[1]) if last else None
     daily=[]   # (date, EOD value, usage or None, reading time, note)
@@ -429,25 +437,30 @@ def report_xlsx(params,data_tags=None):
     for day,v,usage,_,_ in daily:add(months,f'{day:%Y-%m}',v,usage)
     for m,(v,usage) in months.items():add(quarters,quarter_label(date.fromisoformat(m+'-01')),v,usage)
     num=lambda v:'' if v is None else (float(v),2)
+    m3=lambda v:'' if v is None else (float(v)/1000,5)          # litres -> cubic metres, 3 decimals
+    pH=lambda v:'' if v is None else (round(v,2),2)
+    in_month=lambda m:[d for d,*_ in daily if f'{d:%Y-%m}'==m]
+    in_quarter=lambda q:[d for d,*_ in daily if quarter_label(d)==q]
     summary_rows=[[B('Wastewater report summary')],
                   ['Tag',tag],['Unit Of Measure','L (litres)'],['Date range (America/Vancouver)',date_range],[]]
     if not daily:
         summary_rows.append(['No valid Total_Flow_Li readings in or before this date range.'])
     else:
-        summary_rows.append([B('Quarter'),B('Total Quarterly Value (L)'),B('Quarterly Usage (L)')])
-        summary_rows+=[[q,num(v),num(u)] for q,(v,u) in sorted(quarters.items())]
-        summary_rows+=[[],[B('Month'),B('Total Monthly Value (L)'),B('Monthly Usage (L)')]]
-        summary_rows+=[[f'{m[5:]}/{m[:4]}',num(v),num(u)] for m,(v,u) in sorted(months.items())]
-        summary_rows+=[[],[B('Date'),B('EOD Daily Value (L)'),B('Daily Usage (L)'),B('Reading Used (America/Vancouver)'),B('Notes')]]
-        summary_rows+=[[day,num(v),num(u),when.replace(tzinfo=None),note] for day,v,u,when,note in daily]
+        summary_rows.append([B('Quarter'),B('Total Quarterly Value (L)'),B('Total Quarterly Value (m³)'),B('pH Average'),B('Quarterly Usage (L)'),B('Quarterly Usage (m³)')])
+        summary_rows+=[[q,num(v),m3(v),pH(ph_avg(in_quarter(q))),num(u),m3(u)] for q,(v,u) in sorted(quarters.items())]
+        summary_rows+=[[],[B('Month'),B('Total Monthly Value (L)'),B('Total Monthly Value (m³)'),B('pH Average'),B('Monthly Usage (L)'),B('Monthly Usage (m³)')]]
+        summary_rows+=[[f'{m[5:]}/{m[:4]}',num(v),m3(v),pH(ph_avg(in_month(m))),num(u),m3(u)] for m,(v,u) in sorted(months.items())]
+        summary_rows+=[[],[B('Date'),B('EOD Daily Value (L)'),B('EOD Daily Value (m³)'),B('pH Average'),B('Daily Usage (L)'),B('Daily Usage (m³)'),B('Reading Used (America/Vancouver)'),B('Notes')]]
+        summary_rows+=[[day,num(v),m3(v),pH(ph_avg([day])),num(u),m3(u),when.replace(tzinfo=None),note] for day,v,u,when,note in daily]
     summary_rows+=[[],['EOD Daily Value is the last Total_Flow_Li reading above 1 L on that day (America/Vancouver), cut to 2 decimals. '
                        'If a day has no reading above 1 L, the last valid reading before it is used (see Reading Used and Notes). '
                        'Monthly total = sum of the EOD daily values in the month; quarterly total = sum of those monthly totals. '
                        'Daily Usage = EOD value minus the previous EOD value (litres that went through the meter that day); '
-                       'monthly and quarterly usage add up the daily usage. Only days inside the selected date range are counted.']]
+                       'monthly and quarterly usage add up the daily usage. Only days inside the selected date range are counted. '
+                       'm³ = litres / 1000 (EOD values and usage). pH Average = average of all EQ pH readings that day (month or quarter: all readings in it); blank when there were none.']]
     chem=[('Chemical Usage',chemical_rows(start,end,zone,date_range),(34,22,22))]
     sheets=(chem if choice=='chemical' else [('Sludge Pickups',sludge_rows(start,end,zone,date_range),(30,26,22,24,22,40))] if choice=='sludge'
-            else [('Summary',summary_rows,(34,22,20,30,60))]+(chem if choice=='all' and data_tags is None else []))
+            else [('Summary',summary_rows,(34,24,26,12,20,22,30,60))]+(chem if choice=='all' and data_tags is None else []))
     sheets+=[(n,readings(n),(22,30,14,18)) for n in names]
     fname=f'wastewater-report-{choice}-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.xlsx'
     return fname,xlsx(sheets)

@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.32'
+        assert s['revision']=='1.2.33'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -225,6 +225,21 @@ class RevisionTests(unittest.TestCase):
         self.assertIn('Meter reading dropped',summary)
         self.assertIn('2026 Q3 (Jul-Sep)',summary);self.assertIn('2026 Q4 (Oct-Dec)',summary)
         self.assertEqual(str(web.truncate2(524714.2551)),'524714.25')
+        # Column C: cubic metres (3 decimals, style 5); column D: pH average per day / month / quarter
+        m3=[float(v) for v in __import__('re').findall(r's="5"><v>([^<]+)</v>',summary)]
+        self.assertAlmostEqual(m3[0],524.71425);self.assertAlmostEqual(m3[-1],0.30012)
+        with sqlite3.connect(web.DB) as db:
+            for local,v in (('2026-09-30 08:00',7.0),('2026-09-30 20:00',8.0),('2026-10-02 09:00',6.5)):
+                t=datetime.strptime(local,'%Y-%m-%d %H:%M').replace(tzinfo=zone)
+                db.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('pH_Reading',web.iso(t),v))
+        _,data=web.report_xlsx({'tag':['FLOW_RATE'],'startDate':['2026-09-30'],'endDate':['2026-10-02']})
+        summary=zipfile.ZipFile(io.BytesIO(data)).read('xl/worksheets/sheet1.xml').decode()
+        self.assertIn('EOD Daily Value (m³)',summary);self.assertIn('pH Average',summary)
+        self.assertRegex(summary,r'<c r="D\d+" s="2"><v>7\.5</v></c>')    # 09-30 (and Sep, Q3): (7 + 8) / 2
+        self.assertRegex(summary,r'<c r="D\d+" s="2"><v>6\.5</v></c>')    # 10-02
+        self.assertRegex(summary,r'<c r="E\d+" s="2"><v>523714\.25</v></c>')  # usage moved to column E
+        self.assertRegex(summary,r'<c r="F\d+" s="5"><v>523\.71425</v></c>')    # usage in m³, column F
+        self.assertIn('Daily Usage (m³)',summary);self.assertIn('Monthly Usage (m³)',summary)
 
     def test_scheduler_incident_email_dedup_and_recovery(self):
         web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
