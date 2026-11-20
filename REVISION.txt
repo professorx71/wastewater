@@ -1,3 +1,12 @@
+Revision 1.2.27 - Wastewater Dashboard
+Design and program by Daniel Salazar.
+Released 2026-11-20.
+
+Changes since Rev 1.2.26:
+- system enabled not working on dashboard
+
+------------------------------------------------------------------------
+
 Revision 1.2.26 - Wastewater Dashboard
 Design and program by Daniel Salazar.
 Released 2026-11-20.
