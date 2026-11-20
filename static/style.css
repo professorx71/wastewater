@@ -33,7 +33,18 @@
 @keyframes pumpBlink{50%{box-shadow:0 0 12px rgba(74,222,128,.9);background:#14532d}}
 @media (prefers-reduced-motion:reduce){.pump-fan.on svg,.pump-pill.on{animation:none}}
 .pickup-mask{gap:2px;line-height:1.25}.pickup-mask small{font-size:clamp(8px,.7vw,12px);font-weight:800;letter-spacing:.05em;color:#9fb3bf}
-.pickup-mask span{font-size:clamp(9px,.82vw,14px)}.pickup-mask b{color:#6ef9b0}.pickup-mask.overdue #nextPickup{color:#ff8a85}
+.pickup-mask span{font-size:clamp(9px,.82vw,14px)}.pickup-mask b{color:#6ef9b0}
 .pickup-form{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;margin:10px 0}.pickup-form[hidden]{display:none}.pickup-form label{display:flex;flex-direction:column;gap:4px}.pickup-form .grow{flex:1 1 240px}
 .ok-text{color:#6ef9b0}.err-text{color:#ffb8b5}
 .run-line{display:inline-flex;align-items:baseline;gap:4px}.run-line b{font-weight:750}.pump-box .dose-unit{font-size:inherit;font-weight:700;color:var(--green);border-bottom-color:#4ade8088}
+/* Alarm banner: one line per active PLC alarm */
+.sludge-ribbon div+div{margin-top:4px;padding-top:4px;border-top:1px solid rgba(255,255,255,.35)}
+/* System ON / OFF circle (SYSTEM_ENABLED, PLC B3:0/4), top right of the process picture */
+.system-state{position:absolute;left:83.5%;top:1.2%;width:15.5%;display:flex;flex-direction:row;align-items:center;justify-content:center;gap:6%;color:#9fb3bf}
+.system-state small{font-size:clamp(10px,1.05vw,18px);font-weight:800;letter-spacing:.08em}
+.system-circle{width:38%;flex:none;aspect-ratio:1;border-radius:50%;display:flex;align-items:center;justify-content:center;border:3px solid #6b7c88;background:radial-gradient(circle at 35% 30%,#3a4750,#11191f 70%);color:#c7d0d6;box-shadow:inset 0 -4px 10px rgba(0,0,0,.6)}
+.system-circle b{font-size:clamp(11px,1.25vw,22px);font-weight:900;letter-spacing:.04em}
+.system-state.on .system-circle{border-color:#4ade80;background:radial-gradient(circle at 35% 30%,#86efac,#16a34a 55%,#0b3d23);color:#04210f;box-shadow:0 0 18px rgba(74,222,128,.85),inset 0 -4px 10px rgba(0,0,0,.35)}
+.system-state.on small{color:#6ef9b0}
+.system-state.off .system-circle{border-color:#ff5d57;background:radial-gradient(circle at 35% 30%,#fca5a5,#dc2626 55%,#5b0d12);color:#fff;box-shadow:0 0 16px rgba(255,93,87,.75),inset 0 -4px 10px rgba(0,0,0,.35)}
+.system-state.off small{color:#ffb8b5}

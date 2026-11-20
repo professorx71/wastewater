@@ -14,7 +14,20 @@ DIAGRAM_TAGS={'Rake_Speed_VFD':('Rake motor speed','Hz'),
               'Floc_Pump_Rate_Percent':('Flocculant pump rate','%'),'Floc_Pump_Run':('Flocculant pump run','ml/min'),
               'SLUDGE_TANK_LEVEL':('Sludge tank full (PLC B3:0/13, 1 = full)',''),
               'SUMP_PUMP_STATUS':('Electric transfer pump / sump pump running (PLC B3:1/9, 1 = on)',''),
-              'Mixer_Pump_Staus':('Electric circulation pump / mixer pump running (PLC N142:0, not 0 = on)','')}
+              'Mixer_Pump_Staus':('Electric circulation pump / mixer pump running (PLC N142:0, not 0 = on)',''),
+              'SYSTEM_ENABLED':('System enabled (PLC B3:0/4, 1 = on)','')}
+# PLC alarm bits (1 = alarm, 0 = good): tag, Alarms-page event name, banner text, PLC address, help for the email.
+# Each one is an alarm on the Alarms page, shows on the overview alarm banner and is emailed to the recipients.
+# The sludge tank FULL alarm acknowledges itself once the tank is emptied; the others need an operator.
+PLC_ALARMS=(('SLUDGE_TANK_LEVEL','Sludge tank FULL','SLUDGE TANK FULL · arrange a sludge pickup','B3:0/13','Arrange a sludge pickup.'),
+            ('E_Stop_Status','E-Stop active','E-STOP ACTIVE','N7:1/0','Check the E-Stop buttons before restarting the system.'),
+            ('Mixer_Pump_Faulted','Mixer pump faulted','MIXER PUMP FAULTED','N7:1/2','Check the mixer (circulation) pump.'),
+            ('Rake_Motor_Faulted','Rake motor faulted','RAKE MOTOR FAULTED','N7:1/8','Check the DAF rake motor and its VFD.'),
+            ('MAx_RGT_Pump_Faulted','MAX RGT pump faulted','MAX RGT PUMP FAULTED','N7:1/10','Check the MAX RGT pump.'),
+            ('FLOC_COAG_PUMP_FAULTED','Floc / Coag pump faulted','FLOC / COAG PUMP FAULTED','N7:0/14','Check the flocculant and coagulant dosing pumps.'))
+AUTO_ACK_ON_CLEAR={'SLUDGE_TANK_LEVEL':'system (auto-acknowledged: sludge tank emptied)'}
+for _tag,_kind,_banner,_addr,_ in PLC_ALARMS:
+    DIAGRAM_TAGS.setdefault(_tag,(f'{_kind} (PLC {_addr}, 1 = alarm)',''))
 UTC=timezone.utc
 
 def iso(t): return t.astimezone(UTC).isoformat(timespec='microseconds').replace('+00:00','Z')
@@ -64,7 +77,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.24','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.25','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -257,7 +270,7 @@ def chemical_rows(start,end,zone,date_range):
     return rows
 
 SLUDGE_TAG='SLUDGE_TANK_LEVEL'
-PICKUP_EVERY_DAYS=3   # matches "Pickup every 3 days" on the process picture
+PICKUP_DAYS='Mon & Thu'   # the sludge truck comes every Monday and Thursday
 
 def sludge_full_periods(start,end):
     """FULL periods (bit = 1) of the sludge tank that overlap start..end, as [(full_from, cleared_at or None)].
@@ -434,7 +447,9 @@ DEFAULTS={'ph_low':5.8,'ph_high':9.0,'alarms_enabled':False,'email_enabled':Fals
           # No discharge flow: flow below this rate (L/min) for this many minutes.
           'flow_alarm_enabled':False,'flow_low_lpm':1.0,'flow_low_minutes':30,
           # Quarterly Excel report, sent on the monthly day/time in Jan, Apr, Jul and Oct.
-          'quarterly_enabled':False}
+          'quarterly_enabled':False,
+          # PLC alarms: sludge tank FULL, E-Stop and pump/motor faults (PLC_ALARMS).
+          'plc_alarms_enabled':True}
 @contextmanager
 def appdb():
     APP_DB.parent.mkdir(parents=True,exist_ok=True)
@@ -460,6 +475,10 @@ def appdb():
         note TEXT NOT NULL DEFAULT '', logged_by TEXT NOT NULL, logged_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS login_failures (client TEXT NOT NULL, attempt TEXT NOT NULL, stamp TEXT NOT NULL,
         PRIMARY KEY (client, attempt));''')
+    # cleared_at: when a PLC alarm's condition went away (it may still wait for acknowledgement).
+    if not any(r[1]=='cleared_at' for r in conn.execute('PRAGMA table_info(events)')):
+        try:conn.execute('ALTER TABLE events ADD COLUMN cleared_at TEXT')
+        except sqlite3.OperationalError:pass   # added by another process meanwhile
     conn.commit()
     try:
         yield conn
@@ -740,7 +759,7 @@ def val_settings(data,old):
         if type(new[key]) not in (int,float) or not 0<=new[key]<=14:raise ValueError('Invalid pH limit')
     if new['ph_low']>=new['ph_high']:raise ValueError('pH low must be less than high')
     for key in ('alarms_enabled','email_enabled','daily_enabled','monthly_enabled','email_recovery_enabled',
-                'stale_alert_enabled','level_alarm_enabled','flow_alarm_enabled','quarterly_enabled'):
+                'stale_alert_enabled','level_alarm_enabled','flow_alarm_enabled','quarterly_enabled','plc_alarms_enabled'):
         if type(new[key]) is not bool:raise ValueError('Invalid switch')
     if type(new['stale_alert_minutes']) is not int or not 5<=new['stale_alert_minutes']<=1440:raise ValueError('Data-stopped alert: 5–1440 minutes')
     if type(new['level_high_ft']) not in (int,float) or not 0<new['level_high_ft']<=100:raise ValueError('High level: 0–100 ft')
@@ -854,7 +873,9 @@ def handle_post(path,env,role,conn,user=''):
         if not can(role,'acknowledge'):return '403 Forbidden',{'error':'Not permitted'}
         eid=body.get('id')
         if type(eid)!=int or eid<1:raise ValueError('Invalid event ID')
-        cur=conn.execute("UPDATE events SET state='acknowledged', actor=?, ack_at=? WHERE id=? AND state='open'",(who,iso(datetime.now(UTC)),eid))
+        # A PLC alarm that has already cleared is finished once acknowledged.
+        cur=conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END, actor=?, ack_at=? WHERE id=? AND state='open'",
+                         (who,iso(datetime.now(UTC)),eid))
         if cur.rowcount==0:return '404 Not Found',{'error':'Open event not found'}
         audit(conn,who,'Alarm acknowledged',str(eid));conn.commit()
         return '200 OK',{'acknowledged':eid}
@@ -890,9 +911,10 @@ def application(env,start_response):
                 with appdb() as conn:
                     cfg=settings(conn);d['limits']={'low':cfg['ph_low'],'high':cfg['ph_high'],'enabled':cfg['alarms_enabled'],'confirm_samples':cfg['alarm_confirm_samples'],
                                                     'stale_minutes':cfg['stale_alert_minutes']}
-                    d['active_alarms']=[dict(r) for r in conn.execute("SELECT id,stamp,kind,detail,state FROM events WHERE state IN ('open','acknowledged') ORDER BY id DESC LIMIT 10")]
+                    d['active_alarms']=[dict(r) for r in conn.execute("SELECT id,stamp,kind,detail,state,cleared_at FROM events WHERE state IN ('open','acknowledged') ORDER BY id DESC LIMIT 10")]
                     last=conn.execute('SELECT picked_at FROM sludge_pickups ORDER BY picked_at DESC LIMIT 1').fetchone()
-                    d['last_pickup']=last[0] if last else None;d['pickup_every_days']=PICKUP_EVERY_DAYS
+                    d['last_pickup']=last[0] if last else None;d['pickup_days']=PICKUP_DAYS
+                    d['plc_alarms']=[{'tag':t,'kind':k,'banner':b,'address':a} for t,k,b,a,_ in PLC_ALARMS]
                 return send('200 OK',d)
             if path in ('/api/history','/api/export'):
                 if not can(role,'export' if path.endswith('export') else 'view'):return send('403 Forbidden',{'error':'Not permitted'})
@@ -916,7 +938,7 @@ def application(env,start_response):
             if path=='/api/pickups':
                 with appdb() as conn:
                     rows=[dict(r) for r in conn.execute('SELECT * FROM sludge_pickups ORDER BY picked_at DESC LIMIT 100')]
-                return send('200 OK',{'rows':rows,'every_days':PICKUP_EVERY_DAYS})
+                return send('200 OK',{'rows':rows,'pickup_days':PICKUP_DAYS})
             if path in ('/api/events','/api/audit'):
                 if not can(role,'audit' if path.endswith('audit') else 'view'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:return send('200 OK',{'rows':records(conn,'events' if path.endswith('events') else 'audit')})
@@ -1028,12 +1050,15 @@ def update_ph_incidents(conn, cfg, ph):
     conn.commit()
 
 
-def update_condition(conn,key,enabled,abnormal,stamp,kind,detail,recovered_kind,recovered_detail,confirm=1,recover=1):
-    """Generic incident tracker for the data-stopped, high-level and no-flow alarms.
+def update_condition(conn,key,enabled,abnormal,stamp,kind,detail,recovered_kind,recovered_detail,confirm=1,recover=1,latch=False,auto_ack=None):
+    """Generic incident tracker for the data-stopped, high-level, no-flow and PLC alarms.
 
     abnormal: True/False for a fresh evaluation, None when there is nothing to judge.
     Each stamp counts once; an incident opens after `confirm` abnormal evaluations in a row
     and closes after `recover` normal ones. State is kept as JSON in alarm_state[key].
+    latch: when the condition clears, an alarm nobody has acknowledged stays open (marked
+    cleared) until someone acknowledges it. auto_ack: actor recorded when the clear itself
+    acknowledges the alarm (sludge tank emptied).
     """
     row=conn.execute('SELECT state FROM alarm_state WHERE key=?',(key,)).fetchone()
     try:st=json.loads(row['state']) if row else {}
@@ -1060,7 +1085,14 @@ def update_condition(conn,key,enabled,abnormal,stamp,kind,detail,recovered_kind,
             st['rec']=st.get('rec',0)+1
             if st['rec']>=recover:
                 eid=st['active']
-                conn.execute("UPDATE events SET state='closed' WHERE id=? AND state IN ('open','acknowledged')",(eid,))
+                if auto_ack:
+                    conn.execute("UPDATE events SET state='closed',cleared_at=?,actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,?) WHERE id=? AND state IN ('open','acknowledged')",
+                                 (now,auto_ack,now,eid))
+                elif latch:
+                    conn.execute("UPDATE events SET cleared_at=?,state=CASE WHEN state='acknowledged' THEN 'closed' ELSE state END WHERE id=? AND state IN ('open','acknowledged')",
+                                 (now,eid))
+                else:
+                    conn.execute("UPDATE events SET state='closed' WHERE id=? AND state IN ('open','acknowledged')",(eid,))
                 cur=conn.execute('INSERT INTO events(stamp,kind,detail,state) VALUES (?,?,?,?)',
                                  (now,recovered_kind,f'Incident {eid}; {recovered_detail}','closed'))
                 st['pending']=[eid,cur.lastrowid];st['active']=None;st['rec']=0
@@ -1080,6 +1112,18 @@ def flow_window(minutes):
     finally:db.close()
     if len(rows)<2 or parse(rows[0]['stamp'])>start+timedelta(minutes=minutes*0.2):return None,None
     return max(r['value'] for r in rows)*TAGS['FLOW_RATE'][2],rows[-1]['stamp']
+
+def check_plc_alarms(conn,cfg,extras):
+    """PLC alarm bits (PLC_ALARMS, 1 = alarm). Returns {'plc:<tag>': state}."""
+    out={}
+    for tag,kind,_,addr,hint in PLC_ALARMS:
+        r=(extras or {}).get(tag) or {}
+        known=r.get('status')=='current' and r.get('value') is not None
+        out['plc:'+tag]=update_condition(conn,'plc:'+tag,cfg['plc_alarms_enabled'],
+            (r['value']>=0.5) if known else None, r.get('stamp'),
+            kind,f'{kind} (PLC {addr}, tag {tag} = 1). {hint}',
+            f'{kind} cleared',f'{tag} back to 0',latch=True,auto_ack=AUTO_ACK_ON_CLEAR.get(tag))
+    return out
 
 def check_conditions(conn,cfg,readings,now):
     """Data stopped, EQ tank high level and no discharge flow. Returns {key: state}."""
@@ -1106,7 +1150,31 @@ def check_conditions(conn,cfg,readings,now):
         'Discharge flow restored',f"flow up to {0 if peak is None else peak:.2f} L/min")
     return out
 
-CONDITION_SUBJECTS={'data':'Wastewater ALERT: no new data','level':'Wastewater EQ tank HIGH level alarm','flow':'Wastewater NO DISCHARGE FLOW alarm'}
+# Email wording for each PLC alarm (as specified by the plant): tag -> (email title, alarm code).
+PLC_EMAIL_WORDING={'SLUDGE_TANK_LEVEL':('Wastewater Sludge Tank are Full','SLUDGE_TANK_FULL'),
+                   'Mixer_Pump_Faulted':('Circulating Mixer Pump Stop Faulted','MIXER_PUMP_FAULTED'),
+                   'Rake_Motor_Faulted':('Sludge Rake Gear Motor Stop Faulted','RAKE_MOTOR_FAULTED'),
+                   'FLOC_COAG_PUMP_FAULTED':('Flocculant and Coagulant Pump Motor Stop Faulted','FLOC_COAG_PUMP_FAULTED'),
+                   'E_Stop_Status':('Emergency Stop Activated','E_STOP_STATUS'),
+                   'MAx_RGT_Pump_Faulted':('Regenerative Turbine Pump Stop Faulted','MAX_RGT_PUMP_FAULTED')}
+CONDITION_SUBJECTS={'data':'Wastewater ALERT: no new data','level':'Wastewater EQ tank HIGH level alarm','flow':'Wastewater NO DISCHARGE FLOW alarm',
+                    **{'plc:'+t:f'{w} ({c})' for t,(w,c) in PLC_EMAIL_WORDING.items()}}
+RECOVERY_SUBJECTS={'plc:'+t:f'CLEARED: {w} ({c})' for t,(w,c) in PLC_EMAIL_WORDING.items()}
+
+def alarm_report(start,end,limit=100):
+    """Text list of the alarms that started in start..end (UTC datetimes), for the report emails."""
+    zone=ZoneInfo('America/Vancouver')
+    with appdb() as conn:
+        rows=conn.execute("SELECT stamp,kind,detail,state,actor,cleared_at FROM events WHERE stamp>=? AND stamp<? "
+                          "AND kind NOT LIKE '%recovered' AND kind NOT LIKE '%restored' AND kind NOT LIKE '%cleared' ORDER BY stamp",
+                          (iso(start),iso(end))).fetchall()
+    out=[f'Alarms in this period: {len(rows)}']
+    for r in rows[:limit]:
+        status='still active' if r['state'] in ('open','acknowledged') and not r['cleared_at'] else 'cleared'
+        status+=f", acknowledged by {r['actor']}" if r['actor'] else ', not acknowledged'
+        out.append(f"- {parse(r['stamp']).astimezone(zone):%Y-%m-%d %H:%M} {r['kind']}: {r['detail']} [{status}]")
+    if len(rows)>limit:out.append(f'... and {len(rows)-limit} more (see the Alarms page).')
+    return '\n'.join(out)
 
 def report_csv(params):
     """CSV download (Reports page) of the raw readings for one tag or 'all'. Returns (filename, bytes)."""
@@ -1151,10 +1219,11 @@ def scheduler():
     now=datetime.now(ZoneInfo('America/Vancouver'))
     with appdb() as conn:
         cfg=settings(conn)
-        readings=summary()['tags']
+        current=summary();readings=current['tags']
         ph=next((r for r in readings if r['name']=='pH_Reading'),None)
         update_ph_incidents(conn,cfg,ph)
         conditions=check_conditions(conn,cfg,readings,now)
+        conditions.update(check_plc_alarms(conn,cfg,current.get('extras')))
         if not EMAIL_CFG.is_file() or not cfg['recipients']:
             return
         mail=json.loads(EMAIL_CFG.read_text())
@@ -1185,14 +1254,16 @@ def scheduler():
                 if st.get('active'):
                     eid=st['active'];ev=conn.execute('SELECT detail FROM events WHERE id=?',(eid,)).fetchone()
                     jobs.append((f'alarm:incident:{eid}',CONDITION_SUBJECTS[key],
+                        (CONDITION_SUBJECTS[key]+'\n\n' if key in RECOVERY_SUBJECTS else '')+
                         f'Incident #{eid}\n{ev["detail"] if ev else ""}\nTimestamp: {now.isoformat()}',None))
                 if st.get('pending') and cfg['email_recovery_enabled']:
                     eid,rid=st['pending']
                     delivered=conn.execute('SELECT 1 FROM delivery WHERE key=?',(f'alarm:incident:{eid}',)).fetchone()
                     rec=conn.execute('SELECT kind,detail,stamp FROM events WHERE id=?',(rid,)).fetchone()
                     if delivered and rec and datetime.now(UTC)-parse(rec['stamp'])<timedelta(hours=24):
-                        jobs.append((f'recovery:incident:{eid}',f'Wastewater {rec["kind"]} — incident #{eid}',
-                            f'{rec["detail"]}\nTimestamp: {now.isoformat()}',None))
+                        subject=RECOVERY_SUBJECTS.get(key,f'Wastewater {rec["kind"]}')
+                        jobs.append((f'recovery:incident:{eid}',f'{subject} — incident #{eid}',
+                            (subject+'\n\n' if key in RECOVERY_SUBJECTS else '')+f'{rec["detail"]}\nTimestamp: {now.isoformat()}',None))
         if cfg['daily_enabled'] and hhmm==cfg['daily_time']:
             jobs.append((f'daily:{today}','Wastewater Daily Report '+today,historical_report(now,'daily'),None))
         if now.day==cfg['monthly_day'] and hhmm==cfg['monthly_time']:
@@ -1266,6 +1337,8 @@ def historical_report(now,period):
             elif daily and name=='pH_Reading':out.append(f'{label} ({unit}): avg {avg*factor:.2f}')
             elif daily:out.append(f'{label} ({unit}): max {mx*factor:.2f}')
             else:out.append(f'{label} ({unit}): count {count:,}; min {mn*factor:.2f}; avg {avg*factor:.2f}; max {mx*factor:.2f}')
+    try:out.extend(['',alarm_report(start.astimezone(UTC),end.astimezone(UTC))])
+    except (OSError,sqlite3.Error):out.extend(['','Alarm list unavailable (app database could not be read).'])
     out.extend(['','Report uses recorded samples; missing or invalid-quality data should be reviewed separately.'])
     return '\n'.join(out)
 

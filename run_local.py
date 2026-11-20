@@ -44,7 +44,10 @@ def reading(t, total):
             'Coag_Pump_Rate_Percent': 15 + random.gauss(0, 0.3), 'Coag_Pump_Run': 570 + random.gauss(0, 6),  # Coag run is ml/h, like the PLC since 11/19/2026
             'Floc_Pump_Rate_Percent': 51 + random.gauss(0, 0.5), 'Floc_Pump_Run': 1.6 + random.gauss(0, 0.03),
             'SLUDGE_TANK_LEVEL': float(int(t.timestamp() // 120) % 2),  # full / not full every 2 minutes
-            'SUMP_PUMP_STATUS': float(int(t.timestamp() // 90) % 2), 'Mixer_Pump_Staus': 1.0}
+            'SUMP_PUMP_STATUS': float(int(t.timestamp() // 90) % 2), 'Mixer_Pump_Staus': 1.0,
+            # PLC alarm bits (1 = alarm): the E-Stop trips for 2 minutes every 10; the faults stay good.
+            'SYSTEM_ENABLED': 1.0, 'E_Stop_Status': float(int(t.timestamp() // 120) % 5 == 0),
+            'Mixer_Pump_Faulted': 0.0, 'Rake_Motor_Faulted': 0.0, 'MAx_RGT_Pump_Faulted': 0.0, 'FLOC_COAG_PUMP_FAULTED': 0.0}
 
 
 def insert(db, t, total):
@@ -83,6 +86,15 @@ def live_feed(path, interval=30):
                 insert(db, now, total)
         except sqlite3.Error as e:
             print('demo feed error:', e, file=sys.stderr)
+
+
+def scheduler_loop(web, interval=60):
+    while True:
+        try:
+            web.scheduler()
+        except Exception as e:
+            print('scheduler error:', e, file=sys.stderr)
+        time.sleep(interval)
 
 
 class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
@@ -156,6 +168,8 @@ def main():
 
     if not args.db:
         threading.Thread(target=live_feed, args=(history,), daemon=True).start()
+    # Alarm checks like the server's scheduler timer (no email: .local/email.json does not exist).
+    threading.Thread(target=scheduler_loop, args=(web,), daemon=True).start()
 
     with make_server(args.host, args.port, web.application, server_class=ThreadingWSGIServer, handler_class=QuietHandler) as httpd:
         print(f'\nWastewater dashboard running at http://{args.host}:{args.port}')
