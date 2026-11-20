@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.33'
+        assert s['revision']=='1.2.34'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -197,8 +197,8 @@ class RevisionTests(unittest.TestCase):
         self.assertIn('Timestamp America/Vancouver',flow)
         self.assertIn('US gal/min',flow)
         summary=z.read('xl/worksheets/sheet1.xml').decode()
-        self.assertIn('EOD Daily Value (L)',summary);self.assertNotIn('FLOW_RATE',summary);self.assertIn('Total_Flow_Li',summary)
-        self.assertIn('Total Quarterly Value',summary);self.assertIn('Total Monthly Value',summary)
+        self.assertIn('EOD Daily Usage (L)',summary);self.assertNotIn('FLOW_RATE',summary);self.assertIn('Total_Flow_Li',summary)
+        self.assertIn('Total Quarterly Usage',summary);self.assertIn('Total Monthly Usage',summary)
         _,one=web.report_xlsx({**params,'tag':['FLOW_RATE']})
         self.assertEqual(zipfile.ZipFile(io.BytesIO(one)).read('xl/workbook.xml').decode().count('<sheet '),2)
         with self.assertRaises(ValueError):web.report_xlsx({**params,'tag':['nope']})
@@ -217,12 +217,11 @@ class RevisionTests(unittest.TestCase):
         _,data=web.report_xlsx({'tag':['FLOW_RATE'],'startDate':['2026-09-30'],'endDate':['2026-10-02']})
         summary=zipfile.ZipFile(io.BytesIO(data)).read('xl/worksheets/sheet1.xml').decode()
         values=[float(v) for v in __import__('re').findall(r's="2"><v>([^<]+)</v>',summary)]
-        # quarters (Q3, Q4), months (Sep, Oct), days (09-30, 10-01 carried, 10-02)
-        # quarter (total, usage), month (total, usage), day (EOD, usage); 10-02 drop has no usage
-        self.assertEqual(values,[524714.25,523714.25,525014.37,0.0, 524714.25,523714.25,525014.37,0.0,
-                                 524714.25,523714.25, 524714.25,0.0, 300.12])
+        # quarters (Q3, Q4), months (Sep, Oct), days (09-30, 10-01 carried, 10-02): EOD daily usage only
+        # Q3 = Sep = 09-30; Q4 = Oct = 10-01 (carried forward from 09-30) + 10-02
+        self.assertEqual(values,[524714.25,525014.37, 524714.25,525014.37, 524714.25,524714.25,300.12])
         self.assertIn('carried forward from 09/30/2026 18:00',summary)
-        self.assertIn('Meter reading dropped',summary)
+        self.assertNotIn('Meter reading dropped',summary);self.assertNotIn('usage not calculated',summary)
         self.assertIn('2026 Q3 (Jul-Sep)',summary);self.assertIn('2026 Q4 (Oct-Dec)',summary)
         self.assertEqual(str(web.truncate2(524714.2551)),'524714.25')
         # Column C: cubic metres (3 decimals, style 5); column D: pH average per day / month / quarter
@@ -234,12 +233,12 @@ class RevisionTests(unittest.TestCase):
                 db.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('pH_Reading',web.iso(t),v))
         _,data=web.report_xlsx({'tag':['FLOW_RATE'],'startDate':['2026-09-30'],'endDate':['2026-10-02']})
         summary=zipfile.ZipFile(io.BytesIO(data)).read('xl/worksheets/sheet1.xml').decode()
-        self.assertIn('EOD Daily Value (m³)',summary);self.assertIn('pH Average',summary)
+        self.assertIn('EOD Daily Usage (L)',summary);self.assertIn('EOD Daily Usage (m³)',summary);self.assertIn('pH Average',summary)
+        self.assertIn('Total Monthly Usage (L)',summary);self.assertNotIn('Value (L)',summary)
         self.assertRegex(summary,r'<c r="D\d+" s="2"><v>7\.5</v></c>')    # 09-30 (and Sep, Q3): (7 + 8) / 2
         self.assertRegex(summary,r'<c r="D\d+" s="2"><v>6\.5</v></c>')    # 10-02
-        self.assertRegex(summary,r'<c r="E\d+" s="2"><v>523714\.25</v></c>')  # usage moved to column E
-        self.assertRegex(summary,r'<c r="F\d+" s="5"><v>523\.71425</v></c>')    # usage in m³, column F
-        self.assertIn('Daily Usage (m³)',summary);self.assertIn('Monthly Usage (m³)',summary)
+        self.assertNotRegex(summary,r'<c r="F\d+" s="5">')     # the old usage columns E and F are gone
+        self.assertNotIn('>Daily Usage (L)<',summary);self.assertNotIn('Quarterly Usage (L)<',summary.replace('Total Quarterly Usage (L)',''))
 
     def test_scheduler_incident_email_dedup_and_recovery(self):
         web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'

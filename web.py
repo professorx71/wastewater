@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.33','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.34','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -416,51 +416,45 @@ def report_xlsx(params,data_tags=None):
     def ph_avg(days):
         tot=sum(ph[d][0] for d in days if d in ph);n=sum(ph[d][1] for d in days if d in ph)
         return tot/n if n else None
+    # The Total_Flow_Li meter resets every day, so the EOD reading is that day's usage.
     last=(parse(prior[0]).astimezone(zone),prior[1]) if prior else None
-    prev=truncate2(last[1]) if last else None
-    daily=[]   # (date, EOD value, usage or None, reading time, note)
+    daily=[]   # (date, EOD usage, reading time, note)
     day=local_start
     while day<=local_end:
         if day in valid:last=valid[day]
         if last:
-            v=truncate2(last[1]);note=''
-            if last[0].date()!=day:note=f'No reading above 1 L; carried forward from {last[0]:%m/%d/%Y %H:%M}'
-            if prev is None:usage=None;note=note or 'No earlier reading; usage not calculated'
-            elif v<prev:usage=None;note=(note+'; ' if note else '')+'Meter reading dropped (reset?); usage not calculated'
-            else:usage=v-prev
-            daily.append((day,v,usage,last[0],note));prev=v
+            note=f'No reading above 1 L; carried forward from {last[0]:%m/%d/%Y %H:%M}' if last[0].date()!=day else ''
+            daily.append((day,truncate2(last[1]),last[0],note))
         day+=timedelta(days=1)
     months={};quarters={}
-    def add(bucket,key,v,usage):
-        total,use=bucket.get(key,(Decimal(0),None))
-        bucket[key]=(total+v,use if usage is None else (use or Decimal(0))+usage)
-    for day,v,usage,_,_ in daily:add(months,f'{day:%Y-%m}',v,usage)
-    for m,(v,usage) in months.items():add(quarters,quarter_label(date.fromisoformat(m+'-01')),v,usage)
+    for day,v,_,_ in daily:months[f'{day:%Y-%m}']=months.get(f'{day:%Y-%m}',Decimal(0))+v
+    for m,v in months.items():
+        q=quarter_label(date.fromisoformat(m+'-01'));quarters[q]=quarters.get(q,Decimal(0))+v
     num=lambda v:'' if v is None else (float(v),2)
     m3=lambda v:'' if v is None else (float(v)/1000,5)          # litres -> cubic metres, 3 decimals
     pH=lambda v:'' if v is None else (round(v,2),2)
     in_month=lambda m:[d for d,*_ in daily if f'{d:%Y-%m}'==m]
     in_quarter=lambda q:[d for d,*_ in daily if quarter_label(d)==q]
     summary_rows=[[B('Wastewater report summary')],
-                  ['Tag',tag],['Unit Of Measure','L (litres)'],['Date range (America/Vancouver)',date_range],[]]
+                  ['Tag',tag],['Unit Of Measure','L (litres) and m³ (cubic metres)'],['Date range (America/Vancouver)',date_range],[]]
     if not daily:
         summary_rows.append(['No valid Total_Flow_Li readings in or before this date range.'])
     else:
-        summary_rows.append([B('Quarter'),B('Total Quarterly Value (L)'),B('Total Quarterly Value (m³)'),B('pH Average'),B('Quarterly Usage (L)'),B('Quarterly Usage (m³)')])
-        summary_rows+=[[q,num(v),m3(v),pH(ph_avg(in_quarter(q))),num(u),m3(u)] for q,(v,u) in sorted(quarters.items())]
-        summary_rows+=[[],[B('Month'),B('Total Monthly Value (L)'),B('Total Monthly Value (m³)'),B('pH Average'),B('Monthly Usage (L)'),B('Monthly Usage (m³)')]]
-        summary_rows+=[[f'{m[5:]}/{m[:4]}',num(v),m3(v),pH(ph_avg(in_month(m))),num(u),m3(u)] for m,(v,u) in sorted(months.items())]
-        summary_rows+=[[],[B('Date'),B('EOD Daily Value (L)'),B('EOD Daily Value (m³)'),B('pH Average'),B('Daily Usage (L)'),B('Daily Usage (m³)'),B('Reading Used (America/Vancouver)'),B('Notes')]]
-        summary_rows+=[[day,num(v),m3(v),pH(ph_avg([day])),num(u),m3(u),when.replace(tzinfo=None),note] for day,v,u,when,note in daily]
-    summary_rows+=[[],['EOD Daily Value is the last Total_Flow_Li reading above 1 L on that day (America/Vancouver), cut to 2 decimals. '
+        summary_rows.append([B('Quarter'),B('Total Quarterly Usage (L)'),B('Total Quarterly Usage (m³)'),B('pH Average')])
+        summary_rows+=[[q,num(v),m3(v),pH(ph_avg(in_quarter(q)))] for q,v in sorted(quarters.items())]
+        summary_rows+=[[],[B('Month'),B('Total Monthly Usage (L)'),B('Total Monthly Usage (m³)'),B('pH Average')]]
+        summary_rows+=[[f'{m[5:]}/{m[:4]}',num(v),m3(v),pH(ph_avg(in_month(m)))] for m,v in sorted(months.items())]
+        summary_rows+=[[],[B('Date'),B('EOD Daily Usage (L)'),B('EOD Daily Usage (m³)'),B('pH Average'),B('Reading Used (America/Vancouver)'),B('Notes')]]
+        summary_rows+=[[day,num(v),m3(v),pH(ph_avg([day])),when.replace(tzinfo=None),note] for day,v,when,note in daily]
+    summary_rows+=[[],['EOD Daily Usage is the last Total_Flow_Li reading above 1 L on that day (America/Vancouver), cut to 2 decimals; '
+                       'the meter resets every day, so this is the litres used that day. '
                        'If a day has no reading above 1 L, the last valid reading before it is used (see Reading Used and Notes). '
-                       'Monthly total = sum of the EOD daily values in the month; quarterly total = sum of those monthly totals. '
-                       'Daily Usage = EOD value minus the previous EOD value (litres that went through the meter that day); '
-                       'monthly and quarterly usage add up the daily usage. Only days inside the selected date range are counted. '
-                       'm³ = litres / 1000 (EOD values and usage). pH Average = average of all EQ pH readings that day (month or quarter: all readings in it); blank when there were none.']]
+                       'Monthly total = sum of the EOD daily usage in the month; quarterly total = sum of those monthly totals. '
+                       'Only days inside the selected date range are counted. m³ = litres / 1000. '
+                       'pH Average = average of all EQ pH readings that day (month or quarter: all readings in it); blank when there were none.']]
     chem=[('Chemical Usage',chemical_rows(start,end,zone,date_range),(34,22,22))]
     sheets=(chem if choice=='chemical' else [('Sludge Pickups',sludge_rows(start,end,zone,date_range),(30,26,22,24,22,40))] if choice=='sludge'
-            else [('Summary',summary_rows,(34,24,26,12,20,22,30,60))]+(chem if choice=='all' and data_tags is None else []))
+            else [('Summary',summary_rows,(34,24,26,12,30,60))]+(chem if choice=='all' and data_tags is None else []))
     sheets+=[(n,readings(n),(22,30,14,18)) for n in names]
     fname=f'wastewater-report-{choice}-{local_start:%Y-%m-%d}-to-{local_end:%Y-%m-%d}.xlsx'
     return fname,xlsx(sheets)

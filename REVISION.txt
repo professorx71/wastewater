@@ -1,3 +1,13 @@
+Revision 1.2.34 - Wastewater Dashboard
+Design and program by Daniel Salazar.
+Released 2026-11-20.
+
+Changes since Rev 1.2.33:
+- Remove Daily Usage on report
+- Uncommitted work included in this release (see the commit for details).
+
+------------------------------------------------------------------------
+
 Revision 1.2.33 - Wastewater Dashboard
 Design and program by Daniel Salazar.
 Released 2026-11-20.
