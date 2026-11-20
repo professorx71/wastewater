@@ -24,7 +24,7 @@ async function api(path,opts={}){const response=await fetch(path,{cache:'no-stor
 function ageText(stamp){if(!stamp)return 'No readings';const s=Math.max(0,Math.round((Date.now()+clockOffset-Date.parse(stamp))/1000));return 'Updated '+(s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min')+' ago'}
 function tickAges(){document.querySelectorAll('[data-stamp]').forEach(el=>el.textContent=ageText(el.dataset.stamp))}
 function escapeHTML(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function view(name){if(VIEW_PERMS[name]&&!can(VIEW_PERMS[name]))name='overview';document.querySelectorAll('.view').forEach(n=>n.hidden=n.id!==name);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('selected',n.dataset.view===name));if(name==='events'){loadEvents();loadPickups()}if(name==='audit')loadAudit();if(name==='settings')loadSettings();if(name==='trends')loadHistory()}
+function view(name){if(VIEW_PERMS[name]&&!can(VIEW_PERMS[name]))name='overview';document.querySelectorAll('.view').forEach(n=>n.hidden=n.id!==name);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('selected',n.dataset.view===name));if(name==='events'){loadEvents();loadPickups();loadStock();loadShelves()}if(name==='audit'){loadAudit();loadCalibrations()}if(name==='settings')loadSettings();if(name==='trends')loadHistory()}
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>view(b.dataset.view)));
 function drawCards(){
  if(!summaryData)return;
@@ -58,9 +58,12 @@ function drawCards(){
    $('systemState').className='system-state'+(known?(on?' on':' off'):'');$('systemText').textContent=known?(on?'ON':'OFF'):'--';
    $('systemState').title=`System enabled (SYSTEM_ENABLED, PLC B3:0/4): ${known?(on?'ON':'OFF'):(r.status||'missing')}${r.stamp?' · since '+local(r.stamp):''}`}
   // Alarm banner: one line per PLC alarm bit that is 1 right now (sludge tank FULL, E-Stop, faults)
-  {const lines=(summaryData.plc_alarms||[]).filter(a=>{const r=ex[a.tag]||{};return r.status==='current'&&r.value!=null&&Number(r.value)>=0.5})
+  {const shelf=new Set((summaryData.shelved||[]).map(s=>s.key));
+   const lines=(summaryData.plc_alarms||[]).filter(a=>{const r=ex[a.tag]||{};return !shelf.has('plc:'+a.tag)&&r.status==='current'&&r.value!=null&&Number(r.value)>=0.5})
     .map(a=>{const r=ex[a.tag];const [head,...rest]=a.banner.split(' · ');return `<div>⚠ ${escapeHTML(head)}${r.stamp?' since '+escapeHTML(local(r.stamp)):''}${rest.length?' · '+escapeHTML(rest.join(' · ')):''} <small>(${escapeHTML(a.address)})</small></div>`});
-   const rib=$('alarmRibbon');rib.hidden=!lines.length;rib.innerHTML=lines.join('')}}
+   const rib=$('alarmRibbon');rib.hidden=!lines.length;rib.innerHTML=lines.join('');
+   const sh=summaryData.shelved||[];$('shelfNote').hidden=!sh.length;
+   $('shelfNote').textContent=sh.length?'Shelved (no emails or texts): '+sh.map(s=>`${s.label} until ${local(s.until)} — ${s.reason}`).join(' · '):''}}
  const ph=item('pH_Reading');const limits=summaryData.limits||{low:5.8,high:9};const banner=$('banner');banner.className='banner';
  const allCurrent=summaryData.tags.every(x=>x.status==='current');
  const outside=ph.status==='current'&&ph.value!=null&&(ph.value<limits.low||ph.value>limits.high);
@@ -106,9 +109,10 @@ function stateText(r){if(r.cleared_at&&r.state==='open')return 'cleared · not a
 async function loadEvents(){try{const data=await api('/api/events');$('eventlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Status</th><th>Action</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.kind)}</td><td>${escapeHTML(r.detail)}</td><td>${escapeHTML(stateText(r))}</td><td>${r.state==='open'&&can('acknowledge')?`<button data-ack="${r.id}">Acknowledge</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="5">No recorded alarms yet.</td></tr>'}</tbody></table></div>`;document.querySelectorAll('[data-ack]').forEach(b=>b.onclick=async()=>{try{await api('/api/ack',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify({id:Number(b.dataset.ack)})});loadEvents()}catch(e){alert('Could not acknowledge: '+e.message)}})}catch(e){$('eventlist').textContent=e.message}}
 async function loadAudit(){try{const data=await api('/api/audit');$('auditlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.actor)}</td><td>${escapeHTML(r.action)}</td><td>${escapeHTML(r.detail)}</td></tr>`).join('')||'<tr><td colspan="4">No audit entries.</td></tr>'}</tbody></table></div>`}catch(e){$('auditlist').textContent='Admin required or audit unavailable: '+e.message}}
 const KEYS=['ph_low','ph_high','alarms_enabled','email_enabled','email_recovery_enabled','alarm_confirm_samples','alarm_recovery_samples','alarm_on','alarm_off','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time',
- 'stale_alert_enabled','stale_alert_minutes','level_alarm_enabled','level_high_ft','flow_alarm_enabled','flow_low_lpm','flow_low_minutes','quarterly_enabled','plc_alarms_enabled'];
+ 'stale_alert_enabled','stale_alert_minutes','level_alarm_enabled','level_high_ft','flow_alarm_enabled','flow_low_lpm','flow_low_minutes','quarterly_enabled','plc_alarms_enabled','cal_reminders_enabled','cal_ph_days','cal_level_days','cal_remind_days',
+ 'stock_alarm_enabled','stock_low_coag_l','stock_low_floc_l','sms_enabled'];
 const dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];$('alarmDays').innerHTML=dayNames.map((d,i)=>`<label><input type="checkbox" data-day="${i}"> ${d}</label>`).join('');
-async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input:not([data-fixed]),#settings textarea,#settings button').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
+async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('sms_recipients').value=(config.sms_recipients||[]).join('\n');$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input:not([data-fixed]),#settings textarea,#settings button').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
 // ---- Accounts and passwords (Admin only; server enforces the same rule) ----
 const postJSON=(path,body)=>fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d});
 function accountMsg(text,ok){const el=$('accountState');el.textContent=text;el.className=ok?'ok-text':'error-text'}
@@ -135,7 +139,7 @@ $('saveAdmin').addEventListener('click',async()=>{
   setTimeout(()=>window.location.reload(),1500);
  }catch(e){accountMsg('Not changed: '+e.message)}});
 const RIGHT_ROLES=['Admin','Engineering','Operator','Guest'];
-const RIGHT_LABELS={pickup:'Log sludge pickups',export:'Download reports (Excel and CSV)',acknowledge:'Acknowledge alarms',settings:'View and change Settings (alarms, email reports)',audit:'View the Audit log'};
+const RIGHT_LABELS={pickup:'Log sludge pickups and chemical stock',export:'Download reports (Excel and CSV)',acknowledge:'Acknowledge alarms',settings:'View and change Settings (alarms, email reports) and shelve alarms',audit:'View the Audit log'};
 const MIN_PW={Engineering:6,Operator:4,Guest:4};
 $('newRole').addEventListener('change',()=>{$('pwMin').textContent=MIN_PW[$('newRole').value]});
 $('saveOperator').addEventListener('click',async()=>{
@@ -151,7 +155,7 @@ $('saveRights').addEventListener('click',async()=>{
 $('disableOperator').addEventListener('click',async()=>{
  if(!confirm('Turn off ALL Operator logins? No Operator will be able to sign in until you add one again.'))return;
  try{await postJSON('/api/accounts/operator/disable',{});accountMsg('Operator login turned off.',true);loadAccounts()}catch(e){accountMsg('Not changed: '+e.message)}});
-$('save').addEventListener('click',async()=>{const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));body.recipients=$('recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)});$('saveState').textContent='Settings saved to server.';loadSummary()}catch(e){$('saveState').textContent='Save failed: '+e.message}});
+$('save').addEventListener('click',async()=>{const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));body.recipients=$('recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);body.sms_recipients=$('sms_recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)});$('saveState').textContent='Settings saved to server.';loadSummary()}catch(e){$('saveState').textContent='Save failed: '+e.message}});
 function reportDownload(fmt){const a=$('from').value,b=$('to').value;if(!a||!b||a>b){alert('Choose a valid date range.');return}let days=(Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/86400000;if(days>91){alert('Maximum 92 inclusive days (one quarter)');return}window.location.href='/api/export?tag='+encodeURIComponent($('reportTag').value)+'&startDate='+encodeURIComponent(a)+'&endDate='+encodeURIComponent(b)+(fmt?'&format='+fmt:'')}
 const vanNow=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(Date.now()+clockOffset)).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`};
 const pickupMsg=(t,ok)=>{const el=$('pickupState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
@@ -169,6 +173,63 @@ $('logPickup').addEventListener('click',async()=>{const when=$('pickupWhen').val
 $('pickupExcel').addEventListener('click',()=>{const m=$('pickupMonth').value;const today=vanNow().slice(0,10);if(!m||m+'-01'>today){alert('Choose this month or an earlier month.');return}
  const [y,mo]=m.split('-').map(Number);let end=`${m}-${String(new Date(Date.UTC(y,mo,0)).getUTCDate()).padStart(2,'0')}`;if(end>today)end=today;
  window.location.href=`/api/export?tag=sludge&startDate=${m}-01&endDate=${end}`});
+// ---- Sensor calibration log (Audit page) ----
+const calMsg=(t,ok)=>{const el=$('calState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
+const calDay=d=>{try{return new Intl.DateTimeFormat('en-CA',{timeZone:'UTC',year:'numeric',month:'short',day:'numeric'}).format(new Date(d+'T00:00:00Z'))}catch{return d}};
+let calMaxKB=700;
+async function loadCalibrations(){
+ $('calReport').hidden=!can('export');const today=vanNow().slice(0,10);$('calDate').max=today;if(!$('calDate').value)$('calDate').value=today;
+ try{const d=await api('/api/calibrations');const rows=d.rows||[],sensors=d.sensors||{};calMaxKB=d.max_file_kb||700;$('calMax').textContent=calMaxKB;
+  const st=d.status||{};
+  $('calLast').innerHTML=Object.entries(sensors).map(([k,s])=>{const last=rows.find(r=>r.sensor===k);const days=last?Math.round((Date.parse(today)-Date.parse(last.calibrated_on))/864e5):null;const c=st[k]||{};
+   const due=c.state==='overdue'?`<em class="bad">OVERDUE since ${escapeHTML(calDay(c.due))}</em>`:c.state==='soon'?`<em class="warn">Due ${escapeHTML(calDay(c.due))} (in ${c.days_left} day${c.days_left===1?'':'s'})</em>`:c.due?`<em class="good">Next due ${escapeHTML(calDay(c.due))} (every ${c.every_days} days)</em>`:'';
+   return `<div class="${escapeHTML(c.state||'')}"><b>${escapeHTML(s.label)}</b><span>${last?`Last calibrated ${escapeHTML(calDay(last.calibrated_on))} (${days} day${days===1?'':'s'} ago) by ${escapeHTML(last.calibrated_by)}`:'No calibration logged yet'}</span>${due}</div>`}).join('');
+  $('calList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Sensor</th><th>Date calibrated</th><th>Calibrated by</th><th>Certificate no.</th><th>Certificate file</th><th>Note</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${rows.map(r=>
+   `<tr><td>${escapeHTML((sensors[r.sensor]||{}).label||r.sensor)}</td><td>${escapeHTML(calDay(r.calibrated_on))}</td><td>${escapeHTML(r.calibrated_by)}</td><td>${escapeHTML(r.certificate_no)||'—'}</td>`+
+   `<td>${r.file_name?`<a href="/api/calibrations/certificate?id=${r.id}">${escapeHTML(r.file_name)}</a> <small>(${Math.ceil((r.file_size||0)/1000)} KB)</small>`:'—'}</td><td>${escapeHTML(r.note)||'—'}</td><td>${escapeHTML(r.logged_by)}<br><small>${escapeHTML(local(r.logged_at))}</small></td>`+
+   `<td><button type="button" class="danger" data-cal="${r.id}">Remove</button></td></tr>`).join('')||'<tr><td colspan="8">No calibrations logged yet.</td></tr>'}</tbody></table></div>`;
+  document.querySelectorAll('[data-cal]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this calibration record and its certificate file? Use this only to fix a mistake.'))return;
+   try{await postJSON('/api/calibrations/remove',{id:Number(b.dataset.cal)});calMsg('Calibration removed.',true);loadCalibrations()}catch(e){calMsg('Not removed: '+e.message)}});
+ }catch(e){$('calList').textContent='Unable to load the calibration log: '+e.message}}
+const readFile=f=>new Promise((ok,bad)=>{const r=new FileReader();r.onload=()=>ok(String(r.result).split(',')[1]||'');r.onerror=()=>bad(Error('could not read the file'));r.readAsDataURL(f)});
+$('logCal').addEventListener('click',async()=>{const f=$('calFile').files[0];
+ if(f&&f.size>calMaxKB*1000){calMsg(`Certificate file is too large (${Math.ceil(f.size/1000)} KB, max ${calMaxKB} KB). Scan or save it at a lower resolution.`);return}
+ const btn=$('logCal');btn.disabled=true;
+ try{const body={sensor:$('calSensor').value,date:$('calDate').value,name:$('calName').value,certificate:$('calCert').value,note:$('calNote').value};
+  if(f)body.file={name:f.name,data:await readFile(f)};
+  await postJSON('/api/calibrations',body);['calName','calCert','calNote','calFile'].forEach(id=>$(id).value='');calMsg('Calibration logged.',true);loadCalibrations()}
+ catch(e){calMsg('Not logged: '+e.message)}finally{btn.disabled=false}});
+$('calExcel').addEventListener('click',()=>{window.location.href='/api/export?tag=calibration'});
+$('calCsv').addEventListener('click',()=>{window.location.href='/api/export?tag=calibration&format=csv'});
+// ---- Chemical stock (Alarms page) ----
+const stockMsg=(t,ok)=>{const el=$('stockState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
+async function loadStock(){
+ $('stockForm').hidden=!can('pickup');if(!$('stockWhen').value)$('stockWhen').value=vanNow();$('stockWhen').max=vanNow();
+ try{const d=await api('/api/stock');const st=d.status||{},rows=d.rows||[];
+  $('stockCards').innerHTML=Object.values(st).map(s=>{if(s.litres==null)return `<div><b>${escapeHTML(s.label)}</b><span>No delivery or tank count logged yet</span></div>`;
+   const low=s.low_l>0&&s.litres<s.low_l;
+   return `<div class="${low?'overdue':'ok'}"><b>${escapeHTML(s.label)}: ${fmt(s.litres)} L${low?' — LOW':''}</b><span>Using about ${fmt(s.per_day)} L/day${s.days_left!=null?` · about ${Math.floor(s.days_left)} days left`:''}${s.low_l>0?` · low below ${fmt(s.low_l)} L`:''}</span><span>Since ${escapeHTML(local(s.since))}: start ${fmt(s.base)} L + delivered ${fmt(s.added)} L − used ${fmt(s.used)} L</span></div>`}).join('');
+  $('stockList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time (Vancouver)</th><th>Chemical</th><th>Entry</th><th>Litres</th><th>Note</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${rows.map(r=>
+   `<tr><td>${escapeHTML(local(r.at))}</td><td>${r.chemical==='coag'?'Coagulant':'Flocculant'}</td><td>${r.kind==='delivery'?'Delivery':'Tank count'}</td><td>${fmt(r.litres)}</td><td>${escapeHTML(r.note)||'—'}</td><td>${escapeHTML(r.logged_by)}</td><td>${can('pickup')?`<button type="button" class="danger" data-stock="${r.id}">Remove</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="7">No chemical deliveries or tank counts logged yet.</td></tr>'}</tbody></table></div>`;
+  document.querySelectorAll('[data-stock]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this stock entry? Use this only to fix a mistake.'))return;
+   try{await postJSON('/api/stock/remove',{id:Number(b.dataset.stock)});stockMsg('Entry removed.',true);loadStock()}catch(e){stockMsg('Not removed: '+e.message)}});
+ }catch(e){$('stockList').textContent='Unable to load chemical stock: '+e.message}}
+$('logStock').addEventListener('click',async()=>{const litres=Number($('stockLitres').value);if(!$('stockLitres').value){stockMsg('Enter the litres.');return}
+ try{await postJSON('/api/stock',{chemical:$('stockChem').value,kind:$('stockKind').value,litres,when:$('stockWhen').value,note:$('stockNote').value});
+  ['stockLitres','stockNote'].forEach(id=>$(id).value='');$('stockWhen').value=vanNow();stockMsg('Entry logged.',true);loadStock()}catch(e){stockMsg('Not logged: '+e.message)}});
+// ---- Alarm shelving (Alarms page) ----
+const shelfMsg=(t,ok)=>{const el=$('shelfState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
+async function loadShelves(){const manage=can('settings');$('shelfForm').hidden=!manage;
+ try{const d=await api('/api/shelves');const sel=$('shelfKey');const keep=sel.value;
+  sel.innerHTML=Object.entries(d.choices||{}).map(([k,l])=>`<option value="${escapeHTML(k)}">${escapeHTML(l)}</option>`).join('');if(keep)sel.value=keep;
+  $('shelfMax').textContent=d.max_hours;$('shelfHours').max=d.max_hours;const act=d.active||[];
+  $('shelfPanel').hidden=!manage&&!act.length;
+  $('shelfList').innerHTML=act.length?`<div class="tablewrap"><table><thead><tr><th>Alarm</th><th>Shelved until</th><th>Reason</th><th>By</th><th>Action</th></tr></thead><tbody>${act.map(s=>
+   `<tr><td>${escapeHTML((d.choices||{})[s.key]||s.key)}</td><td>${escapeHTML(local(s.until))}</td><td>${escapeHTML(s.reason)}</td><td>${escapeHTML(s.shelved_by)}</td><td>${manage?`<button type="button" data-unshelve="${escapeHTML(s.key)}">Unshelve</button>`:'—'}</td></tr>`).join('')}</tbody></table></div>`:'<p>No alarms are shelved.</p>';
+  document.querySelectorAll('[data-unshelve]').forEach(b=>b.onclick=async()=>{try{await postJSON('/api/shelves/remove',{key:b.dataset.unshelve});shelfMsg('Alarm unshelved.',true);loadShelves();loadSummary()}catch(e){shelfMsg('Not changed: '+e.message)}});
+ }catch(e){$('shelfList').textContent='Unable to load shelved alarms: '+e.message}}
+$('shelveBtn').addEventListener('click',async()=>{try{await postJSON('/api/shelves',{key:$('shelfKey').value,hours:Number($('shelfHours').value),reason:$('shelfReason').value});
+ $('shelfReason').value='';shelfMsg('Alarm shelved.',true);loadShelves();loadSummary()}catch(e){shelfMsg('Not shelved: '+e.message)}});
 $('export').addEventListener('click',()=>reportDownload(''));$('exportCsv').addEventListener('click',()=>reportDownload('csv'));
 // /switch refuses the current role so the browser re-prompts; a different login returns to '/'.
 $('switchUser').addEventListener('click',()=>{window.location.href='/switch?from='+encodeURIComponent(userName||userRole)});

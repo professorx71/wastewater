@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.27','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.28','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -350,6 +350,19 @@ def report_xlsx(params,data_tags=None):
     previous EOD, and monthly and quarterly totals. data_tags overrides which tag worksheets
     are included (emails use fewer to keep attachments small)."""
     choice=params.get('tag',['all'])[0]
+    if choice in ('alarms','compliance','pumps'):
+        start,end=window(params,REPORT_MAX_DAYS);zone=ZoneInfo('America/Vancouver')
+        a=start.astimezone(zone).date();b=(end.astimezone(zone)-timedelta(microseconds=1)).date();rng=f'{a:%m/%d/%Y} to {b:%m/%d/%Y}'
+        with appdb() as c:cfg=settings(c)
+        name,rows,widths={'alarms':('Alarm History',lambda:alarm_rows(start,end,zone,rng),(22,30,60,22,14,30,22,14,14)),
+                          'compliance':('Discharge Compliance',lambda:compliance_rows(start,end,zone,rng,cfg),(16,12,10,10,10,16,18,16,12)),
+                          'pumps':('Pump Run Hours',lambda:pump_rows(start,end,zone,rng),(34,22,14,14,18))}[choice]
+        rows=rows();stem=f'wastewater-{choice}-{a:%Y-%m-%d}-to-{b:%Y-%m-%d}'
+        if False:return stem+'.csv',rows_csv(rows)
+        return stem+'.xlsx',xlsx([(name,rows,widths)])
+    if choice=='calibration':
+        stamp=datetime.now(ZoneInfo('America/Vancouver'))
+        return f'wastewater-sensor-calibrations-{stamp:%Y-%m-%d}.xlsx',xlsx([('Calibrations',calibration_rows(),(34,18,22,22,30,40,24,26))])
     if choice not in ('all','chemical','sludge') and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
     names=(tuple(data_tags) if data_tags is not None else REPORT_TAGS if choice=='all'
            else tuple(t for t,_ in CHEMICAL_TAGS) if choice=='chemical' else (SLUDGE_TAG,) if choice=='sludge' else (choice,))
@@ -450,7 +463,13 @@ DEFAULTS={'ph_low':5.8,'ph_high':9.0,'alarms_enabled':False,'email_enabled':Fals
           # Quarterly Excel report, sent on the monthly day/time in Jan, Apr, Jul and Oct.
           'quarterly_enabled':False,
           # PLC alarms: sludge tank FULL, E-Stop and pump/motor faults (PLC_ALARMS).
-          'plc_alarms_enabled':True}
+          'plc_alarms_enabled':True,
+          # Sensor calibration intervals (days) and reminder lead time.
+          'cal_reminders_enabled':True,'cal_ph_days':30,'cal_level_days':365,'cal_remind_days':7,
+          # Chemical stock: alarm when the estimated litres fall below these (0 = off).
+          'stock_alarm_enabled':True,'stock_low_coag_l':20.0,'stock_low_floc_l':20.0,
+          # Text messages for new alarms, sent by email to carrier email-to-SMS addresses.
+          'sms_enabled':False,'sms_recipients':[]}
 @contextmanager
 def appdb():
     APP_DB.parent.mkdir(parents=True,exist_ok=True)
@@ -474,6 +493,12 @@ def appdb():
         iterations INTEGER NOT NULL, hash TEXT NOT NULL, updated TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS sludge_pickups (id INTEGER PRIMARY KEY AUTOINCREMENT, picked_at TEXT NOT NULL,
         note TEXT NOT NULL DEFAULT '', logged_by TEXT NOT NULL, logged_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS calibrations (id INTEGER PRIMARY KEY AUTOINCREMENT, sensor TEXT NOT NULL, calibrated_on TEXT NOT NULL,
+        calibrated_by TEXT NOT NULL, certificate_no TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+        file_name TEXT, file_type TEXT, file_data BLOB, logged_by TEXT NOT NULL, logged_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS chemical_stock (id INTEGER PRIMARY KEY AUTOINCREMENT, chemical TEXT NOT NULL, kind TEXT NOT NULL,
+        litres REAL NOT NULL, at TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', logged_by TEXT NOT NULL, logged_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS shelves (key TEXT PRIMARY KEY, until TEXT NOT NULL, reason TEXT NOT NULL, shelved_by TEXT NOT NULL, shelved_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS login_failures (client TEXT NOT NULL, attempt TEXT NOT NULL, stamp TEXT NOT NULL,
         PRIMARY KEY (client, attempt));''')
     # cleared_at: when a PLC alarm's condition went away (it may still wait for acknowledgement).
@@ -760,7 +785,8 @@ def val_settings(data,old):
         if type(new[key]) not in (int,float) or not 0<=new[key]<=14:raise ValueError('Invalid pH limit')
     if new['ph_low']>=new['ph_high']:raise ValueError('pH low must be less than high')
     for key in ('alarms_enabled','email_enabled','daily_enabled','monthly_enabled','email_recovery_enabled',
-                'stale_alert_enabled','level_alarm_enabled','flow_alarm_enabled','quarterly_enabled','plc_alarms_enabled'):
+                'stale_alert_enabled','level_alarm_enabled','flow_alarm_enabled','quarterly_enabled','plc_alarms_enabled',
+                'cal_reminders_enabled','stock_alarm_enabled','sms_enabled'):
         if type(new[key]) is not bool:raise ValueError('Invalid switch')
     if type(new['stale_alert_minutes']) is not int or not 5<=new['stale_alert_minutes']<=1440:raise ValueError('Data-stopped alert: 5–1440 minutes')
     if type(new['level_high_ft']) not in (int,float) or not 0<new['level_high_ft']<=100:raise ValueError('High level: 0–100 ft')
@@ -774,8 +800,13 @@ def val_settings(data,old):
     if type(new['monthly_day']) is not int or not 1<=new['monthly_day']<=28:raise ValueError('Choose day 1–28')
     for key in ('alarm_confirm_samples','alarm_recovery_samples'):
         if type(new[key]) is not int or not 1<=new[key]<=10:raise ValueError('Alarm confirmation must be 1–10 consecutive readings')
+    for key,hi in (('cal_ph_days',3650),('cal_level_days',3650),('cal_remind_days',90)):
+        if type(new[key]) is not int or not 1<=new[key]<=hi:raise ValueError(f'Calibration days: 1–{hi}')
+    for key in ('stock_low_coag_l','stock_low_floc_l'):
+        if type(new[key]) not in (int,float) or not 0<=new[key]<=100000:raise ValueError('Low stock: 0–100000 L')
     if not isinstance(new['recipients'],list) or len(new['recipients'])>10:raise ValueError('Too many recipients')
-    for address in new['recipients']:
+    if not isinstance(new['sms_recipients'],list) or len(new['sms_recipients'])>10:raise ValueError('Too many text message addresses')
+    for address in new['recipients']+new['sms_recipients']:
         if not isinstance(address,str) or len(address)>254 or '@' not in address or '\n' in address or '\r' in address:raise ValueError('Invalid email address')
     return new
 
@@ -796,6 +827,74 @@ def save_pickup(conn,when,note,who):
     conn.execute('INSERT INTO sludge_pickups(picked_at,note,logged_by,logged_at) VALUES (?,?,?,?)',(iso(t),note,who,iso(now)))
     return t,note
 
+# Sensor calibration log (Audit page): date calibrated, who calibrated it, certificate number and an
+# optional certificate file. Files are capped so the base64 request stays under nginx's default 1 MB limit.
+CAL_SENSORS={'ph':('pH sensor','pH_Reading'),'level':('EQ tank height (level) sensor','EQ_Tank_Level_Ft')}
+CAL_FILE_MAX=700_000
+CAL_FILE_TYPES=((b'%PDF','application/pdf','.pdf'),(b'\x89PNG\r\n\x1a\n','image/png','.png'),(b'\xff\xd8\xff','image/jpeg','.jpg'))
+CAL_BODY_MAX=1_000_000
+
+def _cal_text(v,label,limit,required=False):
+    if v is None:v=''
+    if not isinstance(v,str):raise AccountError(f'{label}: text required')
+    v=' '.join(v.split())
+    if required and not v:raise AccountError(f'Enter {label.lower()}')
+    if len(v)>limit:raise AccountError(f'{label}: up to {limit} characters')
+    return v
+
+def save_calibration(conn,body,who):
+    sensor=body.get('sensor')
+    if sensor not in CAL_SENSORS:raise AccountError('Choose the sensor')
+    try:day=date.fromisoformat(body.get('date') or '')
+    except (TypeError,ValueError):raise AccountError('Enter the date calibrated')
+    today=datetime.now(ZoneInfo('America/Vancouver')).date()
+    if day>today:raise AccountError('The calibration date is in the future')
+    if day<date(2000,1,1):raise AccountError('The calibration date is too far in the past')
+    name=_cal_text(body.get('name'),'Name of the person who calibrated',100,True)
+    cert=_cal_text(body.get('certificate'),'Certificate number',100)
+    note=_cal_text(body.get('note'),'Note',300)
+    fname=ftype=data=None
+    f=body.get('file')
+    if f:
+        if not isinstance(f,dict) or not isinstance(f.get('data'),str):raise AccountError('Certificate file could not be read')
+        try:data=base64.b64decode(f['data'],validate=True)
+        except ValueError:raise AccountError('Certificate file could not be read')
+        if len(data)>CAL_FILE_MAX:raise AccountError(f'Certificate file is too large (max {CAL_FILE_MAX//1000} KB). Scan or save it at a lower resolution.')
+        kind=next((k for k in CAL_FILE_TYPES if data.startswith(k[0])),None)
+        if not kind:raise AccountError('Certificate file must be a PDF, JPG or PNG')
+        ftype=kind[1]
+        stem=''.join(c for c in str(f.get('name') or 'certificate').rsplit('.',1)[0] if c.isalnum() or c in ' ._-')[:80].strip() or 'certificate'
+        fname=stem+kind[2]
+    if not cert and not data:raise AccountError('Enter the certificate number or attach the certificate')
+    cur=conn.execute('INSERT INTO calibrations(sensor,calibrated_on,calibrated_by,certificate_no,note,file_name,file_type,file_data,logged_by,logged_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                     (sensor,day.isoformat(),name,cert,note,fname,ftype,data,who,iso(datetime.now(UTC))))
+    return cur.lastrowid,CAL_SENSORS[sensor][0],day,name,cert
+
+def calibration_records(conn):
+    return [dict(r) for r in conn.execute('SELECT id,sensor,calibrated_on,calibrated_by,certificate_no,note,file_name,file_type,logged_by,logged_at,'
+                                          'length(file_data) AS file_size FROM calibrations ORDER BY calibrated_on DESC,id DESC')]
+
+def calibration_rows():
+    """Excel worksheet rows for the calibration report (all records)."""
+    B=lambda t:(t,3)
+    with appdb() as conn:recs=calibration_records(conn)
+    today=datetime.now(ZoneInfo('America/Vancouver')).date()
+    rows=[[B('Sensor calibration report')],['Generated (America/Vancouver)',datetime.now(ZoneInfo('America/Vancouver')).replace(tzinfo=None)],[],
+          [B('Sensor'),B('Tag'),B('Last calibrated'),B('Days since'),B('Calibrated by'),B('Certificate no.')]]
+    for key,(label,tag) in CAL_SENSORS.items():
+        last=next((r for r in recs if r['sensor']==key),None)
+        if last:
+            d=date.fromisoformat(last['calibrated_on'])
+            rows.append([label,tag,d,(today-d).days,last['calibrated_by'],last['certificate_no']])
+        else:rows.append([label,tag,'Never logged'])
+    rows+=[[],[B('Sensor'),B('Date calibrated'),B('Calibrated by'),B('Certificate no.'),B('Certificate file'),B('Note'),B('Logged by'),B('Logged at (America/Vancouver)')]]
+    for r in recs:
+        rows.append([CAL_SENSORS.get(r['sensor'],(r['sensor'],))[0],date.fromisoformat(r['calibrated_on']),r['calibrated_by'],r['certificate_no'],
+                     r['file_name'] or 'none',r['note'],r['logged_by'],parse(r['logged_at']).astimezone(ZoneInfo('America/Vancouver')).replace(tzinfo=None)])
+    if not recs:rows.append(['No calibrations logged yet.'])
+    rows+=[[],['Calibrations are logged on the Audit page. Certificate files are kept in the dashboard database and can be downloaded from the Audit page.']]
+    return rows
+
 def handle_post(path,env,role,conn,user=''):
     who=actor(role,user)
     # Custom header + same-origin check defend cookie/browser cross-site submission with Basic auth.
@@ -804,7 +903,7 @@ def handle_post(path,env,role,conn,user=''):
     origin=env.get('HTTP_ORIGIN')
     if origin and urlsplit(origin).netloc!=env.get('HTTP_HOST',''):return '403 Forbidden',{'error':'Origin rejected'}
     length=int(env.get('CONTENT_LENGTH') or 0)
-    if length<1 or length>12000:raise ValueError('Invalid request length')
+    if length<1 or length>(CAL_BODY_MAX if path=='/api/calibrations' else 12000):raise ValueError('Invalid request length')
     body=json.loads(env['wsgi.input'].read(length))
     if not isinstance(body,dict):raise ValueError('JSON object required')
     if path=='/api/settings':
@@ -861,6 +960,50 @@ def handle_post(path,env,role,conn,user=''):
         t,note=save_pickup(conn,body.get('when'),body.get('note',''),who)
         audit(conn,who,'Sludge pickup logged',f"{t.astimezone(ZoneInfo('America/Vancouver')):%Y-%m-%d %H:%M}"+(' · '+note if note else ''));conn.commit()
         return '200 OK',{'picked_at':iso(t)}
+    if path=='/api/calibrations':
+        if not can(role,'audit'):return '403 Forbidden',{'error':'Not permitted to log calibrations'}
+        cid,label,day,name,cert=save_calibration(conn,body,who)
+        audit(conn,who,'Sensor calibration logged',f"{label} calibrated {day:%Y-%m-%d} by {name}"+(f'; certificate {cert}' if cert else ''));conn.commit()
+        return '200 OK',{'id':cid}
+    if path=='/api/calibrations/remove':
+        if not can(role,'audit'):return '403 Forbidden',{'error':'Not permitted to change calibrations'}
+        cid=body.get('id')
+        if type(cid)!=int or cid<1:raise ValueError('Invalid calibration ID')
+        row=conn.execute('SELECT sensor,calibrated_on,calibrated_by FROM calibrations WHERE id=?',(cid,)).fetchone()
+        if not row:return '404 Not Found',{'error':'Calibration not found'}
+        conn.execute('DELETE FROM calibrations WHERE id=?',(cid,))
+        audit(conn,who,'Sensor calibration removed',f"{CAL_SENSORS.get(row['sensor'],(row['sensor'],))[0]} calibrated {row['calibrated_on']} by {row['calibrated_by']}");conn.commit()
+        return '200 OK',{'removed':cid}
+    if path=='/api/stock':
+        if not can(role,'pickup'):return '403 Forbidden',{'error':'Not permitted to log chemical stock'}
+        sid,label,kind,litres,t=save_stock(conn,body,who)
+        audit(conn,who,'Chemical stock logged',f"{label} {'delivery' if kind=='delivery' else 'tank count'} {litres:g} L at {t.astimezone(ZoneInfo('America/Vancouver')):%Y-%m-%d %H:%M}");conn.commit()
+        return '200 OK',{'id':sid}
+    if path=='/api/stock/remove':
+        if not can(role,'pickup'):return '403 Forbidden',{'error':'Not permitted to change chemical stock'}
+        sid=body.get('id')
+        if type(sid)!=int or sid<1:raise ValueError('Invalid stock entry ID')
+        row=conn.execute('SELECT chemical,kind,litres,at FROM chemical_stock WHERE id=?',(sid,)).fetchone()
+        if not row:return '404 Not Found',{'error':'Stock entry not found'}
+        conn.execute('DELETE FROM chemical_stock WHERE id=?',(sid,))
+        audit(conn,who,'Chemical stock entry removed',f"{STOCK_CHEMS.get(row['chemical'],(row['chemical'],))[0]} {row['kind']} {row['litres']:g} L");conn.commit()
+        return '200 OK',{'removed':sid}
+    if path=='/api/shelves':
+        if not can(role,'settings'):return '403 Forbidden',{'error':'Not permitted to shelve alarms'}
+        key=body.get('key');hours=body.get('hours');choices=shelf_choices()
+        if key not in choices:raise AccountError('Choose the alarm to shelve')
+        if type(hours) is not int or not 1<=hours<=SHELF_MAX_HOURS:raise AccountError(f'Shelve for 1–{SHELF_MAX_HOURS} hours')
+        reason=_cal_text(body.get('reason'),'Reason',200,True)
+        now=datetime.now(UTC);until=now+timedelta(hours=hours)
+        conn.execute('INSERT OR REPLACE INTO shelves(key,until,reason,shelved_by,shelved_at) VALUES (?,?,?,?,?)',(key,iso(until),reason,who,iso(now)))
+        audit(conn,who,'Alarm shelved',f"{choices[key]} for {hours} h until {until.astimezone(ZoneInfo('America/Vancouver')):%Y-%m-%d %H:%M}: {reason}");conn.commit()
+        return '200 OK',{'key':key,'until':iso(until)}
+    if path=='/api/shelves/remove':
+        if not can(role,'settings'):return '403 Forbidden',{'error':'Not permitted to unshelve alarms'}
+        key=body.get('key')
+        if not isinstance(key,str) or not conn.execute('DELETE FROM shelves WHERE key=?',(key,)).rowcount:return '404 Not Found',{'error':'Shelf not found'}
+        audit(conn,who,'Alarm unshelved',shelf_choices().get(key,key));conn.commit()
+        return '200 OK',{'removed':key}
     if path=='/api/pickups/remove':
         if not can(role,'pickup'):return '403 Forbidden',{'error':'Not permitted to change sludge pickups'}
         pid=body.get('id')
@@ -916,6 +1059,7 @@ def application(env,start_response):
                     last=conn.execute('SELECT picked_at FROM sludge_pickups ORDER BY picked_at DESC LIMIT 1').fetchone()
                     d['last_pickup']=last[0] if last else None;d['pickup_days']=PICKUP_DAYS
                     d['plc_alarms']=[{'tag':t,'kind':k,'banner':b,'address':a} for t,k,b,a,_ in PLC_ALARMS]
+                    d['shelved']=[dict(r,label=shelf_choices().get(r['key'],r['key'])) for r in active_shelves(conn).values()]
                 return send('200 OK',d)
             if path in ('/api/history','/api/export'):
                 if not can(role,'export' if path.endswith('export') else 'view'):return send('403 Forbidden',{'error':'Not permitted'})
@@ -940,6 +1084,26 @@ def application(env,start_response):
                 with appdb() as conn:
                     rows=[dict(r) for r in conn.execute('SELECT * FROM sludge_pickups ORDER BY picked_at DESC LIMIT 100')]
                 return send('200 OK',{'rows':rows,'pickup_days':PICKUP_DAYS})
+            if path=='/api/calibrations':
+                if not can(role,'audit'):return send('403 Forbidden',{'error':'Not permitted'})
+                with appdb() as conn:return send('200 OK',{'rows':calibration_records(conn),'status':calibration_status(conn,settings(conn)),
+                    'sensors':{k:{'label':l,'tag':t} for k,(l,t) in CAL_SENSORS.items()},'max_file_kb':CAL_FILE_MAX//1000})
+            if path=='/api/stock':
+                with appdb() as conn:
+                    cfg=settings(conn)
+                    st=stock_status(conn)
+                    for k,(_,_,limit_key) in STOCK_CHEMS.items():st[k]['low_l']=cfg[limit_key]
+                    rows=[dict(r) for r in conn.execute('SELECT * FROM chemical_stock ORDER BY at DESC,id DESC LIMIT 100')]
+                return send('200 OK',{'status':st,'rows':rows})
+            if path=='/api/shelves':
+                with appdb() as conn:return send('200 OK',{'choices':shelf_choices(),'active':list(active_shelves(conn).values()),'max_hours':SHELF_MAX_HOURS})
+            if path=='/api/calibrations/certificate':
+                if not can(role,'audit'):return send('403 Forbidden',{'error':'Not permitted'})
+                try:cid=int(parse_qs(env.get('QUERY_STRING','')).get('id',[''])[0])
+                except ValueError:return send('400 Bad Request',{'error':'Invalid calibration ID'})
+                with appdb() as conn:row=conn.execute('SELECT file_name,file_type,file_data FROM calibrations WHERE id=?',(cid,)).fetchone()
+                if not row or row['file_data'] is None:return send('404 Not Found',{'error':'No certificate file for this calibration'})
+                return send('200 OK',bytes(row['file_data']),row['file_type'],[('Content-Disposition',f'attachment; filename="{row["file_name"]}"')])
             if path in ('/api/events','/api/audit'):
                 if not can(role,'audit' if path.endswith('audit') else 'view'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:return send('200 OK',{'rows':records(conn,'events' if path.endswith('events') else 'audit')})
@@ -1160,6 +1324,7 @@ PLC_EMAIL_WORDING={'SLUDGE_TANK_LEVEL':('Wastewater Sludge Tank are Full','SLUDG
                    'MAX_RGT_PUMP_FAULTED':('Regenerative Turbine Pump Stop Faulted','MAX_RGT_PUMP_FAULTED'),
                    'EQ_TANK_FULL':('Wastewater EQ Tank Full','EQ_TANK_FULL')}
 CONDITION_SUBJECTS={'data':'Wastewater ALERT: no new data','level':'Wastewater EQ tank HIGH level alarm','flow':'Wastewater NO DISCHARGE FLOW alarm',
+                    'stock:coag':'Wastewater LOW COAGULANT stock','stock:floc':'Wastewater LOW FLOCCULANT stock',
                     **{'plc:'+t:f'{w} ({c})' for t,(w,c) in PLC_EMAIL_WORDING.items()}}
 RECOVERY_SUBJECTS={'plc:'+t:f'CLEARED: {w} ({c})' for t,(w,c) in PLC_EMAIL_WORDING.items()}
 
@@ -1181,6 +1346,25 @@ def alarm_report(start,end,limit=100):
 def report_csv(params):
     """CSV download (Reports page) of the raw readings for one tag or 'all'. Returns (filename, bytes)."""
     choice=params.get('tag',['all'])[0]
+    if choice in ('alarms','compliance','pumps'):
+        start,end=window(params,REPORT_MAX_DAYS);zone=ZoneInfo('America/Vancouver')
+        a=start.astimezone(zone).date();b=(end.astimezone(zone)-timedelta(microseconds=1)).date();rng=f'{a:%m/%d/%Y} to {b:%m/%d/%Y}'
+        with appdb() as c:cfg=settings(c)
+        name,rows,widths={'alarms':('Alarm History',lambda:alarm_rows(start,end,zone,rng),(22,30,60,22,14,30,22,14,14)),
+                          'compliance':('Discharge Compliance',lambda:compliance_rows(start,end,zone,rng,cfg),(16,12,10,10,10,16,18,16,12)),
+                          'pumps':('Pump Run Hours',lambda:pump_rows(start,end,zone,rng),(34,22,14,14,18))}[choice]
+        rows=rows();stem=f'wastewater-{choice}-{a:%Y-%m-%d}-to-{b:%Y-%m-%d}'
+        if True:return stem+'.csv',rows_csv(rows)
+        return stem+'.xlsx',xlsx([(name,rows,widths)])
+    if choice=='calibration':
+        out=io.StringIO(newline='');writer=csv.writer(out)
+        writer.writerow(['Sensor','Tag','Date calibrated','Calibrated by','Certificate no.','Certificate file','Note','Logged by','Logged at (America/Vancouver)'])
+        with appdb() as conn:recs=calibration_records(conn)
+        for r in recs:
+            label,tag=CAL_SENSORS.get(r['sensor'],(r['sensor'],''))
+            writer.writerow([label,tag,r['calibrated_on'],r['calibrated_by'],r['certificate_no'],r['file_name'] or 'none',r['note'],r['logged_by'],
+                             parse(r['logged_at']).astimezone(ZoneInfo('America/Vancouver')).strftime('%Y-%m-%d %H:%M')])
+        return f"wastewater-sensor-calibrations-{datetime.now(ZoneInfo('America/Vancouver')):%Y-%m-%d}.csv",out.getvalue().encode('utf-8-sig')
     if choice not in ('all','chemical','sludge') and choice not in REPORT_TAGS:raise ValueError('Choose a report type from the list.')
     names=REPORT_TAGS if choice=='all' else (choice,)
     start,end=window(params,REPORT_MAX_DAYS)
@@ -1217,6 +1401,249 @@ def period_report(start,end,data_tags):
     """Excel report for Vancouver dates start..end inclusive, for email attachments."""
     return report_xlsx({'tag':['all'],'startDate':[start.isoformat()],'endDate':[end.isoformat()]},data_tags)
 
+# ---------------------------------------------------------------- calibration due dates
+CAL_INTERVAL_KEYS={'ph':'cal_ph_days','level':'cal_level_days'}
+def calibration_status(conn,cfg,today=None):
+    """Per sensor: last calibration, due date, days left and state (ok, soon, overdue, never)."""
+    today=today or datetime.now(ZoneInfo('America/Vancouver')).date()
+    out={}
+    for key,(label,tag) in CAL_SENSORS.items():
+        last=conn.execute('SELECT id,calibrated_on,calibrated_by FROM calibrations WHERE sensor=? ORDER BY calibrated_on DESC,id DESC LIMIT 1',(key,)).fetchone()
+        every=cfg[CAL_INTERVAL_KEYS[key]];due=left=None;state='never'
+        if last:
+            due=date.fromisoformat(last['calibrated_on'])+timedelta(days=every);left=(due-today).days
+            state='overdue' if left<0 else 'soon' if left<=cfg['cal_remind_days'] else 'ok'
+        out[key]=dict(label=label,tag=tag,every_days=every,last=last['calibrated_on'] if last else None,last_id=last['id'] if last else None,
+                      last_by=last['calibrated_by'] if last else None,due=due.isoformat() if due else None,days_left=left,state=state)
+    return out
+
+# ---------------------------------------------------------------- shared time helpers
+def day_segments(a,b,zone):
+    """Split UTC interval a..b at local midnights: yields (local date, seg_start, seg_end)."""
+    while a<b:
+        day=a.astimezone(zone).date()
+        seg=min(b,datetime.combine(day+timedelta(days=1),time.min,zone).astimezone(UTC))
+        yield day,a,seg
+        a=seg
+
+def local_days(start,end,zone):
+    first=start.astimezone(zone).date();last=(end.astimezone(zone)-timedelta(microseconds=1)).date()
+    out=[];d=first
+    while d<=last:out.append(d);d+=timedelta(days=1)
+    return out
+
+def held_points(db,tag,start,end):
+    """[(time, value)] for a tag in start..end, starting with the last reading before start (held, Ewon logs on change)."""
+    prior=db.execute('SELECT value FROM samples WHERE name=? AND stamp<? AND value IS NOT NULL ORDER BY stamp DESC LIMIT 1',(tag,iso(start))).fetchone()
+    pts=[(start,prior[0])] if prior else []
+    pts+=[(parse(t),v) for t,v in db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? AND value IS NOT NULL ORDER BY stamp',(tag,iso(start),iso(end)))]
+    return pts
+
+def rows_csv(rows):
+    """Excel-style rows (cells may be (value, style)) as CSV bytes."""
+    out=io.StringIO(newline='');w=csv.writer(out)
+    for row in rows:
+        cells=[c[0] if isinstance(c,tuple) else c for c in row]
+        w.writerow(['' if c is None else c.strftime('%Y-%m-%d %H:%M') if isinstance(c,datetime) else c.isoformat() if isinstance(c,date) else c for c in cells])
+    return out.getvalue().encode('utf-8-sig')
+
+# ---------------------------------------------------------------- alarm history report
+RECOVERY_SUFFIXES=('recovered','restored','cleared')
+def alarm_history(start,end):
+    """Alarms that started in start..end with their clear time (cleared_at or the matching recovery event)."""
+    with appdb() as conn:
+        out=[]
+        for r in conn.execute('SELECT * FROM events WHERE stamp>=? AND stamp<? ORDER BY stamp',(iso(start),iso(end))).fetchall():
+            r=dict(r)
+            if r['kind'].endswith(RECOVERY_SUFFIXES):continue
+            cleared=r.get('cleared_at')
+            if not cleared:
+                rec=conn.execute('SELECT stamp FROM events WHERE id>? AND detail LIKE ? ORDER BY id LIMIT 1',(r['id'],f"Incident {r['id']};%")).fetchone()
+                cleared=rec[0] if rec else None
+            out.append(dict(r,cleared=cleared))
+    return out
+
+def alarm_rows(start,end,zone,date_range):
+    B=lambda t:(t,3);num=lambda v:'' if v is None else (round(v,1),2)
+    L=lambda s:parse(s).astimezone(zone).replace(tzinfo=None) if s else ''
+    now=datetime.now(UTC);hist=alarm_history(start,end);groups={}
+    for h in hist:
+        t0=parse(h['stamp']);active=h['state'] in ('open','acknowledged') and not h['cleared']
+        t1=parse(h['cleared']) if h['cleared'] else now if active else None
+        h['mins']=(t1-t0).total_seconds()/60 if t1 else None
+        h['ack_mins']=(parse(h['ack_at'])-t0).total_seconds()/60 if h['ack_at'] else None
+        h['status']='still active' if active else 'cleared'
+        g=groups.setdefault(h['kind'],{'n':0,'mins':0.0,'acks':[],'unacked':0})
+        g['n']+=1;g['mins']+=h['mins'] or 0
+        if h['ack_mins'] is not None:g['acks'].append(h['ack_mins'])
+        if not h['actor']:g['unacked']+=1
+    rows=[[B('Alarm history')],['Date range (America/Vancouver)',date_range],['Alarms in range',len(hist)],[],
+          [B('Alarm'),B('Times'),B('Total minutes active'),B('Average minutes to acknowledge'),B('Never acknowledged')]]
+    rows+=[[k,g['n'],num(g['mins']),num(sum(g['acks'])/len(g['acks']) if g['acks'] else None),g['unacked']] for k,g in sorted(groups.items())]
+    if not groups:rows.append(['No alarms in this date range.'])
+    rows+=[[],[B('Started'),B('Alarm'),B('Detail'),B('Cleared'),B('Minutes active'),B('Acknowledged by'),B('Acknowledged at'),B('Minutes to acknowledge'),B('Status')]]
+    rows+=[[L(h['stamp']),h['kind'],h['detail'],L(h['cleared']) or ('—' if h['status']=='cleared' else 'still active'),num(h['mins']),
+            h['actor'] or 'not acknowledged',L(h['ack_at']),num(h['ack_mins']),h['status']] for h in hist]
+    rows+=[[],['Minutes active run from the start of the alarm to its clear (PLC bit back to 0, or the confirmed recovery). '
+               'Alarms still active count up to now. Auto-acknowledged alarms (sludge and EQ tank FULL) count their clear as the acknowledgement.']]
+    return rows
+
+# ---------------------------------------------------------------- discharge compliance
+FLOW_FACTOR=TAGS['FLOW_RATE'][2]
+PH_HOLD_MAX=timedelta(minutes=15)   # a pH reading counts for at most this long (longer gaps are missing data)
+def daily_compliance(start,end,zone,cfg):
+    """Per local day: pH min/avg/max, minutes outside the pH limits, litres discharged, peak flow."""
+    end=min(end,datetime.now(UTC));days={d:dict(ph=[],out_min=0.0,litres=0.0,peak=None) for d in local_days(start,end,zone)}
+    db=database()
+    try:
+        pts=[(parse(t),v) for t,v in db.execute("SELECT stamp,value FROM samples WHERE name='pH_Reading' AND stamp>=? AND stamp<? AND value IS NOT NULL ORDER BY stamp",(iso(start),iso(end)))]
+        for i,(t,v) in enumerate(pts):
+            d=days.get(t.astimezone(zone).date())
+            if d is not None:d['ph'].append(v)
+            if cfg['ph_low']<=v<=cfg['ph_high']:continue
+            b=min(pts[i+1][0] if i+1<len(pts) else end,t+PH_HOLD_MAX,end)
+            for day,a,c in day_segments(t,b,zone):
+                if day in days:days[day]['out_min']+=(c-a).total_seconds()/60
+        prev=db.execute("SELECT value FROM samples WHERE name='Total_Flow_Li' AND stamp<? AND value>? ORDER BY stamp DESC LIMIT 1",(iso(start),SUMMARY_MIN)).fetchone()
+        prev=prev[0] if prev else None
+        for t,v in db.execute("SELECT stamp,value FROM samples WHERE name='Total_Flow_Li' AND stamp>=? AND stamp<? AND value>? ORDER BY stamp",(iso(start),iso(end),SUMMARY_MIN)):
+            d=days.get(parse(t).astimezone(zone).date())
+            if prev is not None and v>=prev and d is not None:d['litres']+=v-prev   # a drop is a meter reset: skipped
+            prev=v
+        for t,v in db.execute("SELECT stamp,value FROM samples WHERE name='FLOW_RATE' AND stamp>=? AND stamp<? AND value IS NOT NULL ORDER BY stamp",(iso(start),iso(end))):
+            d=days.get(parse(t).astimezone(zone).date())
+            if d is not None:d['peak']=max(d['peak'] or 0,v*FLOW_FACTOR)
+    finally:db.close()
+    return days
+
+def compliance_rows(start,end,zone,date_range,cfg):
+    B=lambda t:(t,3);num=lambda v,n=2:'' if v is None else (round(v,n),2)
+    days=daily_compliance(start,end,zone,cfg)
+    rows=[[B('Daily discharge compliance summary')],['Date range (America/Vancouver)',date_range],
+          ['pH limits (current Settings)',f"{cfg['ph_low']:.2f} – {cfg['ph_high']:.2f}"],[],
+          [B('Date'),B('pH readings'),B('pH min'),B('pH avg'),B('pH max'),B('Minutes outside pH limits'),B('Litres discharged'),B('Peak flow (L/min)'),B('Compliant')]]
+    tot_out=tot_l=0.0
+    for d,x in days.items():
+        ph=x['ph'];tot_out+=x['out_min'];tot_l+=x['litres']
+        ok='no data' if not ph else 'yes' if x['out_min']<0.5 else 'NO'
+        rows.append([d,len(ph),num(min(ph) if ph else None),num(sum(ph)/len(ph) if ph else None),num(max(ph) if ph else None),
+                     num(x['out_min'],1),num(x['litres']),num(x['peak']),ok])
+    rows+=[[B('Total'),'','','','',num(tot_out,1),num(tot_l)],[],
+           ['Minutes outside pH limits: each pH reading outside the limits counts until the next reading (at most 15 minutes, so data gaps are not counted). '
+            'Litres discharged: increase of the Total_Flow_Li meter during the day (meter resets are skipped). Peak flow: highest FLOW_RATE reading. '
+            'Compliant = no minutes outside the pH limits that day. Uses the pH limits in Settings now, not the limits at the time.']]
+    return rows
+
+def compliance_line(day,cfg):
+    """One-line compliance summary of a local day, for the daily email."""
+    zone=ZoneInfo('America/Vancouver')
+    a=datetime.combine(day,time.min,zone).astimezone(UTC);b=datetime.combine(day+timedelta(days=1),time.min,zone).astimezone(UTC)
+    x=daily_compliance(a,b,zone,cfg).get(day)
+    if not x or not x['ph']:return 'Discharge compliance: no pH readings.'
+    return (f"Discharge compliance: pH {min(x['ph']):.2f}–{max(x['ph']):.2f}, {x['out_min']:.0f} minutes outside {cfg['ph_low']:.2f}–{cfg['ph_high']:.2f}"
+            f" ({'COMPLIANT' if x['out_min']<0.5 else 'NOT COMPLIANT'}); {x['litres']:,.0f} L discharged.")
+
+# ---------------------------------------------------------------- pump run hours and starts
+PUMP_TAGS=(('SUMP_PUMP_STATUS','Electric transfer (sump) pump'),('Mixer_Pump_Staus','Electric circulation (mixer) pump'))
+def pump_usage(start,end,zone):
+    """{tag: {day: [run hours, starts]}}: each on/off reading holds until the next (Ewon logs on change)."""
+    end=min(end,datetime.now(UTC));out={}
+    db=database()
+    try:
+        for tag,_ in PUMP_TAGS:
+            acc={d:[0.0,0] for d in local_days(start,end,zone)};was=None
+            pts=held_points(db,tag,start,end)
+            for i,(t,v) in enumerate(pts):
+                on=v!=0
+                if on and was is False:   # OFF -> ON is a start
+                    d=t.astimezone(zone).date()
+                    if d in acc:acc[d][1]+=1
+                if on:
+                    for day,a,b in day_segments(t,pts[i+1][0] if i+1<len(pts) else end,zone):
+                        if day in acc:acc[day][0]+=(b-a).total_seconds()/3600
+                was=on
+            out[tag]=acc
+    finally:db.close()
+    return out
+
+def pump_rows(start,end,zone,date_range):
+    B=lambda t:(t,3);num=lambda v:(round(v,2),2)
+    use=pump_usage(start,end,zone);days=local_days(start,min(end,datetime.now(UTC)),zone)
+    rows=[[B('Pump run hours and starts')],['Date range (America/Vancouver)',date_range],[],
+          [B('Pump'),B('Tag'),B('Run hours'),B('Starts'),B('Average minutes per start')]]
+    for tag,label in PUMP_TAGS:
+        h=sum(v[0] for v in use[tag].values());n=sum(v[1] for v in use[tag].values())
+        rows.append([label,tag,num(h),n,num(h*60/n) if n else ''])
+    rows+=[[],[B('Date')]+[x for tag,label in PUMP_TAGS for x in (B(f'{label} run hours'),B(f'{label} starts'))]]
+    rows+=[[d]+[x for tag,_ in PUMP_TAGS for x in (num(use[tag].get(d,[0,0])[0]),use[tag].get(d,[0,0])[1])] for d in days]
+    rows+=[[],['Run hours: time the pump status was ON (SUMP_PUMP_STATUS B3:1/9 = 1; Mixer_Pump_Staus N142:0 not 0). Starts: OFF to ON changes. '
+               'Each reading is held until the next one because the Ewon logs on change; the first day uses the last reading before the range.']]
+    return rows
+
+# ---------------------------------------------------------------- chemical stock
+STOCK_CHEMS={'coag':('Coagulant','Coag_Pump_Run','stock_low_coag_l'),'floc':('Flocculant','Floc_Pump_Run','stock_low_floc_l')}
+def stock_status(conn,now=None):
+    """Estimated litres in stock per chemical: last tank count (or 0 at the first entry) + deliveries since − pump usage since."""
+    now=now or datetime.now(UTC);zone=ZoneInfo('America/Vancouver');out={}
+    for key,(label,tag,_) in STOCK_CHEMS.items():
+        count=conn.execute("SELECT at,litres FROM chemical_stock WHERE chemical=? AND kind='count' ORDER BY at DESC,id DESC LIMIT 1",(key,)).fetchone()
+        first=conn.execute('SELECT MIN(at) FROM chemical_stock WHERE chemical=?',(key,)).fetchone()[0]
+        if not first:out[key]=dict(label=label,tag=tag,litres=None);continue
+        base_t,base=(count['at'],count['litres']) if count else (first,0.0)
+        # after a tank count, only later deliveries add; without one, every delivery counts
+        added=conn.execute("SELECT COALESCE(SUM(litres),0) FROM chemical_stock WHERE chemical=? AND kind='delivery' AND at"+('>' if count else '>=')+"?",
+                           (key,base_t)).fetchone()[0]
+        t0=parse(base_t)
+        used=sum(chemical_usage(t0,now,zone)[tag].values()) if t0<now else 0.0
+        week=sum(chemical_usage(max(t0,now-timedelta(days=7)),now,zone)[tag].values()) if t0<now else 0.0
+        span=max((now-max(t0,now-timedelta(days=7))).total_seconds()/86400,1/24)
+        per_day=week/span
+        litres=base+added-used
+        out[key]=dict(label=label,tag=tag,litres=litres,since=base_t,base=base,added=added,used=used,per_day=per_day,
+                      days_left=(litres/per_day if per_day>0.01 and litres>0 else None))
+    return out
+
+def check_stock(conn,cfg,now=None):
+    out={};st=stock_status(conn);stamp=(now or datetime.now(UTC)).strftime('%Y-%m-%dT%H:%M')
+    for key,(label,tag,limit_key) in STOCK_CHEMS.items():
+        s=st[key];low=cfg[limit_key];known=s['litres'] is not None
+        out['stock:'+key]=update_condition(conn,'stock:'+key,cfg['stock_alarm_enabled'] and low>0,
+            (s['litres']<low) if known else None,stamp,f'{label} stock low',
+            f"{label} estimated stock {s['litres']:.1f} L is below {low:.1f} L. Order more {label.lower()}." if known else '',
+            f'{label} stock restored',f"estimated stock {s['litres']:.1f} L" if known else '')
+    return out
+
+def save_stock(conn,body,who):
+    chem=body.get('chemical');kind=body.get('kind')
+    if chem not in STOCK_CHEMS:raise AccountError('Choose the chemical')
+    if kind not in ('delivery','count'):raise AccountError('Choose delivery or tank count')
+    litres=body.get('litres')
+    if type(litres) not in (int,float) or not 0<=litres<=100000 or (kind=='delivery' and litres<=0):raise AccountError('Litres: 0–100000 (a delivery must be more than 0)')
+    when=body.get('when')
+    try:t=datetime.strptime(when,'%Y-%m-%dT%H:%M').replace(tzinfo=ZoneInfo('America/Vancouver')).astimezone(UTC)
+    except (TypeError,ValueError):raise AccountError('Enter the date and time')
+    now=datetime.now(UTC)
+    if t>now+timedelta(minutes=10):raise AccountError('The time is in the future')
+    if t<now-timedelta(days=366):raise AccountError('The time is more than a year ago')
+    note=_cal_text(body.get('note'),'Note',200)
+    cur=conn.execute('INSERT INTO chemical_stock(chemical,kind,litres,at,note,logged_by,logged_at) VALUES (?,?,?,?,?,?,?)',
+                     (chem,kind,float(litres),iso(t),note,who,iso(now)))
+    return cur.lastrowid,STOCK_CHEMS[chem][0],kind,float(litres),t
+
+# ---------------------------------------------------------------- alarm shelving
+SHELF_MAX_HOURS=72
+def shelf_choices():
+    return {'ph':'pH alarm','data':'Data stopped','level':'EQ level high','flow':'No discharge flow',
+            **{'plc:'+t:k for t,k,_,_,_ in PLC_ALARMS},**{'stock:'+k:f'{l} stock low' for k,(l,_,_) in STOCK_CHEMS.items()}}
+
+def active_shelves(conn):
+    now=iso(datetime.now(UTC))
+    return {r['key']:dict(r) for r in conn.execute('SELECT * FROM shelves WHERE until>? ORDER BY until',(now,))}
+
+# ---------------------------------------------------------------- text messages (email-to-SMS)
+def sms_text(subject,eid,now):
+    return f'{subject}. Incident #{eid} at {now:%b %d %H:%M}. See the dashboard Alarms page.'[:300]
+
 def scheduler():
     now=datetime.now(ZoneInfo('America/Vancouver'))
     with appdb() as conn:
@@ -1226,6 +1653,8 @@ def scheduler():
         update_ph_incidents(conn,cfg,ph)
         conditions=check_conditions(conn,cfg,readings,now)
         conditions.update(check_plc_alarms(conn,cfg,current.get('extras')))
+        conditions.update(check_stock(conn,cfg))
+        shelved=active_shelves(conn)
         if not EMAIL_CFG.is_file() or not cfg['recipients']:
             return
         mail=json.loads(EMAIL_CFG.read_text())
@@ -1236,13 +1665,13 @@ def scheduler():
         within=(on<=moment<=off) if on<=off else (moment>=on or moment<=off)
         notify=cfg['email_enabled'] and weekday in cfg['alarm_days'] and within
         eligible=notify and cfg['alarms_enabled']
-        jobs=[]   # (delivery key, subject, body, attachment builder or None)
+        jobs=[]   # (delivery key, subject, body, attachment builder or None[, alarm key for shelving and texts])
         if eligible:
             tracker=conn.execute('SELECT * FROM ph_alarm_v2 WHERE id=1').fetchone()
             if tracker and tracker['active_event'] and tracker['active_kind'] in ('high','low') and ph_status(ph,cfg)==tracker['active_kind']:
                 eid=tracker['active_event']
                 jobs.append((f'alarm:incident:{eid}',f'Wastewater pH {tracker["active_kind"].upper()} alarm',
-                    f'Confirmed pH incident #{eid}\nCurrent reading: {ph["value"]:.2f} pH\nLow: {cfg["ph_low"]:.2f}\nHigh: {cfg["ph_high"]:.2f}\nTimestamp: {now.isoformat()}',None))
+                    f'Confirmed pH incident #{eid}\nCurrent reading: {ph["value"]:.2f} pH\nLow: {cfg["ph_low"]:.2f}\nHigh: {cfg["ph_high"]:.2f}\nTimestamp: {now.isoformat()}',None,'ph'))
             if tracker and tracker['pending_recovery_event'] and cfg['email_recovery_enabled']:
                 eid=tracker['recovery_origin_event']; rid=tracker['pending_recovery_event']
                 delivered=conn.execute('SELECT 1 FROM delivery WHERE key=?',(f'alarm:incident:{eid}',)).fetchone()
@@ -1257,7 +1686,7 @@ def scheduler():
                     eid=st['active'];ev=conn.execute('SELECT detail FROM events WHERE id=?',(eid,)).fetchone()
                     jobs.append((f'alarm:incident:{eid}',CONDITION_SUBJECTS[key],
                         (CONDITION_SUBJECTS[key]+'\n\n' if key in RECOVERY_SUBJECTS else '')+
-                        f'Incident #{eid}\n{ev["detail"] if ev else ""}\nTimestamp: {now.isoformat()}',None))
+                        f'Incident #{eid}\n{ev["detail"] if ev else ""}\nTimestamp: {now.isoformat()}',None,key))
                 if st.get('pending') and cfg['email_recovery_enabled']:
                     eid,rid=st['pending']
                     delivered=conn.execute('SELECT 1 FROM delivery WHERE key=?',(f'alarm:incident:{eid}',)).fetchone()
@@ -1266,6 +1695,14 @@ def scheduler():
                         subject=RECOVERY_SUBJECTS.get(key,f'Wastewater {rec["kind"]}')
                         jobs.append((f'recovery:incident:{eid}',f'{subject} — incident #{eid}',
                             (subject+'\n\n' if key in RECOVERY_SUBJECTS else '')+f'{rec["detail"]}\nTimestamp: {now.isoformat()}',None))
+        # Calibration reminders: once when a sensor is due within the reminder days, once when overdue.
+        if cfg['cal_reminders_enabled'] and hhmm==cfg['daily_time']:
+            for key,c in calibration_status(conn,cfg,now.date()).items():
+                if c['state'] in ('soon','overdue'):
+                    when='is OVERDUE' if c['state']=='overdue' else f"is due in {c['days_left']} day{'s' if c['days_left']!=1 else ''}"
+                    jobs.append((f"caldue:{key}:{c['last_id']}:{c['state']}",f"Wastewater calibration reminder: {c['label']} {when}",
+                        f"{c['label']} ({c['tag']}) calibration {when}.\nLast calibrated: {c['last']} by {c['last_by']}\nDue: {c['due']} "
+                        f"(every {c['every_days']} days)\n\nLog the new calibration and certificate on the dashboard Audit page.",None))
         if cfg['daily_enabled'] and hhmm==cfg['daily_time']:
             jobs.append((f'daily:{today}','Wastewater Daily Report '+today,historical_report(now,'daily'),None))
         if now.day==cfg['monthly_day'] and hhmm==cfg['monthly_time']:
@@ -1283,18 +1720,26 @@ def scheduler():
                     'Attached: Excel Summary (Total_Flow_Li EOD values, usage, monthly and quarterly totals).\n'
                     'Download the full readings from the Reports page if needed.',
                     lambda s=start,e=first-timedelta(days=1):period_report(s,e,())))
-        for key,subject,body,build in jobs:
-            if conn.execute('SELECT 1 FROM delivery WHERE key=?',(key,)).fetchone():
-                continue
-            try:
-                send_mail(mail,subject,body,cfg['recipients'],[build()] if build else ())
-                conn.execute('INSERT INTO delivery(key,stamp,outcome) VALUES (?,?,?)',
-                             (key,iso(datetime.now(UTC)),'sent'))
-                audit(conn,'system','Email delivered',key)
-            except Exception as exc:
-                audit(conn,'system','Email failed',key+' '+type(exc).__name__)
-                print('Email failed:',type(exc).__name__,file=sys.stderr)
-            conn.commit()
+        sms=cfg['sms_enabled'] and cfg['sms_recipients']
+        for key,subject,body,build,*rest in jobs:
+            alarm=rest[0] if rest else None
+            if alarm in shelved:continue   # shelved: no email or text while the shelf lasts (sent later if still active)
+            sends=[(key,lambda s=subject,b=body,bd=build:send_mail(mail,s,b,cfg['recipients'],[bd()] if bd else ()),'Email')]
+            if sms and alarm and key.startswith('alarm:'):
+                eid=key.rsplit(':',1)[-1]
+                sends.append(('sms:'+key,lambda s=subject,e=eid:send_mail(mail,s[:60],sms_text(s,e,now),cfg['sms_recipients']),'Text message'))
+            for dkey,send,what in sends:
+                if conn.execute('SELECT 1 FROM delivery WHERE key=?',(dkey,)).fetchone():
+                    continue
+                try:
+                    send()
+                    conn.execute('INSERT INTO delivery(key,stamp,outcome) VALUES (?,?,?)',
+                                 (dkey,iso(datetime.now(UTC)),'sent'))
+                    audit(conn,'system',f'{what} delivered',dkey)
+                except Exception as exc:
+                    audit(conn,'system',f'{what} failed',dkey+' '+type(exc).__name__)
+                    print(f'{what} failed:',type(exc).__name__,file=sys.stderr)
+                conn.commit()
 
 BACKUP_DIR=Path(os.environ.get('PBF_BACKUP_DIR','/var/backups/pbf-wastewater-nightly'))
 def backup(dest=None,keep=14):
@@ -1339,6 +1784,11 @@ def historical_report(now,period):
             elif daily and name=='pH_Reading':out.append(f'{label} ({unit}): avg {avg*factor:.2f}')
             elif daily:out.append(f'{label} ({unit}): max {mx*factor:.2f}')
             else:out.append(f'{label} ({unit}): count {count:,}; min {mn*factor:.2f}; avg {avg*factor:.2f}; max {mx*factor:.2f}')
+    if daily:
+        try:
+            with appdb() as c:cfg=settings(c)
+            out.extend(['',compliance_line(start.date(),cfg)])
+        except (OSError,sqlite3.Error):pass
     try:out.extend(['',alarm_report(start.astimezone(UTC),end.astimezone(UTC))])
     except (OSError,sqlite3.Error):out.extend(['','Alarm list unavailable (app database could not be read).'])
     out.extend(['','Report uses recorded samples; missing or invalid-quality data should be reviewed separately.'])

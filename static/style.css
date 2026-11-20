@@ -48,3 +48,13 @@
 .system-state.on small{color:#6ef9b0}
 .system-state.off .system-circle{border-color:#ff5d57;background:radial-gradient(circle at 35% 30%,#fca5a5,#dc2626 55%,#5b0d12);color:#fff;box-shadow:0 0 16px rgba(255,93,87,.75),inset 0 -4px 10px rgba(0,0,0,.35)}
 .system-state.off small{color:#ffb8b5}
+/* Sensor calibration log (Audit page) */
+.cal-last{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 12px}
+.cal-last div{flex:1 1 260px;border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:#0c2031;display:flex;flex-direction:column;gap:2px}
+.cal-last span{color:var(--muted);font-size:13px}
+/* Calibration due states, stock cards, shelved note */
+.cal-last em{font-style:normal;font-size:13px;font-weight:700}
+.cal-last em.good{color:#6ef9b0}.cal-last em.warn{color:#ffd178}.cal-last em.bad{color:#ff8a85}
+.cal-last div.overdue{border-color:#d36d68;background:#2a1820}.cal-last div.soon{border-color:#b68a30}
+.shelf-note{border:1px dashed #9aa5ad;border-radius:8px;padding:8px 14px;margin:-6px 0 16px;color:#c7d0d6;font-size:13px;text-align:center}
+.shelf-note[hidden]{display:none}

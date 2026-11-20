@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.27'
+        assert s['revision']=='1.2.28'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -481,6 +481,151 @@ class RevisionTests(unittest.TestCase):
         subjects=[c.args[1] for c in mail.call_args_list]
         self.assertEqual(subjects.count('Flocculant and Coagulant Pump Motor Stop Faulted (FLOC_COAG_PUMP_FAULTED)'),1)
         self.assertEqual(set(web.PLC_EMAIL_WORDING),{t for t,*_ in web.PLC_ALARMS})   # every PLC alarm has its wording
+
+    def test_sensor_calibration_log(self):
+        import base64,zipfile
+        web.OP_AUTH=Path(self.tmp.name)/'operator.json'
+        self._login(web.AUTH,'admin','admin-pass');self._login(web.OP_AUTH,'op','op-pass')
+        pdf=b'%PDF-1.4 test certificate'
+        ok={'sensor':'ph','date':'2026-11-01','name':'Jane Tech','certificate':'CAL-123','note':'pH 4/7/10 buffers',
+            'file':{'name':'cert nov.pdf','data':base64.b64encode(pdf).decode()}}
+        self.assertEqual(self.call('POST','/api/calibrations','op','op-pass',ok)[0],403)   # Operator: no audit right
+        self.assertEqual(self.call('POST','/api/calibrations','admin','admin-pass',ok)[0],200)
+        self.assertEqual(self.call('POST','/api/calibrations','admin','admin-pass',{'sensor':'level','date':'2026-10-15','name':'Bob','certificate':'LV-9'})[0],200)
+        bad=[dict(ok,sensor='flow'),dict(ok,date='2099-01-01'),dict(ok,name=' '),dict(ok,certificate='',file=None),
+             dict(ok,file={'name':'x.exe','data':base64.b64encode(b'MZ...').decode()}),
+             dict(ok,file={'name':'big.pdf','data':base64.b64encode(b'%PDF'+b'0'*web.CAL_FILE_MAX).decode()})]
+        for body in bad[:-1]:self.assertEqual(self.call('POST','/api/calibrations','admin','admin-pass',body)[0],400,body)
+        self.assertIn(self.call('POST','/api/calibrations','admin','admin-pass',bad[-1])[0],(400,))
+        code,body=self.call('GET','/api/calibrations','admin','admin-pass');rows=json.loads(body)['rows']
+        self.assertEqual(code,200);self.assertEqual([r['sensor'] for r in rows],['ph','level'])
+        self.assertEqual(rows[0]['file_name'],'cert nov.pdf');self.assertNotIn('file_data',rows[0])
+        code,data=self.call('GET','/api/calibrations/certificate','admin','admin-pass',query=f"id={rows[0]['id']}")
+        self.assertEqual((code,data),(200,pdf))
+        self.assertEqual(self.call('GET','/api/calibrations/certificate','admin','admin-pass',query=f"id={rows[1]['id']}")[0],404)
+        self.assertEqual(self.call('GET','/api/calibrations','op','op-pass')[0],403)
+        code,book=self.call('GET','/api/export','admin','admin-pass',query='tag=calibration')
+        self.assertEqual(code,200)
+        sheet=zipfile.ZipFile(io.BytesIO(book)).read('xl/worksheets/sheet1.xml').decode()
+        self.assertIn('Jane Tech',sheet);self.assertIn('CAL-123',sheet);self.assertIn('EQ tank height (level) sensor',sheet)
+        code,text=self.call('GET','/api/export','admin','admin-pass',query='tag=calibration&format=csv')
+        self.assertEqual(code,200);self.assertIn('LV-9',text.decode('utf-8-sig'))
+        self.assertEqual(self.call('POST','/api/calibrations/remove','admin','admin-pass',{'id':rows[1]['id']})[0],200)
+        with web.appdb() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM calibrations').fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action LIKE 'Sensor calibration%'").fetchone()[0],3)
+
+    def test_calibration_due_status_and_reminder_email(self):
+        cfg=dict(web.DEFAULTS)
+        today=datetime.now(web.ZoneInfo('America/Vancouver')).date()
+        with web.appdb() as db:
+            self.assertEqual(web.calibration_status(db,cfg)['ph']['state'],'never')
+            ins=lambda s,d:db.execute("INSERT INTO calibrations(sensor,calibrated_on,calibrated_by,logged_by,logged_at) VALUES (?,?,?,?,?)",(s,d.isoformat(),'Jane','x','2026-01-01T00:00:00Z'))
+            ins('ph',today-timedelta(days=25));ins('level',today-timedelta(days=400))
+            st=web.calibration_status(db,cfg)
+        self.assertEqual((st['ph']['state'],st['ph']['days_left']),('soon',5))
+        self.assertEqual(st['level']['state'],'overdue')
+        web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
+        web.EMAIL_CFG.write_text(json.dumps({'host':'example.invalid','sender':'t@example.com','username':'u','password':'p'}))
+        hhmm=datetime.now(web.ZoneInfo('America/Vancouver')).strftime('%H:%M')
+        with web.appdb() as db:
+            for k,v in dict(recipients=['t@example.com'],daily_time=hhmm).items():
+                db.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)',(k,json.dumps(v)))
+        with patch.object(web,'send_mail') as mail:
+            web.scheduler();web.scheduler()
+        subjects=[c.args[1] for c in mail.call_args_list]
+        self.assertIn('Wastewater calibration reminder: pH sensor is due in 5 days',subjects)
+        self.assertIn('Wastewater calibration reminder: EQ tank height (level) sensor is OVERDUE',subjects)
+        self.assertEqual(len([s for s in subjects if 'calibration reminder' in s]),2)   # once each
+
+    def test_shelving_holds_alarm_email_and_sms_goes_out(self):
+        web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
+        web.EMAIL_CFG.write_text(json.dumps({'host':'example.invalid','sender':'t@example.com','username':'u','password':'p'}))
+        with web.appdb() as db:
+            for k,v in dict(email_enabled=True,recipients=['t@example.com'],sms_enabled=True,sms_recipients=['6045550000@sms.example.com']).items():
+                db.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)',(k,json.dumps(v)))
+            db.execute("INSERT INTO shelves(key,until,reason,shelved_by,shelved_at) VALUES ('plc:E_STOP_STATUS',?,'repair','a','b')",
+                       (web.iso(datetime.now(timezone.utc)+timedelta(hours=2)),))
+        current=web.summary()
+        current['extras']['E_STOP_STATUS']={'value':1,'status':'current','stamp':'2026-11-16T12:00:00Z'}
+        with patch.object(web,'summary',return_value=current),patch.object(web,'send_mail') as mail:
+            web.scheduler()
+            self.assertFalse([c for c in mail.call_args_list if 'Emergency Stop' in c.args[1]])   # shelved
+            with web.appdb() as db:db.execute('DELETE FROM shelves')
+            web.scheduler();web.scheduler()
+        calls=[c for c in mail.call_args_list if 'Emergency Stop' in c.args[1]]
+        self.assertEqual(len(calls),2)   # one email, one text, sent once
+        self.assertEqual({tuple(c.args[3]) for c in calls},{('t@example.com',),('6045550000@sms.example.com',)})
+        self.assertTrue(any('See the dashboard' in c.args[2] for c in calls))
+        # Shelving API: needs the settings right and a reason
+        web.OP_AUTH=Path(self.tmp.name)/'operator.json'
+        self._login(web.AUTH,'admin','admin-pass');self._login(web.OP_AUTH,'op','op-pass')
+        self.assertEqual(self.call('POST','/api/shelves','op','op-pass',{'key':'flow','hours':4,'reason':'x'})[0],403)
+        self.assertEqual(self.call('POST','/api/shelves','admin','admin-pass',{'key':'flow','hours':4,'reason':''})[0],400)
+        self.assertEqual(self.call('POST','/api/shelves','admin','admin-pass',{'key':'flow','hours':99,'reason':'x'})[0],400)
+        self.assertEqual(self.call('POST','/api/shelves','admin','admin-pass',{'key':'flow','hours':4,'reason':'pump repair'})[0],200)
+        info=json.loads(self.call('GET','/api/summary','op','op-pass')[1])
+        self.assertEqual([s['key'] for s in info['shelved']],['flow'])
+        self.assertEqual(self.call('POST','/api/shelves/remove','admin','admin-pass',{'key':'flow'})[0],200)
+
+    def test_chemical_stock_estimate_and_low_alarm(self):
+        now=datetime.now(timezone.utc)
+        with sqlite3.connect(web.DB) as h:   # coagulant pump at 60 ml/h (= 1 ml/min) for the last 10 hours: 0.6 L used
+            h.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('Coag_Pump_Run',web.iso(now-timedelta(hours=10)),60.0))
+        when=(now-timedelta(hours=10)).astimezone(web.ZoneInfo('America/Vancouver')).strftime('%Y-%m-%dT%H:%M')
+        with web.appdb() as db:
+            web.save_stock(db,{'chemical':'coag','kind':'count','litres':10,'when':when},'a')
+            st=web.stock_status(db)
+            self.assertAlmostEqual(st['coag']['litres'],10-0.6,delta=0.02)
+            self.assertIsNone(st['floc']['litres'])
+            cfg=dict(web.DEFAULTS,stock_low_coag_l=20.0)
+            web.check_stock(db,cfg)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Coagulant stock low' AND state='open'").fetchone()[0],1)
+            web.save_stock(db,{'chemical':'coag','kind':'delivery','litres':50,'when':when},'a')   # same time as the count: not added
+            self.assertAlmostEqual(web.stock_status(db)['coag']['litres'],10-0.6,delta=0.02)
+            later=(now-timedelta(hours=1)).astimezone(web.ZoneInfo('America/Vancouver')).strftime('%Y-%m-%dT%H:%M')
+            web.save_stock(db,{'chemical':'coag','kind':'delivery','litres':50,'when':later},'a')
+            self.assertAlmostEqual(web.stock_status(db)['coag']['litres'],60-0.6,delta=0.02)
+            web.check_stock(db,cfg,now+timedelta(minutes=1))
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Coagulant stock restored'").fetchone()[0],1)
+            for bad in ({'chemical':'x','kind':'count','litres':1,'when':when},{'chemical':'coag','kind':'delivery','litres':0,'when':when},
+                        {'chemical':'coag','kind':'count','litres':1,'when':'2099-01-01T00:00'}):
+                with self.assertRaises(web.AccountError):web.save_stock(db,bad,'a')
+
+    def test_compliance_pumps_and_alarm_history_reports(self):
+        zone=web.ZoneInfo('America/Vancouver')
+        day=datetime(2026,11,10,tzinfo=zone)
+        u=lambda h,m=0:web.iso(day+timedelta(hours=h,minutes=m))
+        with sqlite3.connect(web.DB) as h:
+            for hh,mm,v in ((1,0,7.0),(1,10,9.5),(1,20,7.2),(5,0,10.0)):   # 10 min out at 01:10, then 15 min (capped) at 05:00
+                h.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('pH_Reading',u(hh,mm),v))
+            for hh,v in ((0,1000.0),(12,1500.0),(13,10.0),(14,40.0)):   # +500, reset (skipped), +30
+                h.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('Total_Flow_Li',u(hh),v))
+            for hh,v in ((0,0),(2,1),(4,0),(6,1),(7,0)):   # sump pump: 2 starts, 3 h running
+                h.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('SUMP_PUMP_STATUS',u(hh),v))
+        a=day.astimezone(timezone.utc);b=(day+timedelta(days=1)).astimezone(timezone.utc)
+        x=web.daily_compliance(a,b,zone,dict(web.DEFAULTS))[day.date()]
+        self.assertAlmostEqual(x['out_min'],25,places=3);self.assertAlmostEqual(x['litres'],530);self.assertEqual(len(x['ph']),4)
+        p=web.pump_usage(a,b,zone)['SUMP_PUMP_STATUS'][day.date()]
+        self.assertAlmostEqual(p[0],3.0);self.assertEqual(p[1],2)
+        self.assertIn('NOT COMPLIANT',web.compliance_line(day.date(),dict(web.DEFAULTS)))
+        with web.appdb() as db:
+            db.execute("INSERT INTO events(stamp,kind,detail,state,actor,ack_at) VALUES (?,?,?,?,?,?)",(u(3),'EQ level high','x','closed','op (Operator)',u(3,30)))
+            eid=db.execute('SELECT MAX(id) FROM events').fetchone()[0]
+            db.execute("INSERT INTO events(stamp,kind,detail,state) VALUES (?,?,?,?)",(u(4),'EQ level recovered',f'Incident {eid}; level 2.0 ft','closed'))
+        hist=web.alarm_history(a,b)
+        self.assertEqual(len(hist),1);self.assertEqual(hist[0]['cleared'],u(4))
+        self.assertEqual(self._report_names(),None)
+
+    def _report_names(self):
+        import zipfile
+        self._login(web.AUTH,'admin','admin-pass')
+        for tag,sheet in (('alarms','Alarm History'),('compliance','Discharge Compliance'),('pumps','Pump Run Hours')):
+            code,data=self.call('GET','/api/export','admin','admin-pass',query=f'tag={tag}&startDate=2026-11-10&endDate=2026-11-10')
+            self.assertEqual(code,200,tag)
+            self.assertIn(f'name="{sheet}"',zipfile.ZipFile(io.BytesIO(data)).read('xl/workbook.xml').decode())
+            code,data=self.call('GET','/api/export','admin','admin-pass',query=f'tag={tag}&startDate=2026-11-10&endDate=2026-11-10&format=csv')
+            self.assertEqual(code,200,tag);self.assertTrue(data.decode('utf-8-sig').strip())
 
     def test_monthly_email_has_excel_attachment(self):
         web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
