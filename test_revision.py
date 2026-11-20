@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.30'
+        assert s['revision']=='1.2.31'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -386,6 +386,10 @@ class RevisionTests(unittest.TestCase):
         self.assertIn('id="tankPh"',html)
         self.assertNotIn('id="diagramTotal"',html)
         self.assertTrue((base/'process-overview.webp').stat().st_size>10000)
+        # Help page: a tab everyone can open, with a section for every page of the dashboard
+        self.assertIn('data-view="help"',html)
+        for topic in ('help-overview','help-trends','help-alarms','help-reports','help-audit','help-settings','help-email','help-rights','help-trouble'):
+            self.assertIn(f'id="{topic}"',html);self.assertIn(f'href="#{topic}"',html)
 
     def test_two_operators_switch_and_lockout(self):
         self._login(web.AUTH,'admin','admin-pass')

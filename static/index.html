@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Wastewater Dashboard — Rev 1.2.30</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>Wastewater Dashboard — Rev 1.2.31</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body>
 <header class="topbar"><div class="brand"><h1>Wastewater Dashboard</h1><small>Design and program by Daniel Salazar.</small></div>
-<nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.30</small><button id="switchUser" type="button">Switch user</button></div></header>
+<nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button><button data-view="help">Help</button></nav>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.31</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="alarmRibbon" class="sludge-ribbon" role="alert" hidden></div><div id="shelfNote" class="shelf-note" hidden></div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -89,6 +89,138 @@
 <section id="events" class="view" hidden><div class="panel" id="shelfPanel"><h2>Shelve an alarm (maintenance)</h2><p>Shelving stops the emails and text messages for one alarm for a set time, for example while a pump is being repaired. The alarm is still recorded below and the shelf ends by itself after the hours chosen (up to <span id="shelfMax">72</span>). Every shelve and unshelve is in the Audit log.</p><div class="pickup-form" id="shelfForm"><label>Alarm<select id="shelfKey"></select></label><label>Hours<input type="number" id="shelfHours" title="1 to 72 hours" min="1" max="72" step="1" value="4"></label><label class="grow">Reason (required)<input id="shelfReason" maxlength="200"></label><button id="shelveBtn" type="button">Shelve</button></div><p id="shelfState" role="status"></p><div id="shelfList"></div></div><h2>Alarm events and acknowledgements</h2><p>Confirmed pH, EQ tank high-level, no-discharge-flow and data-stopped incidents, and the PLC alarms (sludge tank FULL, E-Stop, mixer pump, rake motor, MAX RGT pump and floc / coag pump faults, EQ tank FULL) are recorded here. A PLC alarm stays on the list until it is acknowledged, even after it clears; the sludge tank FULL and EQ tank FULL alarms acknowledge themselves once they clear. Acknowledgements are audited.</p><div id="eventlist" class="panel">Loading…</div></section>
 <section id="audit" class="view" hidden><div class="panel" id="calPanel"><h2>Sensor calibration log</h2><p>Log each calibration of the EQ pH sensor and the EQ tank height (level) sensor: the date, who calibrated it and the certificate. Attach the certificate as a PDF, JPG or PNG (up to <span id="calMax">700</span> KB), or enter its number, or both.</p><div id="calLast" class="cal-last"></div><div class="pickup-form" id="calForm"><label>Sensor<select id="calSensor"><option value="ph">pH sensor (pH_Reading)</option><option value="level">EQ tank height (level) sensor (EQ_Tank_Level_Ft)</option></select></label><label>Date calibrated<input type="date" id="calDate"></label><label>Calibrated by (name)<input id="calName" maxlength="100"></label><label>Certificate no.<input id="calCert" maxlength="100"></label><label>Certificate file<input type="file" id="calFile" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"></label><label class="grow">Note (optional: buffer lot, reference values, company)<input id="calNote" maxlength="300"></label><button id="logCal" type="button">Log calibration</button></div><div class="pickup-form" id="calReport"><button id="calExcel" type="button">Download calibration report (Excel)</button> <button id="calCsv" type="button">Download CSV</button></div><p id="calState" role="status"></p><div id="calList">Loading…</div></div><h2>Audit history</h2><div id="auditlist" class="panel">Loading…</div></section>
 <section id="reports" class="view" hidden><div class="panel" id="pickupPanel"><h2>Sludge pickup log</h2><p id="pickupStatus">When the sludge truck has emptied the sludge tank, log the pickup date and time here. The monthly report shows each pickup and how long after the sludge tank FULL alarm it happened.</p><div class="pickup-form" id="pickupForm"><label>Pickup date and time (Vancouver)<input type="datetime-local" id="pickupWhen" step="60"></label><label class="grow">Note (optional: hauler, truck, volume)<input id="pickupNote" maxlength="200"></label><button id="logPickup" type="button">Log pickup</button></div><div class="pickup-form" id="pickupReport"><label>Month<input type="month" id="pickupMonth"></label><button id="pickupExcel" type="button">Download monthly report (Excel)</button></div><p id="pickupState" role="status"></p><div id="pickupList">Loading…</div></div><div class="panel" id="purchasePanel"><h2>Chemical purchases</h2><p>Log each chemical purchase with the date it was bought. Enter the received date and time when it arrives (now, or later with <b>Mark received</b>). A purchase adds to the chemical stock from the moment it is received. The report gives the total bought per month, quarter and year.</p><div class="pickup-form" id="purchaseForm"><label>Chemical<select id="buyChem"><option value="caustic">CESCO NEUTRO 5045 50% Caustic · 55 gal drum · Part # FNEUT5045-Dr55</option><option value="floc">CESCO PF 875AH Flocculant · 5 gal pail · Part # FPF875AH-P5</option><option value="coag">CESCO PROTECT 7000 Coagulant · 55 gal drum · Part # FPROT7000-Dr55</option><option value="sa93">CESCO SA-93 · 5 gal pail · Part # FSA93-P5</option></select></label><label>Purchase date<input type="date" id="buyDate"></label><label>Quantity<input type="number" id="buyQty" min="0" max="100000" step="0.01"></label><label>Unit<select id="buyUnit"><option value="container">containers (drums / pails)</option><option value="L">litres</option><option value="gal">US gallons</option></select></label><label>Total cost ($, optional)<input type="number" id="buyCost" min="0" step="0.01"></label><label>PO / invoice no.<input id="buyPo" maxlength="60"></label><label>Supplier<input id="buySupplier" maxlength="80" value="CESCO"></label><label>Received (leave blank if not yet)<input type="datetime-local" id="buyReceived" step="60"></label><label class="grow">Note (optional)<input id="buyNote" maxlength="200"></label><button id="logBuy" type="button">Log purchase</button></div><div class="pickup-form" id="buyReport"><label>Year<input type="number" id="buyYear" min="2020" max="2100" step="1"></label><button id="buyExcel" type="button">Download purchases report – month, quarter, year (Excel)</button> <button id="buyCsv" type="button">Download CSV</button></div><p id="buyState" role="status"></p><div id="buyList">Loading…</div></div><div class="panel" id="stockPanel"><h2>Chemical stock</h2><p>Log a tank count now and then: how much of each chemical is actually left (for example at the start of each month and when a drum or pail is changed). Deliveries come from the purchases above once they are marked received. Enter the amount in containers, litres or US gallons. Coagulant and flocculant stock also goes down with what their dosing pumps report (Coag_Pump_Run and Floc_Pump_Run); caustic and SA-93 have no pump reading, so their usage comes from the tank counts. A low-stock alarm is raised below the levels set in Settings.</p><div id="stockCards" class="cal-last"></div><div class="pickup-form" id="stockForm"><label>Chemical<select id="stockChem"><option value="caustic">CESCO NEUTRO 5045 50% Caustic · 55 gal drum · Part # FNEUT5045-Dr55</option><option value="floc">CESCO PF 875AH Flocculant · 5 gal pail · Part # FPF875AH-P5</option><option value="coag">CESCO PROTECT 7000 Coagulant · 55 gal drum · Part # FPROT7000-Dr55</option><option value="sa93">CESCO SA-93 · 5 gal pail · Part # FSA93-P5</option></select></label><input type="hidden" id="stockKind" value="count"><label>Quantity<input type="number" id="stockLitres" min="0" max="100000" step="0.01"></label><label>Unit<select id="stockUnit"><option value="container">containers (drums / pails)</option><option value="L">litres</option><option value="gal">US gallons</option></select></label><label>Date and time (Vancouver)<input type="datetime-local" id="stockWhen" step="60"></label><label class="grow">Note (optional: supplier, lot)<input id="stockNote" maxlength="200"></label><button id="logStock" type="button">Log tank count</button></div><p id="stockState" role="status"></p><div class="pickup-form" id="consReport"><label>Year<input type="number" id="consYear" min="2020" max="2100" step="1"></label><button id="consExcel" type="button">Download consumption report – month and year (Excel)</button> <button id="consCsv" type="button">Download CSV</button></div><div id="stockList">Loading…</div></div><div class="panel"><h2>Excel report</h2><label>Report type <select id="reportTag"><option value="EQ_Tank_Level_Ft">EQ_Tank_Level_Ft</option><option value="FLOW_RATE">FLOW_RATE</option><option value="Total_Flow_Li">Total_Flow_Li</option><option value="Rake_Speed_VFD">Rake_Speed_VFD</option><option value="chemical">Chemical usage – Coag &amp; Floc litres</option><option value="sludge">Sludge pickups &amp; tank FULL alarms</option><option value="alarms">Alarm history – start, clear, acknowledgement</option><option value="compliance">Daily discharge compliance – pH and litres</option><option value="pumps">Pump run hours and starts</option><option value="purchases">Chemical purchases – month, quarter, year (year of From date)</option><option value="consumption">Chemical consumption – month and year (year of From date)</option><option value="calibration">Sensor calibrations – pH &amp; EQ tank height (all dates)</option><option value="all">All (one worksheet per tag)</option></select></label> <label>From <input type="date" id="from"></label> <label>Through <input type="date" id="to"></label> <button id="export">Download Excel report</button> <button id="exportCsv">Download CSV</button><p>Up to 92 inclusive calendar days (one quarter), America/Vancouver days. Each tag worksheet lists Timestamp UTC, Timestamp America/Vancouver, Raw Value and Unit Of Measure. Chemical usage gives the litres of coagulant and flocculant used per day, month and quarter (from the Coag_Pump_Run and Floc_Pump_Run ml/min readings); the All report includes it as a Chemical Usage worksheet. Download CSV gives the same readings for the chosen tag (or all tags) as a CSV file. The Summary worksheet shows Total_Flow_Li in litres: each day's EOD value (the last reading above 1 L that day), the daily usage (EOD minus the previous EOD), notes for carried-forward days and meter drops, and monthly and quarterly totals, to 2 decimal places.</p></div><div class="panel"><h2>Automatic email reports</h2><p>Report recipients, days and times are under Settings. Daily and monthly emails contain the previous day/month sample count and two-decimal minimum, average and maximum values, and the list of alarms in that period (time, alarm, still active or cleared, and who acknowledged it). The monthly email attaches the Excel report for the month (Summary and Total_Flow_Li readings); the quarterly email attaches the Excel Summary for the quarter. Sending requires configured SMTP credentials and the systemd scheduler.</p></div></section>
+<section id="help" class="view help" hidden>
+<div class="panel help-intro"><h2>Help — how to use the Wastewater Dashboard</h2>
+<p>This dashboard shows the wastewater treatment system live from the PLC (through the Ewon and Talk2M), keeps the history, raises alarms, emails reports and keeps the operating logs (sludge pickups, chemicals, sensor calibrations). All times are <b>Vancouver time</b>. The page refreshes by itself every 10 seconds.</p>
+<nav class="help-toc" aria-label="Help topics"><a href="#help-start">Quick start</a><a href="#help-overview">Overview</a><a href="#help-trends">Trends</a><a href="#help-alarms">Alarms</a><a href="#help-reports">Reports</a><a href="#help-audit">Audit</a><a href="#help-settings">Settings</a><a href="#help-email">Emails and texts</a><a href="#help-rights">Logins and rights</a><a href="#help-trouble">Troubleshooting</a></nav></div>
+
+<div class="panel" id="help-start"><h3>Quick start for operators</h3>
+<ol>
+<li><b>Start of shift:</b> open <b>Overview</b>. The bar at the top should be green (<i>LIVE API-BACKED READINGS</i>) and there should be no red alarm banner.</li>
+<li><b>If there is a red banner or "Active alarms" box:</b> go to <b>Alarms</b>, check the equipment, then press <b>Acknowledge</b> on the alarm.</li>
+<li><b>When the sludge truck has emptied the tank</b> (every Monday and Thursday): <b>Reports → Sludge pickup log → Log pickup</b>.</li>
+<li><b>When chemicals arrive:</b> <b>Reports → Chemical purchases</b> → <b>Mark received</b> (or log the purchase with its received date).</li>
+<li><b>Start of each month, and when a drum or pail is changed:</b> <b>Reports → Chemical stock → Log tank count</b> for each chemical.</li>
+<li><b>After calibrating the pH or EQ tank level sensor:</b> <b>Audit → Sensor calibration log</b> (Engineering or Admin).</li>
+</ol></div>
+
+<div class="panel" id="help-overview"><h3>Overview</h3>
+<p><b>Status bar</b> (top of every page):</p>
+<ul>
+<li><span class="help-chip ok">Green</span> all four readings are live; shows the pH limits.</li>
+<li><span class="help-chip alert">Red</span> pH is outside its limits, or <b>NO NEW DATA</b> — nothing has arrived for longer than the data-stopped limit (check the Ewon, Talk2M and the server).</li>
+<li><span class="help-chip warn">Amber</span> one or more readings are missing, invalid or older than 3 minutes.</li>
+</ul>
+<p><b>Red alarm banner</b> (flashing): one line for each PLC alarm that is ON right now, with the time it started and its PLC address — Sludge tank FULL, EQ tank FULL, E-Stop, Mixer pump, Rake motor, MAX RGT pump and Floc / Coag pump faults. It disappears by itself when the PLC bit goes back to 0. A grey dashed note under it lists any <b>shelved</b> alarms.</p>
+<p><b>Reading cards:</b> EQ pH, EQ tank level (ft), discharge flow and total flow (litres). <span class="help-chip ok">LIVE</span> means the reading is current; <i>STALE</i>, <i>INVALID</i> or <i>MISSING</i> means it is not. Click the flow unit to switch between <b>L/min</b> and <b>gal/min</b> (remembered on this computer). Hover a card to see the exact time of the reading.</p>
+<p><b>Active alarms</b> box: alarms still open or not yet acknowledged. Red when something is not acknowledged. Click it to open the list; <b>Open Alarms page</b> takes you to the full list.</p>
+<p><b>Process diagram</b> (<b>Show process diagram</b>):</p>
+<ul>
+<li><b>SYSTEM ENABLED</b> circle: green <b>ON</b> / red <b>OFF</b> from PLC B3:0/4. Grey "--" means no reading has arrived.</li>
+<li>EQ tank pH and level, rake motor speed (Hz), discharge flow, coagulant and flocculant pump rate (%) and run rate (choose <b>ml/min</b> or <b>ml/h</b>).</li>
+<li>Electric transfer (sump) pump and circulation (mixer) pump: spinning green fan and <b>RUNNING</b>, or <b>OFF</b>.</li>
+<li>Sludge tank: <b>NORMAL</b> or flashing <b>FULL</b>.</li>
+<li>Pickup box: <b>PICKUP EVERY MON &amp; THU</b> and the last pickup logged.</li>
+</ul>
+<p class="help-note">The caustic and acid dosing pumps and other equipment drawings are illustrative only; they are not connected to the PLC.</p></div>
+
+<div class="panel" id="help-trends"><h3>Trends</h3>
+<p>Separate history charts for <b>EQ pH</b>, <b>EQ tank level</b>, <b>discharge flow</b> and <b>total flow</b>.</p>
+<ul>
+<li><b>Window:</b> last 6 hours, 24 hours or 7 days. The charts refresh every 30 seconds; <b>Refresh</b> updates them now.</li>
+<li>Grid lines every 30 minutes (6-hour and 24-hour windows) or every 6 hours (7 days); the brighter line is midnight.</li>
+<li>A <b>gap</b> in a line means no readings for more than 3 minutes (communication loss), not a zero reading.</li>
+<li>The flow unit follows the L/min / gal/min choice on the Overview.</li>
+</ul>
+<p>For longer periods or exact numbers, use <b>Reports</b>.</p></div>
+
+<div class="panel" id="help-alarms"><h3>Alarms</h3>
+<p>Every alarm is recorded in <b>Alarm events and acknowledgements</b> with its time, detail and status, and is emailed to the recipients (see <a href="#help-email">Emails and texts</a>).</p>
+<table class="help-table"><thead><tr><th>Alarm</th><th>Comes on when</th><th>Clears when</th></tr></thead><tbody>
+<tr><td>pH high / low</td><td>pH outside the limits for the set number of readings in a row</td><td>pH back inside for the set number of readings</td></tr>
+<tr><td>EQ level high</td><td>EQ tank level above the high-level setting</td><td>level back below it</td></tr>
+<tr><td>No discharge flow</td><td>flow below the setting for the set minutes</td><td>flow comes back</td></tr>
+<tr><td>Data stopped</td><td>no new reading from any tag for the set minutes</td><td>readings arrive again</td></tr>
+<tr><td>Sludge tank FULL (B3:0/13)</td><td>PLC bit = 1</td><td>tank emptied — <b>acknowledges itself</b></td></tr>
+<tr><td>EQ tank FULL (N7:1/5)</td><td>PLC bit = 1</td><td>bit back to 0 — <b>acknowledges itself</b></td></tr>
+<tr><td>E-Stop (N7:1/0), Mixer pump (N7:1/2), Rake motor (N7:1/8), MAX RGT pump (N7:1/10), Floc / Coag pump (N7:0/14)</td><td>PLC bit = 1</td><td>bit back to 0 — stays on the list until someone <b>acknowledges</b> it</td></tr>
+<tr><td>Chemical stock low (each product)</td><td>estimated stock below the low level in Settings</td><td>stock back above it (purchase received or new tank count)</td></tr>
+</tbody></table>
+<p><b>Status column:</b> <i>active · not acknowledged</i> → <i>active · acknowledged by …</i> → <i>closed</i>. <i>cleared · not acknowledged</i> means the fault has gone but nobody has acknowledged it yet.</p>
+<p><b>To acknowledge:</b> check the equipment first, then press <b>Acknowledge</b>. Your name and the time are saved.</p>
+<p><b>Shelve an alarm (maintenance):</b> stops the emails and texts for one alarm for 1–72 hours, with a reason — for example while a pump is being repaired. The alarm is still recorded, the shelf ends by itself, and every shelve is in the Audit log. Needs the Settings right. <b>Unshelve</b> ends it early.</p>
+<p class="help-note">These are software alarms for monitoring. They do not replace the PLC safety interlocks.</p></div>
+
+<div class="panel" id="help-reports"><h3>Reports</h3>
+<p><b>Sludge pickup log:</b> after the truck has emptied the sludge tank, enter the date and time and an optional note (hauler, truck, volume) and press <b>Log pickup</b>. <b>Download monthly report</b> shows each pickup and how long after the sludge tank FULL alarm it happened.</p>
+<p><b>Chemical purchases:</b> log each purchase — product (with part #), purchase date, quantity (drums / pails, litres or US gallons), total cost (optional), PO / invoice number and supplier.</p>
+<ul><li>Fill in <b>Received</b> if it has arrived; otherwise leave it blank and press <b>Mark received</b> when it comes. Only received purchases add to stock.</li>
+<li><b>Download purchases report</b> (choose the year): totals per month, quarter and year, all years, and the full list with days to receive. A blank cost is estimated from the price per container in Settings and marked "estimated".</li></ul>
+<p><b>Chemical stock:</b> a card for each product shows the estimated stock in litres and drums / pails.</p>
+<ul><li>Stock = last <b>tank count</b> + purchases received since − usage. Coagulant and flocculant usage comes from their dosing pumps; caustic (NEUTRO 5045) and SA-93 have no pump reading yet, so their usage shows only when a new tank count is logged.</li>
+<li><b>Log tank count</b> regularly: the start of each month and whenever a drum or pail is changed.</li>
+<li><b>Download consumption report</b> (choose the year): delivered and used per month and year for each product, with costs once prices are entered.</li></ul>
+<p><b>Excel report</b> (choose the type and dates, up to 92 days; or CSV):</p>
+<ul>
+<li><b>EQ_Tank_Level_Ft, FLOW_RATE, Total_Flow_Li, Rake_Speed_VFD</b> — every reading, plus a Summary of daily, monthly and quarterly total flow.</li>
+<li><b>Chemical usage</b> — litres of coagulant and flocculant used per day, month and quarter (from the dosing pumps).</li>
+<li><b>Sludge pickups &amp; tank FULL alarms</b>.</li>
+<li><b>Alarm history</b> — every alarm: start, clear, minutes active, who acknowledged it and how fast.</li>
+<li><b>Daily discharge compliance</b> — pH minimum / average / maximum, minutes outside the pH limits, litres discharged, peak flow and <b>Compliant yes / NO</b> for each day.</li>
+<li><b>Pump run hours and starts</b> — transfer (sump) and circulation (mixer) pumps.</li>
+<li><b>Chemical purchases</b> and <b>chemical consumption</b> — for the year of the From date.</li>
+<li><b>Sensor calibrations</b> — all calibrations of the pH and EQ tank level sensors.</li>
+<li><b>All</b> — one worksheet per tag.</li>
+</ul></div>
+
+<div class="panel" id="help-audit"><h3>Audit</h3>
+<p><b>Sensor calibration log</b> (pH sensor and EQ tank height / level sensor):</p>
+<ul>
+<li>After each calibration enter the date, who calibrated it, the certificate number and / or the certificate file (PDF, JPG or PNG up to 700 KB), and a note (buffers, reference values). Click a file name to download the certificate.</li>
+<li>The cards show the last calibration and when the next is due: <span class="help-chip ok">Next due</span>, <span class="help-chip warn">Due in … days</span> or <span class="help-chip alert">OVERDUE</span>. A reminder email is sent before it is due and when it is overdue.</li>
+<li><b>Download calibration report</b> (Excel or CSV) for inspections.</li>
+</ul>
+<p><b>Audit history:</b> who did what and when — sign-ins locked, settings changed, alarms acknowledged or shelved, pickups, purchases, tank counts and calibrations logged or removed, and every email and text sent or failed. Entries cannot be edited.</p></div>
+
+<div class="panel" id="help-settings"><h3>Settings (Admin and Engineering)</h3>
+<ul>
+<li><b>pH alarm limits</b> and how many readings in a row confirm an alarm and its recovery.</li>
+<li><b>Alarm notification schedule:</b> days and hours when alarm emails and texts are sent.</li>
+<li><b>Data, tank level, flow and PLC alarms:</b> turn each alarm on or off and set its limits.</li>
+<li><b>Calibration reminders and chemical stock:</b> how often each sensor must be calibrated, reminder days, low-stock levels and the price per container of each chemical.</li>
+<li><b>Text message alerts</b> and <b>Email recipients and reports</b> (daily, monthly and quarterly).</li>
+<li><b>Accounts and passwords:</b> add or remove logins and choose the rights of each role (Admin only).</li>
+</ul>
+<p>Press <b>Save settings</b> after changing anything; changes are in the Audit log.</p></div>
+
+<div class="panel" id="help-email"><h3>Emails and text messages</h3>
+<ul>
+<li><b>Alarm email:</b> one email when an alarm comes on, and one when it clears (if the first was sent). Sent only within the alarm notification schedule and not for shelved alarms.</li>
+<li><b>Text message:</b> a short text for each new alarm to the phone addresses in Settings (if turned on).</li>
+<li><b>Daily report:</b> the previous day's readings, a discharge compliance line and the list of alarms.</li>
+<li><b>Monthly</b> and <b>quarterly</b> reports with an Excel attachment.</li>
+<li><b>Calibration reminders</b> at the daily report time.</li>
+</ul></div>
+
+<div class="panel" id="help-rights"><h3>Logins and rights</h3>
+<p>Everyone can see the Overview, Trends, Alarms and this Help page. What else each person can do depends on their role (the Admin can change the rights of Engineering, Operator and Guest in Settings):</p>
+<table class="help-table"><thead><tr><th>Role</th><th>Usually can</th></tr></thead><tbody>
+<tr><td>Admin</td><td>Everything, including logins and rights</td></tr>
+<tr><td>Engineering</td><td>Reports, acknowledge, pickups and chemicals, Settings, shelving, Audit and calibrations</td></tr>
+<tr><td>Operator</td><td>Reports, acknowledge alarms, log sludge pickups, chemical purchases and tank counts</td></tr>
+<tr><td>Guest</td><td>View only</td></tr>
+</tbody></table>
+<p>Use your own login so the Audit log shows who did what. <b>Switch user</b> (top right) signs in as someone else. After 10 different wrong passwords from one place in 15 minutes, sign-in is locked for 15 minutes.</p></div>
+
+<div class="panel" id="help-trouble"><h3>Troubleshooting</h3>
+<ul>
+<li><b>NO NEW DATA / readings STALE:</b> check the Ewon has power and internet, and that Talk2M shows it online. Readings catch up by themselves once the connection is back — nothing is lost.</li>
+<li><b>A PLC status shows "--" (for example SYSTEM ENABLED):</b> no reading has arrived for that tag. It needs historical logging (with a logging interval) on the Ewon.</li>
+<li><b>Page looks old after an update:</b> press <b>Ctrl+F5</b>. The revision is shown top right.</li>
+<li><b>A tab or button is missing:</b> your login does not have that right — ask the Admin.</li>
+<li><b>Logged something by mistake:</b> use <b>Remove</b> on that row and log it again (both are in the Audit log).</li>
+</ul></div>
+</section>
 <section id="settings" class="view" hidden><h2>Settings and notification scheduling</h2>
 <div class="panel"><h3>pH alarm limits and confirmation</h3><div class="formgrid"><label>Low pH<input id="ph_low" type="number" min="0" max="14" step="0.01"></label><label>High pH<input id="ph_high" type="number" min="0" max="14" step="0.01"></label><label>Consecutive abnormal readings (1–10)<input id="alarm_confirm_samples" type="number" min="1" max="10" step="1"></label><label>Consecutive normal readings for recovery (1–10)<input id="alarm_recovery_samples" type="number" min="1" max="10" step="1"></label></div><label class="check"><input id="alarms_enabled" type="checkbox"> Enable pH alarm monitoring</label><label class="check"><input id="email_enabled" type="checkbox"> Enable alarm email</label><label class="check"><input id="email_recovery_enabled" type="checkbox"> Email when an emailed pH incident is confirmed recovered</label><p>Each reading timestamp counts once. Incident emails are unique per confirmed event, not limited to once per day. This software alarm is not a substitute for a safety or compliance interlock.</p></div>
 <div class="panel"><h3>Alarm notification schedule</h3><div class="formgrid"><label>On <input id="alarm_on" type="time"></label><label>Off <input id="alarm_off" type="time"></label></div><div id="alarmDays" class="days"></div><p>Vancouver local time; overnight schedules supported.</p></div>
@@ -112,5 +244,5 @@
 <div class="account-box rights-box"><h4>Rights for each role</h4><div class="tablewrap"><table class="rights"><thead><tr><th>Right</th><th>Admin</th><th>Engineering</th><th>Operator</th><th>Guest</th></tr></thead><tbody id="rightsBody"></tbody></table></div><button id="saveRights" type="button">Save rights</button> <small>Changes apply on the person's next page refresh (within 10 seconds).</small></div></div>
 <p id="accountState" role="status"></p>
 <p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
-<footer>Rev 1.2.30 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
+<footer>Rev 1.2.31 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
 </main></body></html>
