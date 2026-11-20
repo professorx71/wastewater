@@ -74,3 +74,59 @@
 .help-note{color:var(--muted);font-size:13px}
 .help-table{width:100%;border-collapse:collapse;margin:8px 0}
 .help-table th,.help-table td{text-align:left;vertical-align:top;padding:6px 8px;border-bottom:1px solid var(--line)}
+/* ================= Industrial HMI theme (header tabs, page colours, fonts) =================
+   Each page has an accent colour, used on its tab and on its panels:
+   Overview teal · Trends blue · Alarms amber · Audit violet · Reports green · Settings steel · Help cyan.
+   Backgrounds stay neutral dark steel so alarm red and amber always stand out (ISA-101 style). */
+:root{--hmi-font:Bahnschrift,'DIN Alternate','Barlow Semi Condensed','Roboto Condensed','Arial Narrow',system-ui,sans-serif;
+  --acc-overview:#14c8d6;--acc-trends:#4aa3ff;--acc-events:#ffb020;--acc-audit:#a78bfa;--acc-reports:#34d399;--acc-settings:#94a3b8;--acc-help:#38bdf8}
+h1,h2,h3,h4,.brand h1{font-family:var(--hmi-font);letter-spacing:.02em}
+/* Header: brand left, tabs centred, account right */
+@media(min-width:1101px){
+  .topbar{display:grid;grid-template-columns:1fr auto 1fr;gap:20px}
+  .topbar nav{justify-content:center}
+  .account{justify-self:end}
+}
+.topbar nav{gap:10px}
+.topbar nav button{font-family:var(--hmi-font);font-size:17px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;
+  padding:13px 26px;border-radius:6px;color:#d6e2ea;background:linear-gradient(180deg,#22323f,#16232e);
+  border:1px solid #3d5568;border-bottom:4px solid var(--tab,#5b6f80);box-shadow:inset 0 1px 0 #ffffff14}
+.topbar nav button:hover{background:linear-gradient(180deg,#2c4153,#1c2d3b);color:#fff;border-color:#6f8ca3;border-bottom-color:var(--tab);box-shadow:0 0 10px #0006}
+.topbar nav button.selected{color:#fff;background:linear-gradient(180deg,color-mix(in srgb,var(--tab) 45%,#16232e),color-mix(in srgb,var(--tab) 22%,#0d1820));
+  border-color:var(--tab);box-shadow:0 0 14px color-mix(in srgb,var(--tab) 45%,transparent),inset 0 1px 0 #ffffff26}
+.topbar nav button[data-view="overview"]{--tab:var(--acc-overview)}.topbar nav button[data-view="trends"]{--tab:var(--acc-trends)}
+.topbar nav button[data-view="events"]{--tab:var(--acc-events)}.topbar nav button[data-view="audit"]{--tab:var(--acc-audit)}
+.topbar nav button[data-view="reports"]{--tab:var(--acc-reports)}.topbar nav button[data-view="settings"]{--tab:var(--acc-settings)}
+.topbar nav button[data-view="help"]{--tab:var(--acc-help)}
+@media(max-width:1100px){.topbar nav button{font-size:14px;padding:10px 16px}}
+@media(max-width:600px){.topbar nav button{font-size:12px;padding:8px 10px;letter-spacing:.03em}}
+/* Page backgrounds and panels: neutral steel, page accent on the left edge and headings */
+body[data-view="events"]{--acc:var(--acc-events);background:radial-gradient(ellipse at 40% 0%,#1c1f24 0%,#0d1014 60%)}
+body[data-view="audit"]{--acc:var(--acc-audit);background:radial-gradient(ellipse at 40% 0%,#1b1d2a 0%,#0c0e16 60%)}
+body[data-view="reports"]{--acc:var(--acc-reports);background:radial-gradient(ellipse at 40% 0%,#16211f 0%,#0a1110 60%)}
+body[data-view="settings"]{--acc:var(--acc-settings);background:radial-gradient(ellipse at 40% 0%,#1c2229 0%,#0e1216 60%)}
+body[data-view="help"]{--acc:var(--acc-help);background:radial-gradient(ellipse at 40% 0%,#132233 0%,#0a121c 60%)}
+body[data-view="trends"]{--acc:var(--acc-trends)}
+:is(#events,#audit,#reports,#settings,#help) .panel{background:linear-gradient(180deg,#1b232c,#141b22);border:1px solid #33414e;
+  border-left:4px solid var(--acc);border-radius:8px;box-shadow:0 2px 10px #0007}
+:is(#events,#audit,#reports,#settings,#help) h2{color:#fff;font-size:21px;text-transform:uppercase;letter-spacing:.06em}
+:is(#events,#audit,#reports,#settings,#help) .panel h2,:is(#events,#audit,#reports,#settings,#help) .panel h3{color:var(--acc)}
+:is(#events,#audit,#reports,#settings,#help) > h2{border-bottom:2px solid var(--acc);padding-bottom:6px;margin:6px 0 14px}
+/* Tables: control-room style headers and aligned numbers */
+:is(#events,#audit,#reports,#settings) table{font-variant-numeric:tabular-nums}
+:is(#events,#audit,#reports,#settings) th{font-family:var(--hmi-font);text-transform:uppercase;letter-spacing:.06em;font-size:13px;color:#b9c6d1;background:#ffffff08}
+:is(#events,#audit,#reports,#settings) tbody tr:hover{background:#ffffff0a}
+:is(#events,#audit,#reports,#settings) label{color:#c3ced8}
+:is(#events,#audit,#reports,#settings,#help) input,:is(#events,#audit,#reports,#settings,#help) select,:is(#events,#audit,#reports,#settings,#help) textarea{background:#0f161d;border-color:#465868}
+:is(#events,#audit,#reports,#settings,#help) button:not(.danger):hover{border-color:var(--acc);background:color-mix(in srgb,var(--acc) 22%,#141b22);box-shadow:0 0 10px color-mix(in srgb,var(--acc) 35%,transparent)}
+/* Help: larger, easier-to-read text */
+.help .panel{font-size:16px;line-height:1.6}
+.help h3{font-size:21px}
+.help .help-table{font-size:15px}
+.help-toc a{font-size:15px;padding:6px 14px}
+.help-toc a:hover{border-color:var(--acc);color:var(--acc)}
+@media(min-width:1101px) and (max-width:1500px){.topbar nav{gap:8px}.topbar nav button{font-size:15px;padding:11px 18px}.brand h1{font-size:26px}}
+.help-tab{display:inline-block;font-family:var(--hmi-font);text-transform:uppercase;letter-spacing:.05em;font-size:13px;padding:1px 9px;border-radius:4px;
+  border:1px solid var(--c);border-bottom-width:3px;color:#fff;background:color-mix(in srgb,var(--c) 22%,#16232e)}
+.help-tab.overview{--c:var(--acc-overview)}.help-tab.trends{--c:var(--acc-trends)}.help-tab.events{--c:var(--acc-events)}.help-tab.audit{--c:var(--acc-audit)}
+.help-tab.reports{--c:var(--acc-reports)}.help-tab.settings{--c:var(--acc-settings)}.help-tab.help{--c:var(--acc-help)}
