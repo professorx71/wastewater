@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Wastewater Dashboard — Rev 1.2.34</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>Wastewater Dashboard — Rev 1.2.35</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body data-view="overview">
 <header class="topbar"><div class="brand"><h1>Wastewater Dashboard</h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button><button data-view="help">Help</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.34</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.35</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="alarmRibbon" class="sludge-ribbon" role="alert" hidden></div><div id="shelfNote" class="shelf-note" hidden></div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -82,7 +82,6 @@
       <div class="pickup-mask" id="pickupMask" title="Sludge truck comes every Monday and Thursday. Last pickup is from the sludge pickup log on the Reports page."><small>PICKUP EVERY MON &amp; THU</small><span>Last pickup: <b id="lastPickup">—</b></span></div>
       <div class="system-state" id="systemState" title="System enabled (SYSTEM_ENABLED, PLC B3:0/4)"><div class="system-circle" id="systemCircle"><b id="systemText">--</b></div><small>SYSTEM<br>ENABLED</small></div>
     </div></div>
-    <p class="disclaimer">Process equipment, pumps (including caustic and acid dosing), motor status and chemical dosing are illustrative only—not connected to PLC tags. Live from the PLC: system ON / OFF (B3:0/4), sludge tank FULL / NORMAL (B3:0/13), electric transfer (sump) pump running (B3:1/9) and electric circulation (mixer) pump running (N142:0). The sludge truck comes every Monday and Thursday; the last pickup comes from the pickup log on the Reports page. EQ tank water fill is schematic; numeric values (including rake motor speed and dosing pump rates) are API-backed.</p>
   </div>
 </section>
 <section id="trends" class="view" hidden><div class="panel"><h2>Separate wastewater history trends</h2><label>Window <select id="period"><option value="6">6 hours</option><option value="24">24 hours</option><option value="168">7 days</option></select></label> <button id="reload">Refresh</button><p>Four independent trends. All times are Vancouver local time; gaps longer than 3 minutes are not connected.</p></div><div id="historyCharts" class="trendlist"></div></section>
@@ -96,7 +95,7 @@
 
 <div class="panel" id="help-start"><h3>Quick start for operators</h3>
 <ol>
-<li><b>Start of shift:</b> open <b>Overview</b>. The bar at the top should be green (<i>LIVE API-BACKED READINGS</i>) and there should be no red alarm banner.</li>
+<li><b>Start of shift:</b> open <b>Overview</b>. The bar at the top should be green (<i>LIVE READING</i> with the current date and time) and there should be no red alarm banner.</li>
 <li><b>If there is a red banner or "Active alarms" box:</b> go to <b>Alarms</b>, check the equipment, then press <b>Acknowledge</b> on the alarm.</li>
 <li><b>When the sludge truck has emptied the tank</b> (every Monday and Thursday): <b>Reports → Sludge pickup log → Log pickup</b>.</li>
 <li><b>When chemicals arrive:</b> <b>Reports → Chemical purchases</b> → <b>Mark received</b> (or log the purchase with its received date).</li>
@@ -107,7 +106,7 @@
 <div class="panel" id="help-overview"><h3>Overview</h3>
 <p><b>Status bar</b> (top of every page):</p>
 <ul>
-<li><span class="help-chip ok">Green</span> all four readings are live; shows the pH limits.</li>
+<li><span class="help-chip ok">Green</span> <i>LIVE READING</i> with the current date and time (Vancouver): all four readings are live.</li>
 <li><span class="help-chip alert">Red</span> pH is outside its limits, or <b>NO NEW DATA</b> — nothing has arrived for longer than the data-stopped limit (check the Ewon, Talk2M and the server).</li>
 <li><span class="help-chip warn">Amber</span> one or more readings are missing, invalid or older than 3 minutes.</li>
 </ul>
@@ -244,5 +243,5 @@
 <div class="account-box rights-box"><h4>Rights for each role</h4><div class="tablewrap"><table class="rights"><thead><tr><th>Right</th><th>Admin</th><th>Engineering</th><th>Operator</th><th>Guest</th></tr></thead><tbody id="rightsBody"></tbody></table></div><button id="saveRights" type="button">Save rights</button> <small>Changes apply on the person's next page refresh (within 10 seconds).</small></div></div>
 <p id="accountState" role="status"></p>
 <p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
-<footer>Rev 1.2.34 · Talk2M DataMailbox → VPS SQLite history · Pacific time · Design and program by Daniel Salazar.</footer>
+<footer>Rev 1.2.35 · Design and program by Daniel Salazar.</footer>
 </main></body></html>

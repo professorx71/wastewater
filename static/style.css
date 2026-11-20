@@ -130,3 +130,5 @@ body[data-view="trends"]{--acc:var(--acc-trends)}
   border:1px solid var(--c);border-bottom-width:3px;color:#fff;background:color-mix(in srgb,var(--c) 22%,#16232e)}
 .help-tab.overview{--c:var(--acc-overview)}.help-tab.trends{--c:var(--acc-trends)}.help-tab.events{--c:var(--acc-events)}.help-tab.audit{--c:var(--acc-audit)}
 .help-tab.reports{--c:var(--acc-reports)}.help-tab.settings{--c:var(--acc-settings)}.help-tab.help{--c:var(--acc-help)}
+.banner.ok .live-word{letter-spacing:.06em}
+.banner.ok #liveClock{font-variant-numeric:tabular-nums}

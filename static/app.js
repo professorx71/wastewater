@@ -70,13 +70,17 @@ function drawCards(){
  const age=summaryData.data_age_seconds;const staleMin=limits.stale_minutes||15;
  if(age!=null&&age>staleMin*60){banner.classList.add('alert');banner.textContent=`NO NEW DATA for ${Math.floor(age/60)} minutes · check the Ewon, Talk2M and the collector`;}
  else if(outside){banner.classList.add('alert');banner.textContent=`pH ${fmt(ph.value)} outside ${fmt(limits.low)}–${fmt(limits.high)} · ${limits.enabled?'Alarm monitoring enabled':'Alarm monitoring disabled'}`;}
- else if(allCurrent){banner.classList.add('ok');banner.textContent=`LIVE API-BACKED READINGS · pH limits ${fmt(limits.low)}–${fmt(limits.high)} · Vancouver time`}
+ else if(allCurrent){banner.classList.add('ok');banner.innerHTML=`<span class="live-word">● LIVE READING</span> · <span id="liveClock">${escapeHTML(liveNow())}</span> · WASTEWATER`}
  else{banner.textContent='Telemetry warning: one or more readings are missing, invalid or stale — check the collector.'}
  const active=summaryData.active_alarms||[];const box=$('activeAlarms');box.hidden=!active.length;
  const unacked=active.filter(r=>r.state==='open').length;box.classList.toggle('unacked',unacked>0);
  $('activeSummary').textContent=`Active alarms: ${active.length}`+(unacked?` · ${unacked} not acknowledged`:' · all acknowledged')+' — click to '+(box.open?'hide':'show');
  $('activeList').innerHTML=active.map(r=>`<li><b>${escapeHTML(r.kind)}</b> — ${escapeHTML(r.detail)} <small>(${escapeHTML(local(r.stamp))}, ${escapeHTML(stateText(r))})</small></li>`).join('');
 }
+// Current Vancouver date and time for the green LIVE READING bar (server clock, ticks every second)
+const LIVE_FMT=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',weekday:'short',year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true});
+const liveNow=()=>LIVE_FMT.format(new Date(Date.now()+clockOffset));
+setInterval(()=>{const el=$('liveClock');if(el)el.textContent=liveNow()},1000);
 const VAN_TIME=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',hour:'numeric',minute:'2-digit',hour12:true});
 const VAN_DAY=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',month:'short',day:'numeric'});
 const VAN_HOUR=new Intl.DateTimeFormat('en-US',{timeZone:'America/Vancouver',hour:'numeric',minute:'numeric',hourCycle:'h23'});
