@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.37','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.38','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -264,11 +264,18 @@ def chemical_rows(start,end,zone,date_range):
         rows.append([B(kind)]+[B(f'{n} (L)') for n in names])
         rows+=[[key]+[num(v) for v in vals] for (k,key),vals in groups.items() if k==kind]
         rows.append([])
-    rows.append([B('Date')]+[B(f'{n} (L)') for n in names])
-    rows+=[[d]+[num(used[t].get(d,0.0)) for t,_ in CHEMICAL_TAGS] for d in days]
+    discharged={d:dict(litres=0.0) for d in days}
+    db=database()
+    try:daily_discharge(db,start,min(end,datetime.now(UTC)),zone,discharged)
+    finally:db.close()
+    per_m3=lambda chem_l,water_l:(round(chem_l*1000/(water_l/1000),1),2) if water_l>=1 else ''
+    rows.append([B('Date')]+[B(f'{n} (L)') for n in names]+[B('Discharged (m³)')]+[B(f'{n} (mL per m³ discharged)') for n in names])
+    rows+=[[d]+[num(used[t].get(d,0.0)) for t,_ in CHEMICAL_TAGS]+[(round(discharged[d]['litres']/1000,2),2)]
+           +[per_m3(used[t].get(d,0.0),discharged[d]['litres']) for t,_ in CHEMICAL_TAGS] for d in days]
     rows+=[[],['Litres = pump reading in ml/min (ml/h readings divided by 60) x minutes it was held, / 1000. Each reading is held until the next reading, '
                'because the Ewon logs on change; the first day uses the last reading before the range. Readings of 0 or below count as 0. '
-               'Days without data show 0.']]
+               'Days without data show 0. Discharged (m³): increase of the Total_Flow_Li meter that day / 1000. '
+               'mL per m³ discharged = chemical used x 1000 / m³ discharged: a rising figure with the same pH means more chemical per volume.']]
     return rows
 
 SLUDGE_TAG='SLUDGE_TANK_LEVEL'
@@ -370,7 +377,7 @@ def report_xlsx(params,data_tags=None):
         a=start.astimezone(zone).date();b=(end.astimezone(zone)-timedelta(microseconds=1)).date();rng=f'{a:%m/%d/%Y} to {b:%m/%d/%Y}'
         with appdb() as c:cfg=settings(c)
         name,rows,widths={'alarms':('Alarm History',lambda:alarm_rows(start,end,zone,rng),(22,30,60,22,14,30,22,14,14)),
-                          'compliance':('Discharge Compliance',lambda:compliance_rows(start,end,zone,rng,cfg),(16,12,10,10,10,16,18,16,12)),
+                          'compliance':('Discharge Compliance',lambda:compliance_rows(start,end,zone,rng,cfg),(16,12,10,10,10,16,18,22,16,12)),
                           'pumps':('Pump Run Hours',lambda:pump_rows(start,end,zone,rng),(34,22,14,14,18))}[choice]
         rows=rows();stem=f'wastewater-{choice}-{a:%Y-%m-%d}-to-{b:%Y-%m-%d}'
         return stem+'.xlsx',xlsx([(name,rows,widths)])
@@ -491,7 +498,11 @@ DEFAULTS={'ph_low':5.8,'ph_high':9.0,'alarms_enabled':False,'email_enabled':Fals
           # Price per container for each chemical product (None = not set yet).
           'chemical_prices':{'caustic':None,'floc':None,'coag':None,'sa93':None},
           # Text messages for new alarms, sent by email to carrier email-to-SMS addresses.
-          'sms_enabled':False,'sms_recipients':[]}
+          'sms_enabled':False,'sms_recipients':[],
+          # Predictive pH: warn when pH, inside the limits, is heading for one (trend over window, reaching it within lookahead).
+          'ph_trend_enabled':True,'ph_trend_window_min':30,'ph_trend_lookahead_min':60,
+          # Dosing pump stopped (0 ml/min) for this many minutes while wastewater is being discharged.
+          'dosing_alarm_enabled':False,'dosing_alarm_minutes':15}
 @contextmanager
 def appdb():
     APP_DB.parent.mkdir(parents=True,exist_ok=True)
@@ -542,7 +553,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.37: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.38: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -823,12 +834,15 @@ def val_settings(data,old):
     if new['ph_low']>=new['ph_high']:raise ValueError('pH low must be less than high')
     for key in ('alarms_enabled','email_enabled','daily_enabled','monthly_enabled','email_recovery_enabled',
                 'stale_alert_enabled','level_alarm_enabled','flow_alarm_enabled','quarterly_enabled','plc_alarms_enabled',
-                'cal_reminders_enabled','stock_alarm_enabled','sms_enabled'):
+                'cal_reminders_enabled','stock_alarm_enabled','sms_enabled','ph_trend_enabled','dosing_alarm_enabled'):
         if type(new[key]) is not bool:raise ValueError('Invalid switch')
     if type(new['stale_alert_minutes']) is not int or not 5<=new['stale_alert_minutes']<=1440:raise ValueError('Data-stopped alert: 5–1440 minutes')
     if type(new['level_high_ft']) not in (int,float) or not 0<new['level_high_ft']<=100:raise ValueError('High level: 0–100 ft')
     if type(new['flow_low_lpm']) not in (int,float) or not 0<new['flow_low_lpm']<=10000:raise ValueError('Low flow: 0–10000 L/min')
     if type(new['flow_low_minutes']) is not int or not 5<=new['flow_low_minutes']<=1440:raise ValueError('Low flow duration: 5–1440 minutes')
+    if type(new['ph_trend_window_min']) is not int or not 10<=new['ph_trend_window_min']<=240:raise ValueError('pH trend: look back 10–240 minutes')
+    if type(new['ph_trend_lookahead_min']) is not int or not 10<=new['ph_trend_lookahead_min']<=480:raise ValueError('pH trend: warn 10–480 minutes ahead')
+    if type(new['dosing_alarm_minutes']) is not int or not 5<=new['dosing_alarm_minutes']<=240:raise ValueError('Dosing pump stopped: 5–240 minutes')
     if not isinstance(new['alarm_days'],list) or any(type(d)!=int or d not in range(7) for d in new['alarm_days']):raise ValueError('Invalid days')
     for k in ('alarm_on','alarm_off','daily_time','monthly_time'):
         if not isinstance(new[k],str):raise ValueError('Invalid time')
@@ -1121,7 +1135,13 @@ def application(env,start_response):
                     d['last_pickup']=last[0] if last else None;d['pickup_days']=PICKUP_DAYS
                     d['plc_alarms']=[{'tag':t,'kind':k,'banner':b,'address':a} for t,k,b,a,_ in PLC_ALARMS]
                     d['shelved']=[dict(r,label=shelf_choices().get(r['key'],r['key'])) for r in active_shelves(conn).values()]
+                ph=next((t for t in d['tags'] if t['name']=='pH_Reading'),{})
+                d['ph_trend']=ph_trend(cfg) if cfg['ph_trend_enabled'] and ph.get('status')=='current' else None
                 return send('200 OK',d)
+            if path=='/api/insights':
+                if not can(role,'view'):return send('403 Forbidden',{'error':'Not permitted'})
+                with appdb() as conn:cfg=settings(conn)
+                return send('200 OK',{'days':30,'insights':insights(cfg)})
             if path in ('/api/history','/api/export'):
                 if not can(role,'export' if path.endswith('export') else 'view'):return send('403 Forbidden',{'error':'Not permitted'})
                 query=parse_qs(env.get('QUERY_STRING',''))
@@ -1384,6 +1404,23 @@ def check_conditions(conn,cfg,readings,now):
         None if peak is None else peak<cfg['flow_low_lpm'], stamp,
         'No discharge flow',f"Discharge flow stayed below {cfg['flow_low_lpm']:.2f} L/min for {cfg['flow_low_minutes']} minutes (highest {0 if peak is None else peak:.2f} L/min). Check the pumps.",
         'Discharge flow restored',f"flow up to {0 if peak is None else peak:.2f} L/min")
+    # Predictive pH: judged once a minute while pH is live and inside the limits (outside: the pH alarm takes over).
+    ph=tag('pH_Reading')
+    tr=ph_trend(cfg) if cfg['ph_trend_enabled'] and ph.get('status')=='current' else None
+    inside=tr is not None and cfg['ph_low']<=tr['value']<=cfg['ph_high']
+    for side in ('high','low'):
+        hit=None if not inside else tr['direction']==side
+        out['ph_trend_'+side]=update_condition(conn,'ph_trend_'+side,cfg['ph_trend_enabled'],hit,now.strftime('%Y-%m-%dT%H:%M'),
+            f'pH trending {side}',trend_text(tr) if hit else '',f'pH trending {side} cleared','pH is no longer heading for the limit',
+            cfg['alarm_confirm_samples'],cfg['alarm_recovery_samples'])
+    # Dosing pump stopped while discharging
+    for key,(ptag,label) in DOSING_PUMPS.items():
+        hit,peak=dosing_stopped(ptag,cfg['dosing_alarm_minutes'],cfg['flow_low_lpm']) if cfg['dosing_alarm_enabled'] else (None,None)
+        out['dosing:'+key]=update_condition(conn,'dosing:'+key,cfg['dosing_alarm_enabled'],hit,now.strftime('%Y-%m-%dT%H:%M'),
+            f'{label} pump not dosing',
+            f"{label} dosing pump at 0 ml/min for {cfg['dosing_alarm_minutes']} minutes while wastewater is being discharged "
+            f"(flow up to {peak or 0:.2f} L/min). Check the pump, its chemical drum and suction line, and the PLC setpoint.",
+            f'{label} pump not dosing cleared','the dosing pump is running again or discharge stopped')
     return out
 
 # Email wording for each PLC alarm (as specified by the plant): tag -> (email title, alarm code).
@@ -1394,7 +1431,9 @@ PLC_EMAIL_WORDING={'SLUDGE_TANK_LEVEL':('Wastewater Sludge Tank are Full','SLUDG
                    'E_STOP_STATUS':('Emergency Stop Activated','E_STOP_STATUS'),
                    'MAX_RGT_PUMP_FAULTED':('Regenerative Turbine Pump Stop Faulted','MAX_RGT_PUMP_FAULTED'),
                    'EQ_TANK_FULL':('Wastewater EQ Tank Full','EQ_TANK_FULL')}
-CONDITION_SUBJECTS={'data':'Wastewater ALERT: no new data','level':'Wastewater EQ tank HIGH level alarm','flow':'Wastewater NO DISCHARGE FLOW alarm',
+CONDITION_SUBJECTS={'ph_trend_high':'Wastewater WARNING: pH trending HIGH','ph_trend_low':'Wastewater WARNING: pH trending LOW',
+                    'dosing:coag':'Wastewater WARNING: coagulant pump not dosing','dosing:floc':'Wastewater WARNING: flocculant pump not dosing',
+                    'data':'Wastewater ALERT: no new data','level':'Wastewater EQ tank HIGH level alarm','flow':'Wastewater NO DISCHARGE FLOW alarm',
                     'stock:coag':'Wastewater LOW COAGULANT stock (PROTECT 7000)','stock:floc':'Wastewater LOW FLOCCULANT stock (PF 875AH)',
                     'stock:caustic':'Wastewater LOW CAUSTIC stock (NEUTRO 5045)','stock:sa93':'Wastewater LOW SA-93 stock',
                     **{'plc:'+t:f'{w} ({c})' for t,(w,c) in PLC_EMAIL_WORDING.items()}}
@@ -1437,7 +1476,7 @@ def report_csv(params):
         a=start.astimezone(zone).date();b=(end.astimezone(zone)-timedelta(microseconds=1)).date();rng=f'{a:%m/%d/%Y} to {b:%m/%d/%Y}'
         with appdb() as c:cfg=settings(c)
         name,rows,widths={'alarms':('Alarm History',lambda:alarm_rows(start,end,zone,rng),(22,30,60,22,14,30,22,14,14)),
-                          'compliance':('Discharge Compliance',lambda:compliance_rows(start,end,zone,rng,cfg),(16,12,10,10,10,16,18,16,12)),
+                          'compliance':('Discharge Compliance',lambda:compliance_rows(start,end,zone,rng,cfg),(16,12,10,10,10,16,18,22,16,12)),
                           'pumps':('Pump Run Hours',lambda:pump_rows(start,end,zone,rng),(34,22,14,14,18))}[choice]
         rows=rows();stem=f'wastewater-{choice}-{a:%Y-%m-%d}-to-{b:%Y-%m-%d}'
         return stem+'.csv',rows_csv(rows)
@@ -1576,47 +1615,95 @@ def alarm_rows(start,end,zone,date_range):
 # ---------------------------------------------------------------- discharge compliance
 FLOW_FACTOR=TAGS['FLOW_RATE'][2]
 PH_HOLD_MAX=timedelta(minutes=15)   # a pH reading counts for at most this long (longer gaps are missing data)
-def daily_compliance(start,end,zone,cfg):
-    """Per local day: pH min/avg/max, minutes outside the pH limits, litres discharged, peak flow."""
-    end=min(end,datetime.now(UTC));days={d:dict(ph=[],out_min=0.0,litres=0.0,peak=None) for d in local_days(start,end,zone)}
+
+def held_integral(points,a,b):
+    """Area of a held (step) series over a..b: sum of value x minutes. points: [(time, value)] sorted."""
+    total=0.0
+    for i,(t,v) in enumerate(points):
+        nxt=points[i+1][0] if i+1<len(points) else b
+        lo,hi=max(t,a),min(nxt,b)
+        if hi>lo and v is not None and v>0:total+=v*(hi-lo).total_seconds()/60
+    return total
+
+def ph_excursions(db,start,end,cfg):
+    """Periods when pH was outside the limits, with the litres discharged during each.
+    Each out-of-limit reading counts until the next reading (at most PH_HOLD_MAX); readings on the same side
+    that follow each other join into one excursion. Litres: FLOW_RATE (held, Ewon logs on change) x time."""
+    pts=[(parse(t),v) for t,v in db.execute("SELECT stamp,value FROM samples WHERE name='pH_Reading' AND stamp>=? AND stamp<? AND value IS NOT NULL ORDER BY stamp",(iso(start),iso(end)))]
+    out=[]
+    for i,(t,v) in enumerate(pts):
+        side='high' if v>cfg['ph_high'] else 'low' if v<cfg['ph_low'] else None
+        if not side:continue
+        b=min(pts[i+1][0] if i+1<len(pts) else end,t+PH_HOLD_MAX,end)
+        if b<=t:continue
+        e=out[-1] if out else None
+        if e and e['side']==side and e['end']>=t:
+            e['end']=b;e['extreme']=max(e['extreme'],v) if side=='high' else min(e['extreme'],v)
+        else:out.append({'start':t,'end':b,'side':side,'extreme':v})
+    flow=held_points(db,'FLOW_RATE',start,end)
+    for e in out:
+        e['minutes']=(e['end']-e['start']).total_seconds()/60
+        e['litres']=held_integral(flow,e['start'],e['end'])*FLOW_FACTOR
+    return out,flow
+
+def daily_discharge(db,start,end,zone,days):
+    """Litres discharged per local day: increase of the Total_Flow_Li meter (meter resets are skipped)."""
+    prev=db.execute("SELECT value FROM samples WHERE name='Total_Flow_Li' AND stamp<? AND value>? ORDER BY stamp DESC LIMIT 1",(iso(start),SUMMARY_MIN)).fetchone()
+    prev=prev[0] if prev else None
+    for t,v in db.execute("SELECT stamp,value FROM samples WHERE name='Total_Flow_Li' AND stamp>=? AND stamp<? AND value>? ORDER BY stamp",(iso(start),iso(end),SUMMARY_MIN)):
+        d=days.get(parse(t).astimezone(zone).date())
+        if prev is not None and v>=prev and d is not None:d['litres']+=v-prev   # a drop is a meter reset: skipped
+        prev=v
+
+def daily_compliance(start,end,zone,cfg,with_excursions=False):
+    """Per local day: pH min/avg/max, minutes outside the pH limits, litres discharged, litres discharged while
+    pH was outside the limits, peak flow. with_excursions: also return the list of excursions."""
+    end=min(end,datetime.now(UTC));days={d:dict(ph=[],out_min=0.0,litres=0.0,out_litres=0.0,peak=None) for d in local_days(start,end,zone)}
     db=database()
     try:
-        pts=[(parse(t),v) for t,v in db.execute("SELECT stamp,value FROM samples WHERE name='pH_Reading' AND stamp>=? AND stamp<? AND value IS NOT NULL ORDER BY stamp",(iso(start),iso(end)))]
-        for i,(t,v) in enumerate(pts):
-            d=days.get(t.astimezone(zone).date())
-            if d is not None:d['ph'].append(v)
-            if cfg['ph_low']<=v<=cfg['ph_high']:continue
-            b=min(pts[i+1][0] if i+1<len(pts) else end,t+PH_HOLD_MAX,end)
-            for day,a,c in day_segments(t,b,zone):
-                if day in days:days[day]['out_min']+=(c-a).total_seconds()/60
-        prev=db.execute("SELECT value FROM samples WHERE name='Total_Flow_Li' AND stamp<? AND value>? ORDER BY stamp DESC LIMIT 1",(iso(start),SUMMARY_MIN)).fetchone()
-        prev=prev[0] if prev else None
-        for t,v in db.execute("SELECT stamp,value FROM samples WHERE name='Total_Flow_Li' AND stamp>=? AND stamp<? AND value>? ORDER BY stamp",(iso(start),iso(end),SUMMARY_MIN)):
+        for t,v in db.execute("SELECT stamp,value FROM samples WHERE name='pH_Reading' AND stamp>=? AND stamp<? AND value IS NOT NULL ORDER BY stamp",(iso(start),iso(end))):
             d=days.get(parse(t).astimezone(zone).date())
-            if prev is not None and v>=prev and d is not None:d['litres']+=v-prev   # a drop is a meter reset: skipped
-            prev=v
+            if d is not None:d['ph'].append(v)
+        exc,flow=ph_excursions(db,start,end,cfg)
+        for e in exc:
+            for day,a,c in day_segments(e['start'],e['end'],zone):
+                if day in days:
+                    days[day]['out_min']+=(c-a).total_seconds()/60
+                    days[day]['out_litres']+=held_integral(flow,a,c)*FLOW_FACTOR
+        daily_discharge(db,start,end,zone,days)
         for t,v in db.execute("SELECT stamp,value FROM samples WHERE name='FLOW_RATE' AND stamp>=? AND stamp<? AND value IS NOT NULL ORDER BY stamp",(iso(start),iso(end))):
             d=days.get(parse(t).astimezone(zone).date())
             if d is not None:d['peak']=max(d['peak'] or 0,v*FLOW_FACTOR)
     finally:db.close()
-    return days
+    return (days,exc) if with_excursions else days
 
 def compliance_rows(start,end,zone,date_range,cfg):
     B=lambda t:(t,3);num=lambda v,n=2:'' if v is None else (round(v,n),2)
-    days=daily_compliance(start,end,zone,cfg)
+    L=lambda t:t.astimezone(zone).replace(tzinfo=None)
+    days,exc=daily_compliance(start,end,zone,cfg,with_excursions=True)
+    tot_out=sum(x['out_min'] for x in days.values());tot_l=sum(x['litres'] for x in days.values())
+    tot_out_l=sum(x['out_litres'] for x in days.values())
+    covered=(min(end,datetime.now(UTC))-start).total_seconds()/60
+    pct=lambda part,whole:'' if not whole else (round(100*(1-part/whole),2),2)
     rows=[[B('Daily discharge compliance summary')],['Date range (America/Vancouver)',date_range],
-          ['pH limits (current Settings)',f"{cfg['ph_low']:.2f} – {cfg['ph_high']:.2f}"],[],
-          [B('Date'),B('pH readings'),B('pH min'),B('pH avg'),B('pH max'),B('Minutes outside pH limits'),B('Litres discharged'),B('Peak flow (L/min)'),B('Compliant')]]
-    tot_out=tot_l=0.0
+          ['pH limits (current Settings)',f"{cfg['ph_low']:.2f} – {cfg['ph_high']:.2f}"],
+          ['Time inside pH limits (%)',pct(tot_out,covered)],['Volume discharged inside pH limits (%)',pct(tot_out_l,tot_l)],
+          ['pH excursions',len(exc)],[],
+          [B('Date'),B('pH readings'),B('pH min'),B('pH avg'),B('pH max'),B('Minutes outside pH limits'),B('Litres discharged'),
+           B('Litres discharged while pH outside limits'),B('Peak flow (L/min)'),B('Compliant')]]
     for d,x in days.items():
-        ph=x['ph'];tot_out+=x['out_min'];tot_l+=x['litres']
+        ph=x['ph']
         ok='no data' if not ph else 'yes' if x['out_min']<0.5 else 'NO'
         rows.append([d,len(ph),num(min(ph) if ph else None),num(sum(ph)/len(ph) if ph else None),num(max(ph) if ph else None),
-                     num(x['out_min'],1),num(x['litres']),num(x['peak']),ok])
-    rows+=[[B('Total'),'','','','',num(tot_out,1),num(tot_l)],[],
-           ['Minutes outside pH limits: each pH reading outside the limits counts until the next reading (at most 15 minutes, so data gaps are not counted). '
-            'Litres discharged: increase of the Total_Flow_Li meter during the day (meter resets are skipped). Peak flow: highest FLOW_RATE reading. '
-            'Compliant = no minutes outside the pH limits that day. Uses the pH limits in Settings now, not the limits at the time.']]
+                     num(x['out_min'],1),num(x['litres']),num(x['out_litres']),num(x['peak']),ok])
+    rows+=[[B('Total'),'','','','',num(tot_out,1),num(tot_l),num(tot_out_l)],[],
+           [B('pH excursions (each period outside the limits)')],
+           [B('Started'),B('Ended'),B('Minutes'),B('High / low'),B('Highest / lowest pH'),B('Litres discharged during it')]]
+    rows+=[[L(e['start']),L(e['end']),num(e['minutes'],1),e['side'],num(e['extreme']),num(e['litres'])] for e in exc] or [['None in this date range.']]
+    rows+=[[],['Minutes outside pH limits: each pH reading outside the limits counts until the next reading (at most 15 minutes, so data gaps are not counted); '
+               'readings on the same side that follow each other form one excursion. Litres discharged: increase of the Total_Flow_Li meter during the day '
+               '(meter resets are skipped). Litres discharged while pH outside limits: discharge flow (FLOW_RATE, held until the next reading) x the minutes outside. '
+               'Peak flow: highest FLOW_RATE reading. Compliant = no minutes outside the pH limits that day. Uses the pH limits in Settings now, not the limits at the time.']]
     return rows
 
 def compliance_line(day,cfg):
@@ -1625,8 +1712,124 @@ def compliance_line(day,cfg):
     a=datetime.combine(day,time.min,zone).astimezone(UTC);b=datetime.combine(day+timedelta(days=1),time.min,zone).astimezone(UTC)
     x=daily_compliance(a,b,zone,cfg).get(day)
     if not x or not x['ph']:return 'Discharge compliance: no pH readings.'
+    out_l=x['out_litres'];outside=f', of which {out_l:,.0f} L while pH was outside the limits' if x['out_min']>=0.5 else ''
     return (f"Discharge compliance: pH {min(x['ph']):.2f}–{max(x['ph']):.2f}, {x['out_min']:.0f} minutes outside {cfg['ph_low']:.2f}–{cfg['ph_high']:.2f}"
-            f" ({'COMPLIANT' if x['out_min']<0.5 else 'NOT COMPLIANT'}); {x['litres']:,.0f} L discharged.")
+            f" ({'COMPLIANT' if x['out_min']<0.5 else 'NOT COMPLIANT'}); {x['litres']:,.0f} L discharged{outside}.")
+
+# ---------------------------------------------------------------- predictive pH (trend toward the limits)
+PH_TREND_MIN_RATE=0.1   # pH per hour: slower drift is not reported
+def ph_trend(cfg,now=None):
+    """Where pH is heading: least-squares slope of the held pH readings on a one-minute grid over the last
+    ph_trend_window_min minutes. Returns {'value','rate_per_h','direction','limit','eta_min'} or None when there
+    is not enough history. direction is 'high' / 'low' when pH is inside the limits but, at this rate, reaches
+    one within ph_trend_lookahead_min minutes; otherwise None."""
+    now=now or datetime.now(UTC);win=int(cfg['ph_trend_window_min']);start=now-timedelta(minutes=win)
+    db=database()
+    try:pts=held_points(db,'pH_Reading',start,now)
+    finally:db.close()
+    if not pts or pts[0][0]>start+timedelta(minutes=win*0.2):return None   # one held reading = steady pH (Ewon logs on change)
+    ys=[];j=0
+    for m in range(win+1):
+        t=start+timedelta(minutes=m)
+        while j+1<len(pts) and pts[j+1][0]<=t:j+=1
+        ys.append(pts[j][1] if pts[j][0]<=t else None)
+    xy=[(x,y) for x,y in enumerate(ys) if y is not None]
+    n=len(xy)
+    if n<5:return None
+    mx=sum(x for x,_ in xy)/n;my=sum(y for _,y in xy)/n
+    sxx=sum((x-mx)**2 for x,_ in xy)
+    slope=sum((x-mx)*(y-my) for x,y in xy)/sxx if sxx else 0.0   # pH per minute
+    value=pts[-1][1];rate=slope*60;out={'value':value,'rate_per_h':rate,'direction':None,'limit':None,'eta_min':None}
+    if not cfg['ph_low']<=value<=cfg['ph_high'] or abs(rate)<PH_TREND_MIN_RATE:return out
+    limit=cfg['ph_high'] if slope>0 else cfg['ph_low']
+    eta=(limit-value)/slope
+    out.update(limit=limit,eta_min=eta)
+    if eta<=cfg['ph_trend_lookahead_min']:out['direction']='high' if slope>0 else 'low'
+    return out
+
+def trend_text(tr):
+    side=tr['direction'];verb='rising' if side=='high' else 'falling'
+    return (f"pH {tr['value']:.2f} is {verb} {abs(tr['rate_per_h']):.2f} pH per hour; at this rate it reaches the {tr['limit']:.2f} limit "
+            f"in about {max(tr['eta_min'],0):.0f} minutes. Check the {'acid' if side=='high' else 'caustic'} dosing and the incoming wastewater.")
+
+# ---------------------------------------------------------------- dosing pump stopped while discharging
+DOSING_PUMPS={'coag':('Coag_Pump_Run','Coagulant'),'floc':('Floc_Pump_Run','Flocculant')}
+def dosing_stopped(tag,minutes,flow_lpm,now=None):
+    """(stopped while discharging?, peak flow L/min) over the last `minutes`. None when there is not enough data:
+    the pump reading must cover the window and the discharge flow must be known."""
+    now=now or datetime.now(UTC);start=now-timedelta(minutes=minutes)
+    peak,_=flow_window(minutes)
+    if peak is None:return None,None
+    db=database()
+    try:pts=[(t,ml_per_min(tag,iso(t),v)) for t,v in held_points(db,tag,start,now)]
+    finally:db.close()
+    if not pts or pts[0][0]>start:return None,peak
+    return (peak>=flow_lpm and all((v or 0)<=0 for _,v in pts)),peak
+
+# ---------------------------------------------------------------- insights (rule-based analysis of repeated problems)
+INSIGHT_ACTIONS=(
+    ('pH trending high','Watch the acid dosing and the incoming wash water; the trend warns before the limit is reached.'),
+    ('pH trending low','Watch the caustic dosing and the incoming wash water; the trend warns before the limit is reached.'),
+    ('pH high','Check the acid dosing pump and acid supply, and which cleaning cycles (e.g. caustic wash) run before these alarms.'),
+    ('pH low','Check the caustic dosing pump and caustic supply, and which cleaning cycles (e.g. acid wash) run before these alarms.'),
+    ('EQ level high','Check the transfer to the DAF and the discharge pump; consider whether production wash-downs can be spread out.'),
+    ('EQ tank FULL','Check the transfer to the DAF and the discharge pump; consider whether production wash-downs can be spread out.'),
+    ('No discharge flow','Check the discharge pump, valves and the flow meter.'),
+    ('Data stopped','Check the Ewon internet connection and power; repeated stops at the same time can point to a router or power schedule.'),
+    ('Sludge tank FULL','Sludge fills faster than the pickups empty it: consider an extra pickup or check the DAF sludge settings.'),
+    ('E-Stop','Find out why the E-Stop is being pressed; repeated stops may point to an equipment or training issue.'),
+    ('pump faulted','Inspect the pump and its motor overloads; repeated faults usually need maintenance, not a reset.'),
+    ('motor faulted','Inspect the motor and its VFD (fault codes, overloads, mechanical load).'),
+    ('not dosing','Check the dosing pump, its chemical drum and suction line, and the PLC setpoint.'),
+    ('stock low','Order the chemical; see Chemical stock on the Reports page.'),
+)
+def insight_action(kind):
+    for key,text in INSIGHT_ACTIONS:
+        if key.lower() in kind.lower():return text
+    return 'Review the alarm details on the Alarms page and the equipment involved.'
+
+def insights(cfg,days=30,now=None):
+    """Repeated problems in the last `days` days, with suggested operator actions. Advisory only: nothing here
+    changes the plant or the chemical dosing."""
+    zone=ZoneInfo('America/Vancouver');now=now or datetime.now(UTC);start=now-timedelta(days=days)
+    out=[]
+    groups={}
+    for h in alarm_history(start,now):
+        groups.setdefault(h['kind'],[]).append(h)
+    for kind,hs in sorted(groups.items(),key=lambda kv:-len(kv[1])):
+        n=len(hs)
+        if n<3:continue
+        local=[parse(h['stamp']).astimezone(zone) for h in hs]
+        hours={};weekdays={}
+        for t in local:
+            blk=t.hour//3*3;hours[blk]=hours.get(blk,0)+1;weekdays[t.strftime('%A')]=weekdays.get(t.strftime('%A'),0)+1
+        blk,hn=max(hours.items(),key=lambda kv:kv[1]);wd,wn=max(weekdays.items(),key=lambda kv:kv[1])
+        mins=[(parse(h['cleared'])-parse(h['stamp'])).total_seconds()/60 for h in hs if h.get('cleared')]
+        detail=f'{n} times in the last {days} days, last on {local[-1]:%b %d %H:%M}.'
+        if hn>=max(3,n*0.5):detail+=f' {hn} of them between {blk:02d}:00 and {blk+3:02d}:00.'
+        if wn>=max(3,n*0.5):detail+=f' {wn} on a {wd}.'
+        if mins:detail+=f' Average {sum(mins)/len(mins):.0f} minutes until it cleared.'
+        out.append({'title':f'Repeated alarm: {kind}','detail':detail,'action':insight_action(kind),'severity':'high' if n>=10 else 'medium'})
+    db=database()
+    try:exc,_=ph_excursions(db,start,now,cfg)
+    finally:db.close()
+    if exc:
+        mins=sum(e['minutes'] for e in exc);litres=sum(e['litres'] for e in exc)
+        sides={s:sum(1 for e in exc if e['side']==s) for s in ('high','low')}
+        hours={}
+        for e in exc:
+            blk=e['start'].astimezone(zone).hour//3*3;hours[blk]=hours.get(blk,0)+1
+        blk,hn=max(hours.items(),key=lambda kv:kv[1])
+        detail=(f"{len(exc)} periods outside {cfg['ph_low']:.2f}–{cfg['ph_high']:.2f} ({sides['high']} high, {sides['low']} low), "
+                f"{mins:.0f} minutes in total, {litres:,.0f} L discharged during them.")
+        if len(exc)>=3 and hn>=len(exc)*0.5:detail+=f' {hn} of them started between {blk:02d}:00 and {blk+3:02d}:00.'
+        side='high' if sides['high']>=sides['low'] else 'low'
+        out.append({'title':'pH outside the discharge limits','detail':detail,'severity':'high' if mins>=60 else 'medium',
+                    'action':insight_action('pH '+side)+' The Daily discharge compliance report lists each excursion.'})
+    if not out:
+        out.append({'title':'No repeated problems','detail':f'No alarm happened 3 or more times and pH stayed inside the limits in the last {days} days.',
+                    'action':'Nothing to do.','severity':'ok'})
+    return out
 
 # ---------------------------------------------------------------- pump run hours and starts
 PUMP_TAGS=(('SUMP_PUMP_STATUS','Electric transfer (sump) pump'),('Mixer_Pump_Staus','Electric circulation (mixer) pump'))
@@ -1893,7 +2096,8 @@ def purchase_rows(year,cfg):
 # ---------------------------------------------------------------- alarm shelving
 SHELF_MAX_HOURS=72
 def shelf_choices():
-    return {'ph':'pH alarm','data':'Data stopped','level':'EQ level high','flow':'No discharge flow',
+    return {'ph':'pH alarm','ph_trend_high':'pH trending high','ph_trend_low':'pH trending low','data':'Data stopped','level':'EQ level high','flow':'No discharge flow',
+            'dosing:coag':'Coagulant pump not dosing','dosing:floc':'Flocculant pump not dosing',
             **{'plc:'+t:k for t,k,_,_,_ in PLC_ALARMS},**{'stock:'+k:f'{l} stock low' for k,(l,_,_) in STOCK_CHEMS.items()}}
 
 def active_shelves(conn):

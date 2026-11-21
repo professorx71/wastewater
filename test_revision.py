@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.37'
+        assert s['revision']=='1.2.38'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -798,5 +798,92 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(rows[0]['detail'],'Rake motor faulted. Check the DAF rake motor and its VFD.')
         self.assertEqual((rows[0]['state'],rows[0]['actor']),('acknowledged',web.AUTO_ACK_ACTOR))
         self.assertEqual(rows[1]['detail'],'Incident 1; back to normal')
+
+    def _samples(self,rows):
+        with sqlite3.connect(web.DB) as db:
+            for name,t,v in rows:db.execute('INSERT INTO samples(name,stamp,value,quality) VALUES(?,?,?,?)',(name,web.iso(t),v,None))
+
+    def test_ph_trend_warns_before_the_limit(self):
+        now=datetime.now(timezone.utc)
+        with sqlite3.connect(web.DB) as db:db.execute("DELETE FROM samples WHERE name='pH_Reading'")
+        cfg=dict(web.DEFAULTS)
+        # Steady pH: no warning
+        self._samples([('pH_Reading',now-timedelta(minutes=40),7.0)])
+        tr=web.ph_trend(cfg,now)
+        self.assertIsNone(tr['direction']);self.assertAlmostEqual(tr['rate_per_h'],0,places=6)
+        # Rising 0.02 pH per minute (1.2 per hour) to 8.60: reaches 9.00 in about 20 minutes
+        self._samples([('pH_Reading',now-timedelta(minutes=30-m),8.0+0.02*m) for m in range(31)])
+        tr=web.ph_trend(cfg,now)
+        self.assertEqual(tr['direction'],'high');self.assertAlmostEqual(tr['rate_per_h'],1.2,delta=0.15);self.assertLess(tr['eta_min'],35)
+        self.assertNotIn('pH_Reading',web.trend_text(tr))
+        # Too far away to matter with a 10-minute look-ahead
+        self.assertIsNone(web.ph_trend(dict(cfg,ph_trend_lookahead_min=10),now)['direction'])
+        # As an alarm: confirmed over two minutes, auto-acknowledged, cleared when the trend stops
+        ph={'name':'pH_Reading','status':'current','value':8.6,'stamp':web.iso(now),'age_seconds':5}
+        local=now.astimezone(web.ZoneInfo('America/Vancouver'))
+        with web.appdb() as db:
+            web.check_conditions(db,cfg,[ph],local)
+            web.check_conditions(db,cfg,[ph],local+timedelta(minutes=1))
+            row=db.execute("SELECT * FROM events WHERE kind='pH trending high'").fetchone()
+            self.assertEqual(row['state'],'acknowledged');self.assertIn('reaches the 9.00 limit',row['detail'])
+            self.assertIn('ph_trend_high',web.shelf_choices());self.assertIn('ph_trend_high',web.CONDITION_SUBJECTS)
+        self._samples([('pH_Reading',now+timedelta(seconds=1),8.6)])
+        with patch.object(web,'ph_trend',return_value={'value':8.6,'rate_per_h':0.0,'direction':None,'limit':None,'eta_min':None}),web.appdb() as db:
+            web.check_conditions(db,cfg,[ph],local+timedelta(minutes=2));web.check_conditions(db,cfg,[ph],local+timedelta(minutes=3))
+            self.assertEqual(db.execute("SELECT state FROM events WHERE kind='pH trending high'").fetchone()[0],'closed')
+        with self.assertRaises(ValueError):web.val_settings({'ph_trend_window_min':5},dict(web.DEFAULTS))
+
+    def test_compliance_litres_during_excursion(self):
+        zone=web.ZoneInfo('America/Vancouver')
+        t0=datetime(2026,11,10,12,0,tzinfo=zone).astimezone(timezone.utc)
+        self._samples([('pH_Reading',t0,7.0),('pH_Reading',t0+timedelta(minutes=10),9.5),('pH_Reading',t0+timedelta(minutes=14),9.8),
+                       ('pH_Reading',t0+timedelta(minutes=20),7.1),('FLOW_RATE',t0-timedelta(minutes=5),10.0),
+                       ('Total_Flow_Li',t0-timedelta(hours=1),1000.0),('Total_Flow_Li',t0+timedelta(hours=1),5000.0)])
+        cfg=dict(web.DEFAULTS)
+        a=datetime(2026,11,10,tzinfo=zone).astimezone(timezone.utc);b=a+timedelta(days=1)
+        days,exc=web.daily_compliance(a,b,zone,cfg,with_excursions=True)
+        self.assertEqual(len(exc),1)
+        e=exc[0];self.assertEqual((e['side'],e['extreme']),('high',9.8));self.assertAlmostEqual(e['minutes'],10)
+        self.assertAlmostEqual(e['litres'],10*web.FLOW_FACTOR*10,places=3)
+        d=days[datetime(2026,11,10).date()]
+        self.assertAlmostEqual(d['out_litres'],10*web.FLOW_FACTOR*10,places=3);self.assertAlmostEqual(d['litres'],4000)
+        rows=web.compliance_rows(a,b,zone,'11/10/2026',cfg)
+        flat=[c[0] if isinstance(c,tuple) else c for r in rows for c in r]
+        self.assertIn('Litres discharged while pH outside limits',flat);self.assertIn('Volume discharged inside pH limits (%)',flat)
+        self.assertIn(round(100*(1-378.541/4000),2),flat)
+        self.assertIn('379 L while pH was outside the limits',web.compliance_line(datetime(2026,11,10).date(),cfg))
+
+    def test_dosing_pump_stopped_while_discharging(self):
+        now=datetime.now(timezone.utc)
+        with sqlite3.connect(web.DB) as db:db.execute("DELETE FROM samples WHERE name='FLOW_RATE'")
+        self._samples([('FLOW_RATE',now-timedelta(minutes=m),10.0) for m in (14,10,5,1)]+
+                      [('Coag_Pump_Run',now-timedelta(minutes=30),0.0),('Floc_Pump_Run',now-timedelta(minutes=30),5.0)])
+        cfg=dict(web.DEFAULTS,dosing_alarm_enabled=True,dosing_alarm_minutes=15)
+        local=now.astimezone(web.ZoneInfo('America/Vancouver'))
+        with web.appdb() as db:
+            web.check_conditions(db,cfg,[],local)
+            kinds=[r[0] for r in db.execute('SELECT kind FROM events')]
+        self.assertIn('Coagulant pump not dosing',kinds);self.assertNotIn('Flocculant pump not dosing',kinds)
+        # Off by default
+        self.assertFalse(web.DEFAULTS['dosing_alarm_enabled'])
+        # Chemical usage report: discharged m3 and mL per m3
+        zone=web.ZoneInfo('America/Vancouver')
+        rows=web.chemical_rows(now-timedelta(days=1),now,zone,'x')
+        flat=[c[0] if isinstance(c,tuple) else c for r in rows for c in r]
+        self.assertIn('Discharged (m³)',flat);self.assertIn('Coagulant (mL per m³ discharged)',flat)
+
+    def test_insights_find_repeated_alarms(self):
+        zone=web.ZoneInfo('America/Vancouver')
+        today=datetime.now(zone).date()
+        with web.appdb() as db:
+            for d in range(1,5):
+                t=datetime.combine(today-timedelta(days=d),datetime.min.time(),zone).replace(hour=7)
+                web.new_alarm_event(db,web.iso(t),'Rake motor faulted','Rake motor faulted. Check the DAF rake motor and its VFD.')
+        out=web.insights(dict(web.DEFAULTS))
+        rake=next(i for i in out if i['title']=='Repeated alarm: Rake motor faulted')
+        self.assertIn('4 times',rake['detail']);self.assertIn('between 06:00 and 09:00',rake['detail']);self.assertIn('VFD',rake['action'])
+        self._login(web.AUTH,'admin','admin-pass')
+        code,body=self.call('GET','/api/insights','admin','admin-pass')
+        self.assertEqual(code,200);self.assertEqual(json.loads(body)['days'],30)
 
 if __name__=='__main__':unittest.main(verbosity=2)
