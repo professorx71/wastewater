@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.36'
+        assert s['revision']=='1.2.37'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -53,7 +53,7 @@ class RevisionTests(unittest.TestCase):
             first=db.execute("SELECT id FROM events WHERE kind='pH high'").fetchone()['id']
             self.assertTrue(first)
             web.update_ph_incidents(db,cfg,self.sample(6.8,2))
-            self.assertEqual(db.execute('SELECT state FROM events WHERE id=?',(first,)).fetchone()[0],'open')
+            self.assertEqual(db.execute('SELECT state FROM events WHERE id=?',(first,)).fetchone()[0],'acknowledged')   # auto-acknowledged, still active
             web.update_ph_incidents(db,cfg,self.sample(6.8,3))
             self.assertEqual(db.execute('SELECT state FROM events WHERE id=?',(first,)).fetchone()[0],'closed')
             self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='pH recovered'").fetchone()[0],1)
@@ -292,7 +292,7 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/history','op','op-pass')[0],200)
         self.assertEqual(self.call('GET','/api/export','op','op-pass')[0],200)
         self.assertEqual(self.call('GET','/api/events','op','op-pass')[0],200)
-        self.assertEqual(self.call('POST','/api/ack','op','op-pass',{'id':1})[0],200)
+        self.assertEqual(self.call('POST','/api/ack','op','op-pass',{'id':1})[0],404)   # already auto-acknowledged
         # Operator: no settings (read or write) and no audit
         self.assertEqual(self.call('GET','/api/settings','op','op-pass')[0],403)
         self.assertEqual(self.call('POST','/api/settings','op','op-pass',new)[0],403)
@@ -313,7 +313,7 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/switch','admin','admin-pass',query='from=admin')[0],401)
         # Audit and acknowledgements name the person
         with web.appdb() as db:
-            self.assertEqual(db.execute('SELECT actor FROM events WHERE id=1').fetchone()[0],'op (Operator)')
+            self.assertEqual(db.execute('SELECT actor FROM events WHERE id=1').fetchone()[0],web.AUTO_ACK_ACTOR)
             self.assertIn('admin (Admin)',[r[0] for r in db.execute('SELECT actor FROM audit')])
 
     def test_engineering_guest_logins_and_rights(self):
@@ -433,12 +433,12 @@ class RevisionTests(unittest.TestCase):
         with web.appdb() as db:
             web.check_conditions(db,cfg,[lvl(3.5,0)],now)
             web.check_conditions(db,cfg,[lvl(3.6,1)],now)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='EQ level high' AND state='open'").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='EQ level high' AND state='acknowledged'").fetchone()[0],1)
             web.check_conditions(db,cfg,[lvl(2.0,2)],now)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='EQ level recovered'").fetchone()[0],1)
             # Data stopped: newest reading older than the limit
             web.check_conditions(db,cfg,[dict(lvl(2.0,2),age_seconds=20*60)],now+timedelta(minutes=1))
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Data stopped' AND state='open'").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Data stopped' AND state='acknowledged'").fetchone()[0],1)
             web.check_conditions(db,cfg,[lvl(2.0,3)],now+timedelta(minutes=2))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Data restored'").fetchone()[0],1)
         # No discharge flow: 30 minutes of near-zero flow
@@ -448,10 +448,10 @@ class RevisionTests(unittest.TestCase):
                 h.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('FLOW_RATE',web.iso(datetime.now(timezone.utc)-timedelta(minutes=m)),0.01))
         with web.appdb() as db:
             web.check_conditions(db,cfg,[lvl(2.0,4)],now+timedelta(minutes=3))
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='No discharge flow' AND state='open'").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='No discharge flow' AND state='acknowledged'").fetchone()[0],1)
             # Turning the alarm off closes the open incident
             web.check_conditions(db,dict(cfg,flow_alarm_enabled=False),[lvl(2.0,5)],now+timedelta(minutes=4))
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='No discharge flow' AND state='open'").fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='No discharge flow' AND state IN ('open','acknowledged')").fetchone()[0],0)
 
     def test_plc_alarms_latch_auto_ack_and_email(self):
         cfg=dict(web.DEFAULTS)
@@ -460,16 +460,18 @@ class RevisionTests(unittest.TestCase):
             web.check_plc_alarms(db,cfg,{'E_STOP_STATUS':bit(1,0),'SLUDGE_TANK_LEVEL':bit(1,0),'MIXER_PUMP_FAULTED':bit(0,0)})
             ev={r['kind']:r for r in db.execute("SELECT * FROM events")}
             self.assertEqual(set(ev),{'E-Stop active','Sludge tank FULL'})
-            self.assertTrue(all(r['state']=='open' for r in ev.values()))
-            self.assertIn('N7:1/0',ev['E-Stop active']['detail'])
+            self.assertTrue(all(r['state']=='acknowledged' and r['actor']==web.AUTO_ACK_ACTOR for r in ev.values()))
+            self.assertEqual(ev['E-Stop active']['detail'],'E-Stop active. Check the E-Stop buttons before restarting the system.')
             web.check_plc_alarms(db,cfg,{'E_STOP_STATUS':bit(1,0),'SLUDGE_TANK_LEVEL':bit(1,0)})   # same stamps: no duplicates
             self.assertEqual(db.execute('SELECT COUNT(*) FROM events').fetchone()[0],2)
-            # Both clear: the sludge alarm acknowledges itself, the E-Stop waits for an operator
+            # Both clear: every alarm was auto-acknowledged, so both close
             web.check_plc_alarms(db,cfg,{'E_STOP_STATUS':bit(0,1),'SLUDGE_TANK_LEVEL':bit(0,1)})
             sludge=db.execute("SELECT * FROM events WHERE id=?",(ev['Sludge tank FULL']['id'],)).fetchone()
             self.assertEqual(sludge['state'],'closed');self.assertIn('auto-acknowledged',sludge['actor']);self.assertTrue(sludge['ack_at'])
             estop=db.execute("SELECT * FROM events WHERE id=?",(ev['E-Stop active']['id'],)).fetchone()
-            self.assertEqual(estop['state'],'open');self.assertTrue(estop['cleared_at'])
+            self.assertEqual(estop['state'],'closed');self.assertTrue(estop['cleared_at'])
+            cleared=db.execute("SELECT detail FROM events WHERE kind='E-Stop active cleared'").fetchone()[0]
+            self.assertEqual(cleared,f"Incident {estop['id']}; back to normal")
             self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind IN ('E-Stop active cleared','Sludge tank FULL cleared')").fetchone()[0],2)
             # An acknowledged fault closes as soon as it clears
             web.check_plc_alarms(db,cfg,{'RAKE_MOTOR_FAULTED':bit(1,2)})
@@ -482,11 +484,9 @@ class RevisionTests(unittest.TestCase):
             self.assertFalse(db.execute("SELECT 1 FROM events WHERE kind='Mixer pump faulted'").fetchone())
             report=web.alarm_report(datetime(2000,1,1,tzinfo=timezone.utc),datetime.now(timezone.utc)+timedelta(days=1))
         self.assertIn('Alarms in this period: 3',report);self.assertIn('E-Stop active',report);self.assertNotIn('cleared:',report)
-        # Acknowledging the cleared E-Stop closes it
+        # Nothing is left to acknowledge
         self._login(web.AUTH,'admin','admin-pass')
-        self.assertEqual(self.call('POST','/api/ack','admin','admin-pass',{'id':estop['id']})[0],200)
-        with web.appdb() as db:
-            self.assertEqual(db.execute('SELECT state FROM events WHERE id=?',(estop['id'],)).fetchone()[0],'closed')
+        self.assertEqual(self.call('POST','/api/ack','admin','admin-pass',{'id':estop['id']})[0],404)
         # Emails go out for a new PLC alarm
         web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
         web.EMAIL_CFG.write_text(json.dumps({'host':'example.invalid','sender':'t@example.com','username':'u','password':'p'}))
@@ -598,7 +598,7 @@ class RevisionTests(unittest.TestCase):
             self.assertIsNone(st['floc']['litres'])
             cfg=dict(web.DEFAULTS,stock_low_coag_l=20.0)
             web.check_stock(db,cfg)
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Coagulant (PROTECT 7000) stock low' AND state='open'").fetchone()[0],1)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Coagulant (PROTECT 7000) stock low' AND state='acknowledged'").fetchone()[0],1)
             web.save_stock(db,{'chemical':'coag','kind':'delivery','litres':50,'when':when},'a')   # same time as the count: not added
             self.assertAlmostEqual(web.stock_status(db)['coag']['litres'],10-0.6,delta=0.02)
             later=(now-timedelta(hours=1)).astimezone(web.ZoneInfo('America/Vancouver')).strftime('%Y-%m-%dT%H:%M')
@@ -785,5 +785,18 @@ class RevisionTests(unittest.TestCase):
         folder=web.backup(dest,keep=2)
         self.assertTrue((folder/'history.sqlite3').exists() and (folder/'dashboard.sqlite3').exists())
         self.assertEqual(len([p for p in dest.iterdir()]),2)
+
+    def test_old_alarms_cleaned_and_auto_acknowledged(self):
+        with web.appdb() as db:
+            db.execute("INSERT INTO events(stamp,kind,detail,state) VALUES ('2026-11-20T04:58:00Z','Rake motor faulted',"
+                       "'Rake motor faulted (PLC N7:1/8, tag RAKE_MOTOR_FAULTED = 1). Check the DAF rake motor and its VFD.','open')")
+            db.execute("INSERT INTO events(stamp,kind,detail,state) VALUES ('2026-11-20T07:39:00Z','Rake motor faulted cleared',"
+                       "'Incident 1; RAKE_MOTOR_FAULTED back to 0','closed')")
+            db.execute("DELETE FROM settings WHERE key='alarm_text_v2'")
+        with web.appdb() as db:
+            rows=[dict(r) for r in db.execute('SELECT * FROM events ORDER BY id')]
+        self.assertEqual(rows[0]['detail'],'Rake motor faulted. Check the DAF rake motor and its VFD.')
+        self.assertEqual((rows[0]['state'],rows[0]['actor']),('acknowledged',web.AUTO_ACK_ACTOR))
+        self.assertEqual(rows[1]['detail'],'Incident 1; back to normal')
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -1,4 +1,4 @@
-import base64, csv, hashlib, hmac, io, json, os, sqlite3
+import base64, csv, hashlib, hmac, io, json, os, re, sqlite3
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -18,7 +18,7 @@ DIAGRAM_TAGS={'Rake_Speed_VFD':('Rake motor speed','Hz'),
               'SYSTEM_ENABLED':('System enabled (PLC B3:0/4, 1 = on)','')}
 # PLC alarm bits (1 = alarm, 0 = good): tag, Alarms-page event name, banner text, PLC address, help for the email.
 # Each one is an alarm on the Alarms page, shows on the overview alarm banner and is emailed to the recipients.
-# The sludge tank FULL and EQ tank FULL alarms acknowledge themselves once they clear; the others need an operator.
+# Every alarm is acknowledged automatically when it is recorded (new_alarm_event); it closes when it clears.
 PLC_ALARMS=(('SLUDGE_TANK_LEVEL','Sludge tank FULL','SLUDGE TANK FULL · arrange a sludge pickup','B3:0/13','Arrange a sludge pickup.'),
             ('E_STOP_STATUS','E-Stop active','E-STOP ACTIVE','N7:1/0','Check the E-Stop buttons before restarting the system.'),
             ('MIXER_PUMP_FAULTED','Mixer pump faulted','MIXER PUMP FAULTED','N7:1/2','Check the mixer (circulation) pump.'),
@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.36','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.37','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -530,6 +530,7 @@ def appdb():
     if not any(r[1]=='cleared_at' for r in conn.execute('PRAGMA table_info(events)')):
         try:conn.execute('ALTER TABLE events ADD COLUMN cleared_at TEXT')
         except sqlite3.OperationalError:pass   # added by another process meanwhile
+    migrate_alarms(conn)
     conn.commit()
     try:
         yield conn
@@ -539,6 +540,17 @@ def appdb():
         raise
     finally:
         conn.close()
+
+def migrate_alarms(conn):
+    """Rev 1.2.37: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
+                 "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
+    if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
+    for eid,detail in conn.execute("SELECT id,detail FROM events WHERE detail LIKE '%(PLC %, tag %' OR detail LIKE '% back to 0'").fetchall():
+        new=re.sub(r' \(PLC [^,()]+, tag [A-Za-z0-9_]+ = 1\)','',detail)
+        new=re.sub(r'(Incident \d+; )[A-Za-z0-9_]+ back to 0$',r'\1back to normal',new)
+        if new!=detail:conn.execute('UPDATE events SET detail=? WHERE id=?',(new,eid))
+    conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('alarm_text_v2','true')")
 
 def settings(conn):
     result=dict(DEFAULTS)
@@ -1228,9 +1240,8 @@ def update_ph_incidents(conn, cfg, ph):
             count=count+1 if cand==status else 1
             cand=status
             if count>=cfg['alarm_confirm_samples']:
-                cur=conn.execute('INSERT INTO events(stamp,kind,detail,state) VALUES (?,?,?,?)',
-                    (iso(datetime.now(UTC)),f'pH {status}',
-                     f"Confirmed over {count} readings; pH {ph['value']:.2f}; limits {cfg['ph_low']:.2f}–{cfg['ph_high']:.2f}",'open'))
+                cur=new_alarm_event(conn,iso(datetime.now(UTC)),f'pH {status}',
+                     f"Confirmed over {count} readings; pH {ph['value']:.2f}; limits {cfg['ph_low']:.2f}–{cfg['ph_high']:.2f}")
                 active=status;active_event=cur.lastrowid
                 audit(conn,'system','Confirmed pH incident',f'{status} incident {active_event}')
                 cand=None;count=0
@@ -1257,9 +1268,8 @@ def update_ph_incidents(conn, cfg, ph):
         if count>=cfg['alarm_confirm_samples']:
             if active_event is not None:
                 conn.execute("UPDATE events SET state='closed' WHERE id=? AND state IN ('open','acknowledged')",(active_event,))
-            cur=conn.execute('INSERT INTO events(stamp,kind,detail,state) VALUES (?,?,?,?)',
-                (iso(datetime.now(UTC)),f'pH {status}',
-                 f"Confirmed over {count} readings; pH {ph['value']:.2f}; limits {cfg['ph_low']:.2f}–{cfg['ph_high']:.2f}",'open'))
+            cur=new_alarm_event(conn,iso(datetime.now(UTC)),f'pH {status}',
+                 f"Confirmed over {count} readings; pH {ph['value']:.2f}; limits {cfg['ph_low']:.2f}–{cfg['ph_high']:.2f}")
             active=status;active_event=cur.lastrowid
             audit(conn,'system','Confirmed pH incident',f'{status} incident {active_event}')
             cand=None;count=0
@@ -1268,6 +1278,13 @@ def update_ph_incidents(conn, cfg, ph):
         WHERE id=1''',(stamp,cand,count,active,active_event,recovery_count,recovered_event,recovery_origin))
     conn.commit()
 
+
+AUTO_ACK_ACTOR='system (auto-acknowledged)'
+def new_alarm_event(conn,stamp,kind,detail):
+    """Record a new alarm. Alarms are acknowledged automatically, so nobody has to press
+    Acknowledge; the alarm stays 'active' until its condition clears, then closes."""
+    return conn.execute('INSERT INTO events(stamp,kind,detail,state,actor,ack_at) VALUES (?,?,?,?,?,?)',
+                        (stamp,kind,detail,'acknowledged',AUTO_ACK_ACTOR,stamp))
 
 def update_condition(conn,key,enabled,abnormal,stamp,kind,detail,recovered_kind,recovered_detail,confirm=1,recover=1,latch=False,auto_ack=None):
     """Generic incident tracker for the data-stopped, high-level, no-flow and PLC alarms.
@@ -1295,7 +1312,7 @@ def update_condition(conn,key,enabled,abnormal,stamp,kind,detail,recovered_kind,
             st['cand']=st.get('cand',0)+1 if abnormal else 0
             st['rec']=0
             if st['cand']>=confirm:
-                cur=conn.execute('INSERT INTO events(stamp,kind,detail,state) VALUES (?,?,?,?)',(now,kind,detail,'open'))
+                cur=new_alarm_event(conn,now,kind,detail)
                 st['active']=cur.lastrowid;st['cand']=0
                 audit(conn,'system',f'Confirmed {kind}',f'incident {st["active"]}')
         elif abnormal:
@@ -1340,8 +1357,8 @@ def check_plc_alarms(conn,cfg,extras):
         known=r.get('status')=='current' and r.get('value') is not None
         out['plc:'+tag]=update_condition(conn,'plc:'+tag,cfg['plc_alarms_enabled'],
             (r['value']>=0.5) if known else None, r.get('stamp'),
-            kind,f'{kind} (PLC {addr}, tag {tag} = 1). {hint}',
-            f'{kind} cleared',f'{tag} back to 0',latch=True,auto_ack=AUTO_ACK_ON_CLEAR.get(tag))
+            kind,f'{kind}. {hint}',
+            f'{kind} cleared','back to normal',latch=True,auto_ack=AUTO_ACK_ON_CLEAR.get(tag))
     return out
 
 def check_conditions(conn,cfg,readings,now):
