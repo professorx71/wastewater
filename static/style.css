@@ -56,6 +56,19 @@
 .cal-last em{font-style:normal;font-size:13px;font-weight:700}
 .cal-last em.good{color:#6ef9b0}.cal-last em.warn{color:#ffd178}.cal-last em.bad{color:#ff8a85}
 .cal-last div.overdue{border-color:#d36d68;background:#2a1820}.cal-last div.soon{border-color:#b68a30}
+.cal-last .cost-big{font-size:22px;color:#6ef9b0}
+table.products{min-width:1500px}
+table.products th small{display:block;font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)}
+table.products td{vertical-align:top;padding:4px}
+table.products input:not([type=checkbox]),table.products select{width:100%;min-width:70px;box-sizing:border-box}
+table.products td:nth-child(2) input{min-width:240px}table.products td:nth-child(3) input{min-width:150px}
+table.products td small{display:block;color:var(--muted);font-size:12px;margin:2px 0 6px}
+table.products .cur-price{display:block;margin:4px 0}
+table.products tr.price-row td{background:#0c2031;padding:8px 12px}
+.price-list{display:flex;flex-wrap:wrap;gap:8px 16px;margin:6px 0}
+.price-entry{display:flex;gap:8px;align-items:flex-end;border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.price-entry label{display:flex;flex-direction:column;font-size:12px;gap:2px}
+.price-entry input{width:150px}
 .shelf-note{border:1px dashed #9aa5ad;border-radius:8px;padding:8px 14px;margin:-6px 0 16px;color:#c7d0d6;font-size:13px;text-align:center}
 .shelf-note[hidden]{display:none}
 .warn-text{color:#ffd178}

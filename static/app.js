@@ -24,7 +24,7 @@ async function api(path,opts={}){const response=await fetch(path,{cache:'no-stor
 function ageText(stamp){if(!stamp)return 'No readings';const s=Math.max(0,Math.round((Date.now()+clockOffset-Date.parse(stamp))/1000));return 'Updated '+(s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min')+' ago'}
 function tickAges(){document.querySelectorAll('[data-stamp]').forEach(el=>el.textContent=ageText(el.dataset.stamp))}
 function escapeHTML(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function view(name){if(VIEW_PERMS[name]&&!can(VIEW_PERMS[name]))name='overview';document.body.dataset.view=name;document.querySelectorAll('.view').forEach(n=>n.hidden=n.id!==name);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('selected',n.dataset.view===name));if(name==='events'){loadEvents();loadShelves();loadInsights()}if(name==='reports'){loadPickups();loadPurchases();loadStock()}if(name==='audit'){loadAudit();loadCalibrations()}if(name==='settings')loadSettings();if(name==='trends')loadHistory()}
+function view(name){if(VIEW_PERMS[name]&&!can(VIEW_PERMS[name]))name='overview';document.body.dataset.view=name;document.querySelectorAll('.view').forEach(n=>n.hidden=n.id!==name);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('selected',n.dataset.view===name));if(name==='events'){loadEvents();loadShelves();loadInsights()}if(name==='reports'){loadPickups();loadPurchases();loadStock();loadCost()}if(name==='audit'){loadAudit();loadCalibrations()}if(name==='settings')loadSettings();if(name==='trends')loadHistory()}
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>view(b.dataset.view)));
 // Predictive pH: where pH is heading (server: least-squares trend of the last 30 minutes by default).
 function trendBadge(){const tr=summaryData.ph_trend;if(!tr||tr.rate_per_h==null)return '';const r=tr.rate_per_h;
@@ -50,9 +50,11 @@ function drawCards(){
    el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.raw_value!=null?' · PLC value '+Number(r.raw_value).toFixed(2)+' '+r.raw_unit:''}${r.stamp?' · '+local(r.stamp):''}`};
   document.querySelectorAll('[data-dose-unit]').forEach(s=>{if(s.value!==doseUnit)s.value=doseUnit;s.onchange=()=>{doseUnit=s.value==='ml/h'?'ml/h':'ml/min';try{localStorage.setItem('ww.doseUnit',doseUnit)}catch{};drawCards()}});
   show('rakeSpeed','Rake_Speed_VFD','Hz',1);show('coagRate','Coag_Pump_Rate_Percent','%',1);dose('coagRun','Coag_Pump_Run');show('flocRate','Floc_Pump_Rate_Percent','%',1);dose('flocRun','Floc_Pump_Run');
-  // Dosing pump run status: RUNNING while its run reading is above 0
-  for(const [id,tag] of [['coagState','Coag_Pump_Run'],['flocState','Floc_Pump_Run']]){const r=ex[tag]||{};const known=r.status==='current'&&r.value!=null;const on=known&&Number(r.value)>0;
-   const el=$(id);el.textContent=known?(on?'● RUNNING':'STOPPED'):'--';el.className='dose-state'+(known?(on?' on':' off'):'')}
+  // Dosing pump run status: RUNNING while its run reading is at least 0.01 ml/min (the server's DOSE_RUNNING_MIN).
+  // A smaller leftover reading shows as 0.00 ml/min, so it counts as STOPPED too.
+  for(const [id,tag] of [['coagState','Coag_Pump_Run'],['flocState','Floc_Pump_Run']]){const r=ex[tag]||{};const known=r.status==='current'&&r.value!=null;const v=Number(r.value);const on=known&&v>=0.01;
+   const el=$(id);el.textContent=known?(on?'● RUNNING':'STOPPED'):'--';el.className='dose-state'+(known?(on?' on':' off'):'');
+   el.title=known?`${on?'RUNNING':'STOPPED'}: run reading ${v.toFixed(4)} ml/min${r.raw_value!=null?` (PLC value ${Number(r.raw_value).toFixed(2)} ${r.raw_unit})`:''}; below 0.01 ml/min counts as stopped`:`${tag}: ${r.status||'missing'}`}
   {const r=ex.SLUDGE_TANK_LEVEL||{};const known=r.status==='current'&&r.value!=null;const full=known&&Number(r.value)>=1;
    $('sludgeState').textContent=known?(full?'FULL':'NORMAL'):'--';$('sludgeTank').className='sludge-tank'+(full?' full':known?' normal':'');
    $('sludgeTank').title=`Sludge tank level switch (SLUDGE_TANK_LEVEL, PLC B3:0/13): ${known?(full?'FULL':'not full'):(r.status||'missing')}${r.stamp?' · since '+local(r.stamp):''}`;
@@ -129,10 +131,10 @@ async function loadEvents(){try{const data=await api('/api/events');$('eventlist
 async function loadAudit(){try{const data=await api('/api/audit');$('auditlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.actor)}</td><td>${escapeHTML(r.action)}</td><td>${escapeHTML(r.detail)}</td></tr>`).join('')||'<tr><td colspan="4">No audit entries.</td></tr>'}</tbody></table></div>`}catch(e){$('auditlist').textContent='Admin required or audit unavailable: '+e.message}}
 const KEYS=['ph_low','ph_high','alarms_enabled','email_enabled','email_recovery_enabled','alarm_confirm_samples','alarm_recovery_samples','alarm_on','alarm_off','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time',
  'stale_alert_enabled','stale_alert_minutes','level_alarm_enabled','level_high_ft','flow_alarm_enabled','flow_low_lpm','flow_low_minutes','quarterly_enabled','plc_alarms_enabled','cal_reminders_enabled','cal_ph_days','cal_level_days','cal_remind_days',
- 'stock_alarm_enabled','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l','sms_enabled',
+ 'stock_alarm_enabled','sms_enabled',
  'ph_trend_enabled','ph_trend_window_min','ph_trend_lookahead_min','dosing_alarm_enabled','dosing_alarm_minutes'];
 const dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];$('alarmDays').innerHTML=dayNames.map((d,i)=>`<label><input type="checkbox" data-day="${i}"> ${d}</label>`).join('');
-async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('sms_recipients').value=(config.sms_recipients||[]).join('\n');document.querySelectorAll('[data-price]').forEach(x=>{const v=(config.chemical_prices||{})[x.dataset.price];x.value=v==null?'':v});$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input:not([data-fixed]),#settings textarea,#settings button').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
+async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('sms_recipients').value=(config.sms_recipients||[]).join('\n');renderProducts(config.chemical_products||[]);$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input:not([data-fixed]),#settings textarea,#settings button,#productRows select').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
 // ---- Accounts and passwords (Admin only; server enforces the same rule) ----
 const postJSON=(path,body)=>fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d});
 function accountMsg(text,ok){const el=$('accountState');el.textContent=text;el.className=ok?'ok-text':'error-text'}
@@ -175,7 +177,7 @@ $('saveRights').addEventListener('click',async()=>{
 $('disableOperator').addEventListener('click',async()=>{
  if(!confirm('Turn off ALL Operator logins? No Operator will be able to sign in until you add one again.'))return;
  try{await postJSON('/api/accounts/operator/disable',{});accountMsg('Operator login turned off.',true);loadAccounts()}catch(e){accountMsg('Not changed: '+e.message)}});
-$('save').addEventListener('click',async()=>{const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));body.recipients=$('recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);body.sms_recipients=$('sms_recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);body.chemical_prices=Object.fromEntries(Array.from(document.querySelectorAll('[data-price]'),x=>[x.dataset.price,x.value===''?null:Number(x.value)]));try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)});$('saveState').textContent='Settings saved to server.';loadSummary()}catch(e){$('saveState').textContent='Save failed: '+e.message}});
+$('save').addEventListener('click',async()=>{const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));body.recipients=$('recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);body.sms_recipients=$('sms_recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);try{body.chemical_products=readProducts()}catch(e){$('saveState').textContent='Save failed: '+e.message;return}try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)});$('saveState').textContent='Settings saved to server.';loadSummary();loadSettings()}catch(e){$('saveState').textContent='Save failed: '+e.message}});
 function reportDownload(fmt){const a=$('from').value,b=$('to').value;if(!a||!b||a>b){alert('Choose a valid date range.');return}let days=(Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/86400000;if(days>91){alert('Maximum 92 inclusive days (one quarter)');return}window.location.href='/api/export?tag='+encodeURIComponent($('reportTag').value)+'&startDate='+encodeURIComponent(a)+'&endDate='+encodeURIComponent(b)+(fmt?'&format='+fmt:'')}
 const vanNow=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(Date.now()+clockOffset)).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`};
 const pickupMsg=(t,ok)=>{const el=$('pickupState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
@@ -229,12 +231,14 @@ const stockMsg=(t,ok)=>{const el=$('stockState');el.textContent=t;el.className=o
 async function loadStock(){
  $('stockForm').hidden=!can('pickup');$('consReport').hidden=!can('export');if(!$('stockWhen').value)$('stockWhen').value=vanNow();$('stockWhen').max=vanNow();
  if(!$('consYear').value)$('consYear').value=vanNow().slice(0,4);
- try{const d=await api('/api/stock');const st=d.status||{},rows=d.rows||[];stockProducts=d.products||{};stockLabels=d.labels||{};
+ try{const d=await api('/api/stock');const st=d.status||{},rows=d.rows||[];stockProducts=d.products||{};stockLabels=d.labels||{};fillProductLists(stockProducts);
   $('stockCards').innerHTML=Object.values(st).map(s=>{const head=`<b>${escapeHTML(s.name||s.label)}</b><span>${escapeHTML(s.container||'')} · Part # ${escapeHTML(s.part||'')}</span>`;
    if(s.litres==null)return `<div>${head}<span>No delivery or tank count logged yet</span></div>`;
    const low=s.low_l>0&&s.litres<s.low_l;const cont=s.container_l?s.litres/s.container_l:null;
-   return `<div class="${low?'overdue':'ok'}">${head}<b>${fmt(s.litres)} L${cont!=null?` (${fmt(cont)} ${s.container.includes('drum')?'drums':'pails'})`:''}${low?' — LOW':''}</b>`+
-    `<span>${s.per_day!=null?`Using about ${fmt(s.per_day)} L/day${s.days_left!=null?` · about ${Math.floor(s.days_left)} days left`:''}`:'No pump reading: usage shows at each tank count'}${s.low_l>0?` · low below ${fmt(s.low_l)} L`:''}</span>`+
+   const left=s.days_left==null?'':s.order_now?`<em class="bad">ORDER NOW — about ${Math.floor(s.days_left)} days left, delivery takes ${s.lead_days} days</em>`:
+    `<em class="${s.days_left<=s.lead_days+7?'warn':'good'}">About ${Math.floor(s.days_left)} days left · order by ${escapeHTML(calDay(s.order_by))}</em>`;
+   return `<div class="${low||s.order_now?'overdue':s.days_left!=null&&s.days_left<=s.lead_days+7?'soon':'ok'}">${head}<b>${fmt(s.litres)} L${cont!=null?` (${fmt(cont)} × ${escapeHTML(s.container)})`:''}${low?' — LOW':''}</b>${left}`+
+    `<span>${s.per_day!=null?`Using about ${fmt(s.per_day)} L/day (${s.rate_from==='pump'?'dosing pump, last 7 days':'from the tank counts'})`:s.tag?'Dosing pump: no usage in the last 7 days':'Log two tank counts at least a day apart to forecast the days left'}${s.low_l>0?` · low below ${fmt(s.low_l)} L`:''}</span>`+
     `<span>Since ${escapeHTML(local(s.since))}: start ${fmt(s.base)} L + delivered ${fmt(s.added)} L${s.tag?` − pump used ${fmt(s.used)} L`:''}</span></div>`}).join('');
   $('stockList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time (Vancouver)</th><th>Chemical</th><th>Entry</th><th>Litres</th><th>Note</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${rows.map(r=>
    `<tr><td>${escapeHTML(local(r.at))}</td><td>${escapeHTML(stockLabels[r.chemical]||r.chemical)}</td><td>${r.kind==='delivery'?'Delivery':'Tank count'}</td><td>${fmt(r.litres)}${(stockProducts[r.chemical]||{}).container_l?` <small>(${fmt(r.litres/stockProducts[r.chemical].container_l)} cont.)</small>`:''}</td><td>${escapeHTML(r.note)||'—'}</td><td>${escapeHTML(r.logged_by)}</td><td>${can('pickup')?`<button type="button" class="danger" data-stock="${r.id}">Remove</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="7">No chemical deliveries or tank counts logged yet.</td></tr>'}</tbody></table></div>`;
@@ -245,6 +249,60 @@ $('logStock').addEventListener('click',async()=>{if(!$('stockLitres').value){sto
  const litres=Math.round(toLitres(Number($('stockLitres').value),$('stockUnit').value,$('stockChem').value)*100)/100;
  try{await postJSON('/api/stock',{chemical:$('stockChem').value,kind:$('stockKind').value,litres,when:$('stockWhen').value,note:$('stockNote').value});
   ['stockLitres','stockNote'].forEach(id=>$(id).value='');$('stockWhen').value=vanNow();stockMsg('Entry logged.',true);loadStock()}catch(e){stockMsg('Not logged: '+e.message)}});
+// ---- Chemical products (lists filled from Settings > Chemical products) ----
+function fillProductLists(prods){document.querySelectorAll('[data-products]').forEach(sel=>{const keep=sel.value;
+ sel.innerHTML=Object.values(prods).filter(p=>p.active!==false).map(p=>`<option value="${escapeHTML(p.key)}">${escapeHTML(p.name)} · ${escapeHTML(p.container)}${p.part?' · Part # '+escapeHTML(p.part):''}</option>`).join('');
+ if(keep&&Array.from(sel.options).some(o=>o.value===keep))sel.value=keep})}
+const MEASURED={'':'Tank counts','Coag_Pump_Run':'Coagulant dosing pump (Coag_Pump_Run)','Floc_Pump_Run':'Flocculant dosing pump (Floc_Pump_Run)'};
+let productKeys=[];   // keys saved on the server; a new row gets a fresh key and can be deleted before it has records
+function productRow(p){const v=x=>x==null?'':escapeHTML(String(x));const prices=p.prices||[];
+ return `<tr data-key="${v(p.key)}"><td><input type="checkbox" data-f="active"${p.active!==false?' checked':''} aria-label="In use"></td>`+
+  `<td><input data-f="name" maxlength="80" value="${v(p.name)}" aria-label="Product name"></td><td><input data-f="label" maxlength="40" value="${v(p.label)}" aria-label="Short name"></td>`+
+  `<td><input data-f="part" maxlength="40" value="${v(p.part)}" aria-label="Part number"></td><td><input data-f="supplier" maxlength="80" value="${v(p.supplier)}" aria-label="Supplier"></td>`+
+  `<td><input data-f="container" maxlength="40" value="${v(p.container)}" placeholder="55 gal drum" aria-label="Container"></td>`+
+  `<td><input data-f="container_l" type="number" min="0.1" max="100000" step="0.001" value="${p.container_l==null?'':Math.round(p.container_l*1000)/1000}" aria-label="Litres per container"></td>`+
+  `<td><select data-f="tag" aria-label="Measured by">${Object.entries(MEASURED).map(([k,t])=>`<option value="${k}"${(p.tag||'')===k?' selected':''}>${t}</option>`).join('')}</select></td>`+
+  `<td><input data-f="low_l" type="number" min="0" max="100000" step="0.1" value="${v(p.low_l??0)}" aria-label="Low stock below litres"></td>`+
+  `<td><input data-f="lead_days" type="number" min="0" max="365" step="1" value="${v(p.lead_days??7)}" aria-label="Delivery time days"></td>`+
+  `<td><b class="cur-price" data-cur-price>${p.price!=null?money(p.price):'not set'}</b><button type="button" data-prices aria-expanded="false">Prices (${prices.length})</button></td>`+
+  `<td><button type="button" class="danger" data-del-product>Delete</button></td></tr>`+
+  `<tr class="price-row" data-prices-for="${v(p.key)}" hidden><td colspan="12"><b>Price history — ${v(p.name||'new product')}</b> `+
+  `<small>Each price applies from its date until the next price. Costs, estimated purchase costs and reports use the price valid on each day, so earlier months keep their old price. To change the price, add a new line with the date it starts (do not overwrite the old one).</small>`+
+  `<div class="price-list">${prices.map(priceEntry).join('')}</div><button type="button" data-add-price>Add price</button></td></tr>`}
+function priceEntry(e={}){const v=x=>x==null?'':escapeHTML(String(x));
+ return `<span class="price-entry"><label>From<input type="date" data-pf value="${v(e.from)}"></label><label>Price per container ($)<input type="number" data-pp min="0" max="1000000" step="0.01" value="${v(e.price)}"></label><button type="button" class="danger" data-del-price>Remove</button></span>`}
+function renderProducts(items){productKeys=items.map(p=>p.key);$('productRows').innerHTML=items.map(productRow).join('');bindProductRows()}
+const priceRowOf=tr=>$('productRows').querySelector(`tr[data-prices-for="${CSS.escape(tr.dataset.key)}"]`);
+function bindProductRows(){
+ document.querySelectorAll('[data-del-product]').forEach(b=>b.onclick=()=>{const tr=b.closest('tr');
+  if(productKeys.includes(tr.dataset.key)&&!confirm('Delete this product? It is removed when you press Save settings (refused if it has purchases or tank counts).'))return;priceRowOf(tr)?.remove();tr.remove()});
+ document.querySelectorAll('[data-prices]').forEach(b=>b.onclick=()=>{const row=priceRowOf(b.closest('tr'));row.hidden=!row.hidden;b.setAttribute('aria-expanded',String(!row.hidden))});
+ document.querySelectorAll('[data-add-price]').forEach(b=>b.onclick=()=>{const list=b.parentElement.querySelector('.price-list');
+  list.insertAdjacentHTML('beforeend',priceEntry({from:vanNow().slice(0,10)}));bindProductRows();list.lastElementChild.querySelector('[data-pp]').focus()});
+ document.querySelectorAll('[data-del-price]').forEach(b=>b.onclick=()=>b.closest('.price-entry').remove())}
+$('addProduct').addEventListener('click',()=>{const key='p'+Date.now().toString(36);$('productRows').insertAdjacentHTML('beforeend',productRow({key,active:true,lead_days:7,low_l:0}));bindProductRows();
+ $('productRows').querySelector(`tr[data-key="${key}"] [data-f="name"]`).focus()});
+function readProducts(){return Array.from(document.querySelectorAll('#productRows tr[data-key]'),tr=>{const f=n=>tr.querySelector(`[data-f="${n}"]`);const num=n=>f(n).value===''?null:Number(f(n).value);
+ const name=f('name').value.trim();if(!name)throw Error('every chemical product needs a name');if(num('container_l')==null)throw Error(name+': enter the litres per container');
+ if(!f('container').value.trim())throw Error(name+': enter the container (for example 55 gal drum)');
+ const prices=Array.from(priceRowOf(tr).querySelectorAll('.price-entry'),e=>({from:e.querySelector('[data-pf]').value,price:e.querySelector('[data-pp]').value}))
+  .filter(e=>e.from||e.price!=='').map(e=>{if(!e.from||e.price==='')throw Error(name+': each price needs a date and an amount');return {from:e.from,price:Number(e.price)}});
+ return {key:tr.dataset.key,active:f('active').checked,name,label:f('label').value.trim(),part:f('part').value.trim(),supplier:f('supplier').value.trim(),container:f('container').value.trim(),
+  container_l:num('container_l'),tag:f('tag').value,low_l:num('low_l')??0,lead_days:Math.round(num('lead_days')??7),prices}})}
+// ---- Chemical cost per m³ (Reports page) ----
+// Cost shown per m³ or per litre (1 m³ = 1000 L); the choice is kept in this browser.
+let costUnit='m3';try{if(localStorage.getItem('ww.costUnit')==='L')costUnit='L'}catch{}
+const perUnit=p=>{if(p.per_m3==null)return 'No discharge';const v=costUnit==='L'?p.per_m3/1000:p.per_m3;
+ return '$'+v.toFixed(v>=1?2:v>=0.01?4:6)+(costUnit==='L'?' per litre':' per m³')};
+let costData=null;
+$('costUnit').value=costUnit;$('costUnit').onchange=()=>{costUnit=$('costUnit').value==='L'?'L':'m3';try{localStorage.setItem('ww.costUnit',costUnit)}catch{};if(costData)drawCost(costData)};
+async function loadCost(){try{costData=await api('/api/cost');drawCost(costData)}catch(e){$('costCards').textContent='Unable to load the chemical cost: '+e.message}}
+function drawCost(d){
+ $('costCards').innerHTML=d.priced?d.periods.map(p=>`<div><b>${escapeHTML(p.label)}</b><b class="cost-big">${perUnit(p)}</b>`+
+  `<span>${money(p.cost)} of chemicals for ${costUnit==='L'?fmt(p.m3*1000)+' L':fmt(p.m3)+' m³'} discharged</span>`+
+  (p.products.length?`<span>${p.products.map(x=>`${escapeHTML(x.label)}: ${fmt(x.litres)} L${x.cost!=null?' · '+money(x.cost):' · no price'}`).join('<br>')}</span>`:'<span>No chemical usage recorded</span>')+
+  (p.unpriced.length?`<em class="warn">No price yet for ${escapeHTML(p.unpriced.join(', '))}: not in the cost</em>`:'')+`</div>`).join('')
+  :'<div><b>No prices yet</b><span>Enter the price per container of each chemical under Settings → Chemical products to see the cost per m³ or per litre.</span></div>'}
 // ---- Chemical purchases (Reports page) ----
 const buyMsg=(t,ok)=>{const el=$('buyState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
 const money=v=>v==null?'—':'$'+Number(v).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2});

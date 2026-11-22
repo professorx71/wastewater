@@ -6,7 +6,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.38'
+        assert s['revision']=='1.2.39'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -647,7 +647,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_chemical_purchases_receive_stock_and_report(self):
         zone=web.ZoneInfo('America/Vancouver');now=datetime.now(zone)
-        drum=web.CHEM_PRODUCTS['caustic']['container_l'];pail=web.CHEM_PRODUCTS['sa93']['container_l']
+        P=web.products(None);drum=P['caustic']['container_l'];pail=P['sa93']['container_l']
         bought=now-timedelta(hours=3)   # purchase date 3 h back, so 'received 2 h ago' is never before it (safe just after midnight)
         today=bought.date().isoformat();earlier=(now-timedelta(hours=2)).strftime('%Y-%m-%dT%H:%M')
         web.OP_AUTH=Path(self.tmp.name)/'operator.json'
@@ -696,7 +696,7 @@ class RevisionTests(unittest.TestCase):
     def test_chemical_consumption_month_and_year(self):
         zone=web.ZoneInfo('America/Vancouver');year=datetime.now(zone).year-1   # last year: complete, nothing in the future
         at=lambda m,d:web.iso(datetime(year,m,d,9,0,tzinfo=zone))
-        drum=web.CHEM_PRODUCTS['caustic']['container_l']
+        drum=web.products(None)['caustic']['container_l']
         with web.appdb() as db:
             for chem,kind,litres,when in (('caustic','count',300.0,at(1,5)),('caustic','delivery',drum,at(2,1)),('caustic','count',250.0,at(3,1)),
                                           ('caustic','count',100.0,at(3,20)),('sa93','delivery',18.0,at(6,3))):
@@ -721,15 +721,29 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(code,200);self.assertIn('CESCO SA-93',csvdata.decode('utf-8-sig'))
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
-            with self.assertRaises(ValueError):web.val_settings({'chemical_prices':{'caustic':-1}},web.settings(db))
-            with self.assertRaises(ValueError):web.val_settings({'chemical_prices':{'bleach':5}},web.settings(db))
-            # the Settings page always sends all four prices; any left out are saved as not set
-            self.assertEqual(web.val_settings({'chemical_prices':{'floc':42.5}},web.settings(db))['chemical_prices'],
-                             {'caustic':None,'floc':42.5,'coag':None,'sa93':None})
+            cfg=web.settings(db);items=cfg['chemical_products']
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.39 carried over
+            bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
+            for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
+                      bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
+                      bad(tag='Floc_Pump_Run'),[]):   # Floc_Pump_Run already measures the flocculant
+                with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
+            # an old page sending the pre-1.2.39 keys is not refused (they are ignored)
+            web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
+            # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
+            with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
+            new=web.val_settings({'chemical_products':[dict(items[0],active=False)]+items[1:]+[dict(key='bleach',name='Bleach 12%',container='20 L jug',container_l=20,prices=[{'from':'2026-02-01','price':30}])]},cfg,{'caustic'})
+            self.assertEqual([p['key'] for p in new['chemical_products']],['caustic','floc','coag','sa93','bleach'])
+            self.assertEqual(new['chemical_products'][-1]['label'],'Bleach 12%')
+            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('chemical_products',?)",(json.dumps(new['chemical_products']),))
+            cfg=web.settings(db)
+            self.assertNotIn('caustic',web.products(cfg,active_only=True));self.assertIn('caustic',web.products(cfg))   # still in the reports
+            self.assertNotIn('caustic',web.stock_status(db,cfg));self.assertIn('order:bleach',web.shelf_choices(cfg))
+            with self.assertRaises(web.AccountError):web.save_stock(db,{'chemical':'caustic','kind':'count','litres':1,'when':'2026-01-01T00:00'},'a',cfg)
 
     def test_every_shelvable_alarm_has_an_email_subject(self):
         for key in web.shelf_choices():
-            if key!='ph':self.assertIn(key,web.CONDITION_SUBJECTS)
+            if key!='ph':self.assertFalse(web.condition_subject(key,web.DEFAULTS).startswith('Wastewater alarm:'),key)
 
     def _collector(self):
         import importlib.util
@@ -739,7 +753,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_collector_saves_every_tag_the_dashboard_uses(self):
         # A tag missing from the collector's list is silently dropped (the SYSTEM_ENABLED circle stayed grey).
-        needed=set(web.TAGS)|set(web.DIAGRAM_TAGS)|{t for t,*_ in web.PLC_ALARMS}|{t for t,_ in web.PUMP_TAGS}|{t for _,t,_ in web.STOCK_CHEMS.values() if t}
+        needed=set(web.TAGS)|set(web.DIAGRAM_TAGS)|{t for t,*_ in web.PLC_ALARMS}|{t for t,_ in web.PUMP_TAGS}|set(web.DOSING_TAG_CHOICES)
         missing=needed-set(self._collector().TAGS)
         self.assertFalse(missing,f'Add these tags to TAGS in collector/collector.py: {sorted(missing)}')
 
@@ -857,7 +871,7 @@ class RevisionTests(unittest.TestCase):
         now=datetime.now(timezone.utc)
         with sqlite3.connect(web.DB) as db:db.execute("DELETE FROM samples WHERE name='FLOW_RATE'")
         self._samples([('FLOW_RATE',now-timedelta(minutes=m),10.0) for m in (14,10,5,1)]+
-                      [('Coag_Pump_Run',now-timedelta(minutes=30),0.0),('Floc_Pump_Run',now-timedelta(minutes=30),5.0)])
+                      [('Coag_Pump_Run',now-timedelta(minutes=30),0.2),('Floc_Pump_Run',now-timedelta(minutes=30),5.0)])   # 0.2 ml/h = 0.003 ml/min shows 0.00: stopped
         cfg=dict(web.DEFAULTS,dosing_alarm_enabled=True,dosing_alarm_minutes=15)
         local=now.astimezone(web.ZoneInfo('America/Vancouver'))
         with web.appdb() as db:
@@ -871,6 +885,72 @@ class RevisionTests(unittest.TestCase):
         rows=web.chemical_rows(now-timedelta(days=1),now,zone,'x')
         flat=[c[0] if isinstance(c,tuple) else c for r in rows for c in r]
         self.assertIn('Discharged (m³)',flat);self.assertIn('Coagulant (mL per m³ discharged)',flat)
+
+    def test_cost_per_m3_and_days_of_stock_left(self):
+        zone=web.ZoneInfo('America/Vancouver');now=datetime.now(timezone.utc);today=now.astimezone(zone).date();y=today-timedelta(days=1)
+        at=lambda h,d=y:datetime.combine(d,web.time(h),zone).astimezone(timezone.utc)
+        with sqlite3.connect(web.DB) as h:h.execute("DELETE FROM samples WHERE name IN ('Coag_Pump_Run','Floc_Pump_Run','Total_Flow_Li')")
+        # coagulant pump at 60 ml/h (1 ml/min) all of yesterday; 10,000 L discharged yesterday
+        self._samples([('Coag_Pump_Run',at(0),60.0),('Coag_Pump_Run',at(0,today),0.0),('Total_Flow_Li',at(9),100.0),('Total_Flow_Li',at(18),10100.0)])
+        with web.appdb() as db:
+            cfg=web.settings(db);items=[dict(p,prices=[{'from':'2020-01-01','price':v}] if (v:={'coag':100.0,'caustic':500.0}.get(p['key'])) else []) for p in cfg['chemical_products']]
+            cfg=web.val_settings({'chemical_products':items},cfg)
+            # caustic: 300 L counted 20 days ago, 200 L 10 days ago: 10 L/day, so about 10 days left now
+            for litres,days in ((300.0,20),(200.0,10)):
+                db.execute('INSERT INTO chemical_stock(chemical,kind,litres,at,note,logged_by,logged_at) VALUES (?,?,?,?,?,?,?)',
+                           ('caustic','count',litres,web.iso(now-timedelta(days=days)),'','a','x'))
+            st=web.stock_status(db,cfg,now)['caustic']
+            self.assertAlmostEqual(st['per_day'],10.0,places=3);self.assertAlmostEqual(st['days_left'],10.0,places=2)
+            self.assertFalse(st['order_now'])   # delivery takes 7 days
+            cfg['chemical_products']=[dict(p,lead_days=14) if p['key']=='caustic' else p for p in cfg['chemical_products']]
+            self.assertTrue(web.stock_status(db,cfg,now)['caustic']['order_now'])
+            web.check_stock(db,cfg,now)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='Caustic (NEUTRO 5045) order now'").fetchone()[0],1)
+            self.assertIn('ORDER NOW',web.condition_subject('order:caustic',cfg))
+            # tank-count usage is spread over the days between the counts: 10 L per day
+            use=web.daily_chemical_use(db,now-timedelta(days=15),now-timedelta(days=12),zone,cfg)
+            mid=(now-timedelta(days=13)).astimezone(zone).date()
+            self.assertAlmostEqual(use[mid]['caustic'],10.0,places=3)
+        days,unpriced=web.chemical_cost(at(0),at(0,today),zone,cfg)
+        x=days[y];hours=(at(0,today)-at(0)).total_seconds()/3600
+        self.assertAlmostEqual(x['m3'],10.0)
+        self.assertAlmostEqual(x['litres']['coag'],0.06*hours,places=3)
+        self.assertAlmostEqual(x['cost'],0.06*hours/(55*web.GAL_L)*100,places=4)
+        self.assertAlmostEqual(x['per_m3'],x['cost']/10,places=6)
+        self.assertEqual(unpriced,[])
+        self.assertIn('per m³',web.cost_line(at(0),at(0,today),cfg,'yesterday'))
+        with web.appdb() as db:db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('chemical_products',?)",(json.dumps(cfg['chemical_products']),))
+        self._login(web.AUTH,'admin','admin-pass')
+        code,data=self.call('GET','/api/export','admin','admin-pass',query=f'tag=cost&startDate={y}&endDate={y}')
+        self.assertEqual(code,200)
+        import zipfile
+        self.assertIn('Chemical cost per m',zipfile.ZipFile(io.BytesIO(data)).read('xl/worksheets/sheet1.xml').decode())
+        summary=json.loads(self.call('GET','/api/cost','admin','admin-pass')[1])
+        self.assertEqual(len(summary['periods']),3);self.assertTrue(summary['priced'])
+
+    def test_price_history_uses_the_price_of_each_day(self):
+        p=web.norm_product(dict(web.products(None)['coag'],prices=[{'from':'2026-03-01','price':120.0},{'from':'2026-01-01','price':100.0}]))
+        self.assertIsNone(web.price_on(p,'2025-12-31'))
+        self.assertEqual(web.price_on(p,'2026-02-28'),100.0);self.assertEqual(web.price_on(p,date(2026,3,1)),120.0)
+        # a single price saved before the price history keeps applying to everything
+        self.assertEqual(web.norm_product(dict(web.products(None)['coag'],prices=None,price=80.0))['prices'],[{'from':'2020-01-01','price':80.0}])
+        with web.appdb() as db:
+            cfg=web.settings(db);items=cfg['chemical_products']
+            new=web.val_settings({'chemical_products':[dict(x,prices=[{'from':'2026-03-01','price':120},{'from':'2026-01-01','price':100}]) if x['key']=='caustic' else x for x in items]},cfg)
+            caustic=web.products(new)['caustic']
+            self.assertEqual(caustic['prices'],[{'from':'2026-01-01','price':100.0},{'from':'2026-03-01','price':120.0}])   # sorted
+            # purchases: estimated at the price of the purchase date
+            drum=caustic['container_l'];prods=web.products(new)
+            self.assertAlmostEqual(web.purchase_cost({'cost':None,'chemical':'caustic','litres':drum,'purchased_on':'2026-02-10'},prods)[0],100.0)
+            self.assertAlmostEqual(web.purchase_cost({'cost':None,'chemical':'caustic','litres':drum,'purchased_on':'2026-03-10'},prods)[0],120.0)
+            self.assertIsNone(web.purchase_cost({'cost':None,'chemical':'caustic','litres':drum,'purchased_on':'2025-12-10'},prods)[0])
+            # saving the settings audits the price change
+            self._login(web.AUTH,'admin','admin-pass')
+        code,_=self.call('POST','/api/settings','admin','admin-pass',{'chemical_products':new['chemical_products']})
+        self.assertEqual(code,200)
+        with web.appdb() as db:
+            row=db.execute("SELECT detail FROM audit WHERE action='Chemical prices changed'").fetchone()
+        self.assertIn('$120.00 from 2026-03-01',row[0])
 
     def test_insights_find_repeated_alarms(self):
         zone=web.ZoneInfo('America/Vancouver')
