@@ -150,3 +150,10 @@ body[data-view="trends"]{--acc:var(--acc-trends)}
 .dose-state{display:block;font-size:10px;font-weight:800;letter-spacing:.05em;color:var(--muted)}.dose-state.on{color:var(--green)}.dose-state.off{color:#ffb8b5}
 .insight-list{list-style:none;margin:0;padding:0}.insight{display:flex;flex-direction:column;gap:3px;padding:9px 12px;margin:0 0 8px;border-left:3px solid #3b6278;background:#0c2031;border-radius:4px}
 .insight.high{border-left-color:#d36d68}.insight.medium{border-left-color:#ffcf75}.insight.ok{border-left-color:var(--green)}.insight span{color:var(--muted)}.insight .insight-action{color:#d8e9f1}
+/* Header logo: EffluentIQ with its tagline (static/logo-effluentiq.svg), then the credit line */
+.brand{flex:none;max-width:100%}
+.brand h1{margin:0;line-height:0}
+.brand .logo{display:block;height:88px;width:auto;max-width:100%;margin:-6px 0 -4px}
+.brand small{display:block;font-size:12px;margin-top:2px}
+@media(min-width:1101px) and (max-width:1500px){.brand .logo{height:80px}}
+@media(max-width:480px){.brand .logo{height:auto;width:100%}}
