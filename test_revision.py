@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.42'
+        assert s['revision']=='1.2.43'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -722,13 +722,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.42 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.43 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Run'),[]):   # Floc_Pump_Run already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.42 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.43 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -971,6 +971,29 @@ class RevisionTests(unittest.TestCase):
             web.update_ph_incidents(db,dict(cfg,alarms_enabled=False),None)
             self.assertEqual(db.execute('SELECT state FROM events WHERE id=?',(ev,)).fetchone()[0],'closed')
             self.assertIsNone(db.execute('SELECT active_event FROM ph_alarm_v2').fetchone()[0])
+
+    def test_ph_alarm_follow_up_emails_say_how_long(self):
+        self.assertEqual([web.reminder_step(m,5) for m in (0,4,5,9,10,59,60,61,119,125)],[0,0,5,5,10,55,60,60,60,120])
+        self.assertEqual(web.reminder_step(30,0),0)
+        self.assertEqual([web.minutes_text(m) for m in (0,10,60,75,1440,1590)],['0 min','10 min','1 h','1 h 15 min','1 d','1 d 2 h'])
+        now=datetime.now(web.ZoneInfo('America/Vancouver'))
+        with web.appdb() as db:
+            cfg=dict(web.settings(db),alarms_enabled=True)
+            self.assertEqual(cfg['ph_repeat_min'],5)
+            ev=web.new_alarm_event(db,web.iso(datetime.now(timezone.utc)-timedelta(minutes=12)),'pH high','x').lastrowid
+            tracker={'active_event':ev,'active_kind':'high'}
+            key,subject,body=web.ph_alarm_job(db,cfg,tracker,{'value':9.6},now)
+            self.assertEqual(key,f'alarm:incident:{ev}:m10')
+            self.assertEqual(subject,'Wastewater pH HIGH alarm — active 10 min')
+            self.assertIn('active for 12 min',body);self.assertIn('9.60 pH',body)
+            key,subject,_=web.ph_alarm_job(db,dict(cfg,ph_repeat_min=0),tracker,{'value':9.6},now)
+            self.assertEqual((key,subject),(f'alarm:incident:{ev}','Wastewater pH HIGH alarm'))
+            self.assertIsNone(web.ph_alarm_emailed(db,ev))
+            db.execute('INSERT INTO delivery(key,stamp,outcome) VALUES (?,?,?)',(f'alarm:incident:{ev}:m10','x','sent'))
+            self.assertIsNotNone(web.ph_alarm_emailed(db,ev))
+            self.assertIsNone(web.ph_alarm_emailed(db,ev*10+1))
+        for bad in (3,61,-1,'5'):
+            with self.assertRaises(ValueError):web.val_settings({'ph_repeat_min':bad},dict(web.DEFAULTS))
 
     def test_insights_find_repeated_alarms(self):
         zone=web.ZoneInfo('America/Vancouver')

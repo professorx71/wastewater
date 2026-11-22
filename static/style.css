@@ -157,3 +157,6 @@ body[data-view="trends"]{--acc:var(--acc-trends)}
 .brand small{display:block;font-size:12px;margin-top:2px}
 @media(min-width:1101px) and (max-width:1500px){.brand .logo{height:80px}}
 @media(max-width:480px){.brand .logo{height:auto;width:100%}}
+
+/* Live "active 12 min" counter on alarms */
+.since{display:inline-block;font-weight:700;color:#ffd166;background:rgba(255,209,102,.12);border:1px solid rgba(255,209,102,.35);border-radius:999px;padding:0 8px;font-size:.9em;white-space:nowrap}

@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EffluentIQ — Rev 1.2.42</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>EffluentIQ — Rev 1.2.43</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body data-view="overview">
 <header class="topbar"><div class="brand"><h1><img class="logo" src="/logo-effluentiq.svg" alt="EffluentIQ — Industrial Wastewater Monitoring &amp; Reporting" width="600" height="120"></h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button><button data-view="help">Help</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.42</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.43</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="alarmRibbon" class="sludge-ribbon" role="alert" hidden></div><div id="shelfNote" class="shelf-note" hidden></div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -112,7 +112,7 @@
 </ul>
 <p><b>Red alarm banner</b> (flashing): one line for each PLC alarm that is ON right now, with the time it started and its PLC address — Sludge tank FULL, EQ tank FULL, E-Stop, Mixer pump, Rake motor, MAX RGT pump and Floc / Coag pump faults. It disappears by itself when the PLC bit goes back to 0. A grey dashed note under it lists any <b>shelved</b> alarms.</p>
 <p><b>Reading cards:</b> EQ pH, EQ tank level (ft), discharge flow and total flow (litres). <span class="help-chip ok">LIVE</span> means the reading is current; <i>STALE</i>, <i>INVALID</i> or <i>MISSING</i> means it is not. Click the flow unit to switch between <b>L/min</b> and <b>gal/min</b> (remembered on this computer). Hover a card to see the exact time of the reading.</p>
-<p><b>Active alarms</b> box: alarms whose condition is still present. Red while any alarm is active. Click it to open the list; <b>Open Alarms page</b> takes you to the full list.</p>
+<p><b>Active alarms</b> box: alarms whose condition is still present, each with a live <span class="since">active 12 min</span> counter showing how long it has been on. Red while any alarm is active. Click it to open the list; <b>Open Alarms page</b> takes you to the full list.</p>
 <p><b>Process diagram</b> (<b>Show process diagram</b>):</p>
 <ul>
 <li><b>SYSTEM ENABLED</b> circle: green <b>ON</b> / red <b>OFF</b> from PLC B3:0/4. Grey "--" means no reading has arrived.</li>
@@ -149,6 +149,7 @@
 <tr><td>Chemical stock low (each product)</td><td>estimated stock below the product's low level (Settings → Chemical products)</td><td>stock back above it (purchase received or new tank count)</td></tr>
 <tr><td>Order now (each product)</td><td>the stock left lasts no longer than the product's delivery time</td><td>more days of stock than the delivery time (purchase received or new tank count)</td></tr>
 </tbody></table>
+<p><b>Duration column:</b> how long each alarm has been active (counting live while it is still on) or how long it lasted once closed.</p>
 <p><b>Status column:</b> <i>active · auto-acknowledged</i> while the condition lasts → <i>closed</i> when it clears. Every alarm is acknowledged automatically when it is recorded, so nobody has to press anything. Alarm messages describe the problem in plain words, without PLC addresses or tag names.</p>
 <p><b>Shelve an alarm (maintenance):</b> stops the emails and texts for one alarm for 1–72 hours, with a reason — for example while a pump is being repaired. The alarm is still recorded, the shelf ends by itself, and every shelve is in the Audit log. Needs the Settings right. <b>Unshelve</b> ends it early.</p>
 <p><b>Predictive pH</b> on the Overview: the pH card shows where pH is heading (↗ rising, ↘ falling, → steady, in pH per hour). When it is heading for a limit, the banner turns amber and says about how many minutes are left, so the dosing can be checked before the limit is reached.</p>
@@ -190,7 +191,7 @@
 
 <div class="panel" id="help-settings"><h3>Settings (Admin and Engineering)</h3>
 <ul>
-<li><b>pH alarm limits</b> and how many readings in a row confirm an alarm and its recovery.</li>
+<li><b>pH alarm limits</b>, how many readings in a row confirm an alarm and its recovery, and how often the follow-up email repeats while pH stays out of range.</li>
 <li><b>Alarm notification schedule:</b> days and hours when alarm emails and texts are sent.</li>
 <li><b>Data, tank level, flow and PLC alarms:</b> turn each alarm on or off and set its limits.</li>
 <li><b>Calibration reminders:</b> how often each sensor must be calibrated and how many days before to remind.</li>
@@ -203,6 +204,7 @@
 <div class="panel" id="help-email"><h3>Emails and text messages</h3>
 <ul>
 <li><b>Alarm email:</b> one email when an alarm comes on, and one when it clears (if the first was sent). Sent only within the alarm notification schedule and not for shelved alarms.</li>
+<li><b>pH alarm follow-ups:</b> while pH stays out of range, another email (and text) says how long the alarm has been active — subject "Wastewater pH HIGH alarm — active 10 min". With the default of 5 minutes they come at 5, 10, 15 … 55 minutes, then every hour (1 h, 2 h …). Set the interval, or 0 to turn follow-ups off, in <b>Settings → pH alarm limits</b>. The recovery email says how long the alarm lasted.</li>
 <li><b>Text message:</b> a short text for each new alarm to the phone addresses in Settings (if turned on).</li>
 <li><b>Daily report:</b> the previous day's readings, a discharge compliance line and the list of alarms.</li>
 <li><b>Monthly</b> and <b>quarterly</b> reports with an Excel attachment.</li>
@@ -229,7 +231,7 @@
 </ul></div>
 </section>
 <section id="settings" class="view" hidden><h2>Settings and notification scheduling</h2>
-<div class="panel"><h3>pH alarm limits and confirmation</h3><div class="formgrid"><label>Low pH<input id="ph_low" type="number" min="0" max="14" step="0.01"></label><label>High pH<input id="ph_high" type="number" min="0" max="14" step="0.01"></label><label>Consecutive abnormal readings (1–10)<input id="alarm_confirm_samples" type="number" min="1" max="10" step="1"></label><label>Consecutive normal readings for recovery (1–10)<input id="alarm_recovery_samples" type="number" min="1" max="10" step="1"></label></div><label class="check"><input id="alarms_enabled" type="checkbox"> Enable pH alarm monitoring</label><label class="check"><input id="email_enabled" type="checkbox"> Enable alarm email</label><label class="check"><input id="email_recovery_enabled" type="checkbox"> Email when an emailed pH incident is confirmed recovered</label><p>Each reading timestamp counts once. Incident emails are unique per confirmed event, not limited to once per day. This software alarm is not a substitute for a safety or compliance interlock.</p></div>
+<div class="panel"><h3>pH alarm limits and confirmation</h3><div class="formgrid"><label>Low pH<input id="ph_low" type="number" min="0" max="14" step="0.01"></label><label>High pH<input id="ph_high" type="number" min="0" max="14" step="0.01"></label><label>Consecutive abnormal readings (1–10)<input id="alarm_confirm_samples" type="number" min="1" max="10" step="1"></label><label>Consecutive normal readings for recovery (1–10)<input id="alarm_recovery_samples" type="number" min="1" max="10" step="1"></label><label>Follow-up pH alarm email every … minutes (0 = off, 5–60)<input id="ph_repeat_min" type="number" min="0" max="60" step="1"></label></div><label class="check"><input id="alarms_enabled" type="checkbox"> Enable pH alarm monitoring</label><label class="check"><input id="email_enabled" type="checkbox"> Enable alarm email</label><label class="check"><input id="email_recovery_enabled" type="checkbox"> Email when an emailed pH incident is confirmed recovered</label><p>Each reading timestamp counts once. Each confirmed pH alarm is emailed once, then a follow-up says how long it has been active (for example "active 10 min") every set number of minutes for the first hour and hourly after that, until pH is back in range. This software alarm is not a substitute for a safety or compliance interlock.</p></div>
 <div class="panel"><h3>Alarm notification schedule</h3><div class="formgrid"><label>On <input id="alarm_on" type="time"></label><label>Off <input id="alarm_off" type="time"></label></div><div id="alarmDays" class="days"></div><p>Vancouver local time; overnight schedules supported.</p></div>
 <div class="panel"><h3>Data, tank level, flow and PLC alarms</h3><label class="check"><input id="stale_alert_enabled" type="checkbox"> Alert when no new data arrives</label><div class="formgrid"><label>No new data for (minutes, 5–1440)<input id="stale_alert_minutes" type="number" min="5" max="1440" step="1"></label></div>
 <label class="check"><input id="level_alarm_enabled" type="checkbox"> Enable EQ tank high-level alarm</label><div class="formgrid"><label>High level (ft)<input id="level_high_ft" type="number" min="0.1" max="100" step="0.01"></label></div>
@@ -253,5 +255,5 @@
 <div class="account-box rights-box"><h4>Rights for each role</h4><div class="tablewrap"><table class="rights"><thead><tr><th>Right</th><th>Admin</th><th>Engineering</th><th>Operator</th><th>Guest</th></tr></thead><tbody id="rightsBody"></tbody></table></div><button id="saveRights" type="button">Save rights</button> <small>Changes apply on the person's next page refresh (within 5 seconds).</small></div></div>
 <p id="accountState" role="status"></p>
 <p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
-<footer>EffluentIQ™ Rev 1.2.42 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
+<footer>EffluentIQ™ Rev 1.2.43 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
 </main></body></html>
