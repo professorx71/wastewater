@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.39','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.40','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -554,7 +554,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.39: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.40: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -833,7 +833,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.39
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.40
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -1238,6 +1238,28 @@ def ph_status(ph, cfg):
     return 'high' if v>cfg['ph_high'] else 'low' if v<cfg['ph_low'] else 'normal'
 
 
+def close_orphan_ph_events(conn,cfg,keep=None,now=None):
+    """Close pH high/low alarms that are not the incident being tracked (keep). Only the tracked incident is
+    closed by a pH recovery, so alarms left from older versions, or from while pH monitoring was off, would
+    otherwise stay 'active' for ever. Each one is closed at the first pH reading back inside the limits after it
+    started (now if there is none). Returns how many were closed."""
+    rows=conn.execute("SELECT id,stamp FROM events WHERE kind IN ('pH high','pH low') AND state IN ('open','acknowledged') "
+                      "AND cleared_at IS NULL AND id IS NOT ? ORDER BY id",(keep,)).fetchall()
+    if not rows:return 0
+    now=iso(now or datetime.now(UTC));closed=[]
+    db=database()
+    try:
+        for r in rows:
+            back=db.execute("SELECT stamp FROM samples WHERE name='pH_Reading' AND stamp>? AND value>=? AND value<=? ORDER BY stamp LIMIT 1",
+                            (r['stamp'],cfg['ph_low'],cfg['ph_high'])).fetchone()
+            at=back[0] if back else now
+            conn.execute("UPDATE events SET state='closed',cleared_at=?,actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,?) WHERE id=?",
+                         (at,AUTO_ACK_ACTOR,r['stamp'],r['id']))
+            closed.append(f"#{r['id']}")
+    finally:db.close()
+    audit(conn,'system','Old pH alarms closed',f"{len(closed)} pH alarm(s) that were not the live incident closed at the first normal pH reading: {', '.join(closed)}")
+    return len(closed)
+
 def update_ph_incidents(conn, cfg, ph):
     """One sample stamp counts once. Alarm and recovery require consecutive fresh samples.
 
@@ -1253,10 +1275,12 @@ def update_ph_incidents(conn, cfg, ph):
              VALUES(1,NULL,NULL,0,?,NULL,0)''',(legacy,))
         old=conn.execute('SELECT * FROM ph_alarm_v2 WHERE id=1').fetchone()
     if not cfg['alarms_enabled']:
-        # Keep prior incidents for audit, but pause confirmation and mail generation.
-        conn.execute('UPDATE ph_alarm_v2 SET candidate_kind=NULL,candidate_count=0,recovery_count=0 WHERE id=1')
+        # Monitoring off: pause confirmation and mail generation, and end any incident (nothing would close it).
+        close_orphan_ph_events(conn,cfg)
+        conn.execute('UPDATE ph_alarm_v2 SET candidate_kind=NULL,candidate_count=0,recovery_count=0,active_kind=NULL,active_event=NULL WHERE id=1')
         conn.commit()
         return
+    close_orphan_ph_events(conn,cfg,old['active_event'])
     status=ph_status(ph,cfg)
     stamp=ph.get('stamp') if ph else None
     if status=='unknown' or not stamp or stamp==old['last_sample_stamp']:
@@ -1284,7 +1308,7 @@ def update_ph_incidents(conn, cfg, ph):
         cand=None;count=0
         if recovery_count>=cfg['alarm_recovery_samples']:
             if active_event is not None:
-                conn.execute("UPDATE events SET state='closed' WHERE id=? AND state IN ('open','acknowledged')",(active_event,))
+                conn.execute("UPDATE events SET state='closed',cleared_at=? WHERE id=? AND state IN ('open','acknowledged')",(iso(datetime.now(UTC)),active_event))
                 cur=conn.execute('INSERT INTO events(stamp,kind,detail,state) VALUES (?,?,?,?)',
                     (iso(datetime.now(UTC)),'pH recovered',f'Incident {active_event}; pH {ph["value"]:.2f}; confirmed normal over {recovery_count} readings','closed'))
                 recovered_event=cur.lastrowid;recovery_origin=active_event
@@ -1296,7 +1320,7 @@ def update_ph_incidents(conn, cfg, ph):
         cand=status;recovery_count=0
         if count>=cfg['alarm_confirm_samples']:
             if active_event is not None:
-                conn.execute("UPDATE events SET state='closed' WHERE id=? AND state IN ('open','acknowledged')",(active_event,))
+                conn.execute("UPDATE events SET state='closed',cleared_at=? WHERE id=? AND state IN ('open','acknowledged')",(iso(datetime.now(UTC)),active_event))
             cur=new_alarm_event(conn,iso(datetime.now(UTC)),f'pH {status}',
                  f"Confirmed over {count} readings; pH {ph['value']:.2f}; limits {cfg['ph_low']:.2f}–{cfg['ph_high']:.2f}")
             active=status;active_event=cur.lastrowid
@@ -1893,7 +1917,7 @@ def pump_rows(start,end,zone,date_range):
 # so other products' usage comes from tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Run':'Flocculant dosing pump'}
-# Settings saved before 1.2.39 (one key per product); read once to build the product list.
+# Settings saved before 1.2.40 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
@@ -1908,7 +1932,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.39 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.40 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
