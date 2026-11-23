@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.46'
+        assert s['revision']=='1.2.47'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -681,7 +681,7 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual((caustic[2],caustic[3],caustic[5]),(1,2.0,900.0))
         sa93=[r for r in flat if r[:2]==[f'{bought.month:02d}/{year}','CESCO SA-93']][0]
         self.assertEqual(sa93[5],'240.00 (estimated)')   # 4 pails x $60
-        self.assertIn([str(year),'CESCO SA-93',1,4.0,round(4*pail,2),'240.00 (estimated)'],flat)
+        self.assertIn([str(year),'CESCO SA-93',1,4.0,round(4*pail,2),'240.00 (estimated)','CAD'],flat)
         code,book=self.call('GET','/api/export','admin','admin-pass',query=f'tag=purchases&year={year}')
         self.assertEqual(code,200)
         import zipfile
@@ -724,13 +724,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.46 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.47 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Run'),[]):   # Floc_Pump_Run already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.46 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.47 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -984,11 +984,12 @@ class RevisionTests(unittest.TestCase):
             self.assertEqual(cfg['ph_repeat_min'],5)
             ev=web.new_alarm_event(db,web.iso(datetime.now(timezone.utc)-timedelta(minutes=12)),'pH high','x').lastrowid
             tracker={'active_event':ev,'active_kind':'high'}
-            key,subject,body=web.ph_alarm_job(db,cfg,tracker,{'value':9.6},now)
+            key,subject,body,reading=web.ph_alarm_job(db,cfg,tracker,{'value':9.6},now)
+            self.assertEqual(reading,'pH now 9.60, high limit 9.00')
             self.assertEqual(key,f'alarm:incident:{ev}:m10')
             self.assertEqual(subject,'Wastewater pH HIGH alarm — active 10 min')
             self.assertIn('active for 12 min',body);self.assertIn('9.60 pH',body)
-            key,subject,_=web.ph_alarm_job(db,dict(cfg,ph_repeat_min=0),tracker,{'value':9.6},now)
+            key,subject,_,_=web.ph_alarm_job(db,dict(cfg,ph_repeat_min=0),tracker,{'value':9.6},now)
             self.assertEqual((key,subject),(f'alarm:incident:{ev}','Wastewater pH HIGH alarm'))
             self.assertIsNone(web.ph_alarm_emailed(db,ev))
             db.execute('INSERT INTO delivery(key,stamp,outcome) VALUES (?,?,?)',(f'alarm:incident:{ev}:m10','x','sent'))
@@ -996,6 +997,69 @@ class RevisionTests(unittest.TestCase):
             self.assertIsNone(web.ph_alarm_emailed(db,ev*10+1))
         for bad in (3,61,-1,'5'):
             with self.assertRaises(ValueError):web.val_settings({'ph_repeat_min':bad},dict(web.DEFAULTS))
+
+    def test_text_message_has_the_reading(self):
+        now=datetime(2026,11,22,17,19,tzinfo=web.ZoneInfo('America/Vancouver'))
+        self.assertEqual(web.sms_text('Wastewater pH LOW alarm — active 15 min',52,now,'pH now 5.42, low limit 5.80'),
+            'Wastewater pH LOW alarm — active 15 min. pH now 5.42, low limit 5.80. Incident #52 at Nov 22 17:19. See the dashboard Alarms page.')
+        self.assertEqual(web.sms_text('X',1,now),'X. Incident #1 at Nov 22 17:19. See the dashboard Alarms page.')
+        self.assertEqual(web.sms_text('pH trending high',3,now,'pH 8.60 is rising 1.20 pH per hour; it reaches 9.00 in about 20 minutes. Check the acid dosing.'),
+            'pH trending high. pH 8.60 is rising 1.20 pH per hour; it reaches 9.00 in about 20 minutes. Incident #3 at Nov 22 17:19. See the dashboard Alarms page.')
+        self.assertLessEqual(len(web.sms_text('X'*100,1,now,'y'*400)),300)
+
+    def test_list_periods(self):
+        d=date(2026,11,23)   # a Monday
+        r=lambda **q:web.period_range(q,d)
+        self.assertEqual(r(period='today'),(d,date(2026,11,24)))
+        self.assertEqual(r(period='yesterday'),(date(2026,11,22),d))
+        self.assertEqual(r(period='week'),(d,date(2026,11,24)))
+        self.assertEqual(r(period='7d'),(date(2026,11,17),date(2026,11,24)))
+        self.assertEqual(r(period='lastmonth'),(date(2026,10,1),date(2026,11,1)))
+        self.assertEqual(r(period='3m'),(date(2026,9,1),date(2026,11,24)))
+        self.assertEqual(r(period='pickmonth',month='2026-02'),(date(2026,2,1),date(2026,3,1)))
+        self.assertEqual(r(period='day',date='2026-11-05'),(date(2026,11,5),date(2026,11,6)))
+        self.assertEqual(r(period='all'),(None,None))
+        for bad in (dict(period='x'),dict(period='day',date='nope'),dict(period='pickmonth',month='2026')):
+            with self.assertRaises(ValueError):r(**bad)
+        with web.appdb() as db:
+            now=datetime.now(timezone.utc)
+            for h in (1,30,24*40):web.audit(db,'t','Test entry',f'{h} h ago')
+            db.execute("UPDATE audit SET stamp=? WHERE detail='960 h ago'",(web.iso(now-timedelta(days=40)),))
+            db.execute("UPDATE audit SET stamp=? WHERE detail='30 h ago'",(web.iso(now-timedelta(hours=30)),))
+            rows,info=web.period_rows(db,'audit','stamp',{'period':'7d'})
+            self.assertNotIn('960 h ago',[r['detail'] for r in rows]);self.assertIn('30 h ago',[r['detail'] for r in rows])
+            self.assertEqual(info['shown'],len(rows))
+            rows,_=web.period_rows(db,'audit','stamp',{'period':'all'})
+            self.assertIn('960 h ago',[r['detail'] for r in rows])
+        self._login(web.AUTH,'admin','admin-pass')
+        code,body=self.call('GET','/api/events','admin','admin-pass',query='period=month')
+        self.assertEqual(code,200);self.assertIn('period',json.loads(body))
+        code,_=self.call('GET','/api/audit','admin','admin-pass',query='period=bogus');self.assertEqual(code,400)
+
+    def test_purchase_currency_weight_and_entered_quantity(self):
+        with web.appdb() as db:
+            cfg=web.settings(db)
+            self.assertEqual(cfg['currency'],'CAD')
+            caustic=web.products(cfg)['caustic'];self.assertEqual(caustic['kg_l'],1.52)
+            self.assertIsNone(web.products(cfg)['floc']['kg_l'])
+            body=dict(chemical='caustic',purchased_on='2026-11-01',litres=328.95,cost=500.0,currency='USD',entered='500 kg')
+            pid=web.save_purchase(db,body,'t',cfg)[0]
+            web.save_purchase(db,dict(body,currency=None,cost=900.0,entered=None),'t',cfg)
+            with self.assertRaises(web.AccountError):web.save_purchase(db,dict(body,currency='EUR'),'t',cfg)
+            row=db.execute('SELECT currency,entered FROM chemical_purchases WHERE id=?',(pid,)).fetchone()
+            self.assertEqual((row['currency'],row['entered']),('USD','500 kg'))
+            sid=web.save_stock(db,dict(chemical='caustic',kind='count',litres=100.0,when=datetime.now(web.ZoneInfo('America/Vancouver')).strftime('%Y-%m-%dT%H:%M'),entered='334 lb'),'t',cfg)[0]
+            self.assertEqual(db.execute('SELECT entered FROM chemical_stock WHERE id=?',(sid,)).fetchone()[0],'334 lb')
+            db.commit()
+        rows=web.purchase_rows(2026,cfg)
+        totals=[r for r in rows if len(r)>6 and isinstance(r[1],tuple) and str(r[1][0]).startswith('Total ')]
+        self.assertIn(('Total USD',3),[r[1] for r in totals]);self.assertIn(('Total CAD',3),[r[1] for r in totals])
+        # weight per litre is validated in Settings
+        items=[dict(p) for p in cfg['chemical_products']];items[1]['kg_l']=1.1
+        out=web.val_products(items,cfg['chemical_products']);self.assertEqual(out[1]['kg_l'],1.1)
+        items[1]['kg_l']=9
+        with self.assertRaises(ValueError):web.val_products(items,cfg['chemical_products'])
+        with self.assertRaises(ValueError):web.val_settings({'currency':'EUR'},dict(web.DEFAULTS))
 
     def test_insights_find_repeated_alarms(self):
         zone=web.ZoneInfo('America/Vancouver')

@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.46','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.47','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -500,6 +500,8 @@ DEFAULTS={'ph_low':5.8,'ph_high':9.0,'alarms_enabled':False,'email_enabled':Fals
           'stock_alarm_enabled':True,
           # Chemical products, edited under Settings > Chemical products (None = the original four, see products()).
           'chemical_products':None,
+          # Currency of the chemical prices in Settings (cost per m³ and estimated purchase costs use it).
+          'currency':'CAD',
           # Text messages for new alarms, sent by email to carrier email-to-SMS addresses.
           'sms_enabled':False,'sms_recipients':[],
           # Predictive pH: warn when pH, inside the limits, is heading for one (trend over window, reaching it within lookahead).
@@ -544,6 +546,10 @@ def appdb():
     if not any(r[1]=='cleared_at' for r in conn.execute('PRAGMA table_info(events)')):
         try:conn.execute('ALTER TABLE events ADD COLUMN cleared_at TEXT')
         except sqlite3.OperationalError:pass   # added by another process meanwhile
+    for table,col in (('chemical_purchases','currency'),('chemical_purchases','entered'),('chemical_stock','entered')):
+        if not any(r[1]==col for r in conn.execute(f'PRAGMA table_info({table})')):
+            try:conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} TEXT')
+            except sqlite3.OperationalError:pass
     migrate_alarms(conn)
     conn.commit()
     try:
@@ -556,7 +562,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.46: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.47: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -835,7 +841,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.46
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.47
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -864,6 +870,7 @@ def val_settings(data,old,used_products=()):
     for key,hi in (('cal_ph_days',3650),('cal_level_days',3650),('cal_remind_days',90)):
         if type(new[key]) is not int or not 1<=new[key]<=hi:raise ValueError(f'Calibration days: 1–{hi}')
     new['chemical_products']=val_products(default_products() if new['chemical_products'] is None else new['chemical_products'],old.get('chemical_products') or default_products(),used_products)
+    if new['currency'] not in CURRENCIES:raise ValueError('Currency: CAD or USD')
     if not isinstance(new['recipients'],list) or len(new['recipients'])>10:raise ValueError('Too many recipients')
     if not isinstance(new['sms_recipients'],list) or len(new['sms_recipients'])>10:raise ValueError('Too many text message addresses')
     for address in new['recipients']+new['sms_recipients']:
@@ -872,6 +879,41 @@ def val_settings(data,old,used_products=()):
 
 def records(conn,table,limit=200):
     return [dict(r) for r in conn.execute('SELECT * FROM '+table+' ORDER BY id DESC LIMIT ?', (min(limit,500),))]
+
+LIST_MAX=1000   # rows sent for one period; the page says when there are more
+PERIODS=('today','yesterday','week','7d','month','lastmonth','3m','year','day','pickmonth','all')
+def period_range(q,today=None):
+    """Local (Vancouver) dates [start, end) for a list period from the query string, or (None, None) for all."""
+    p=q.get('period','7d');today=today or datetime.now(ZoneInfo('America/Vancouver')).date();one=timedelta(days=1)
+    first=today.replace(day=1)
+    if p not in PERIODS:raise ValueError('Unknown period')
+    if p=='all':return None,None
+    if p=='today':return today,today+one
+    if p=='yesterday':return today-one,today
+    if p=='week':return today-timedelta(days=today.weekday()),today+one
+    if p=='7d':return today-timedelta(days=6),today+one
+    if p=='month':return first,today+one
+    if p=='lastmonth':return (first-one).replace(day=1),first
+    if p=='3m':return ((first-one).replace(day=1)-one).replace(day=1),today+one
+    if p=='year':return date(today.year,1,1),today+one
+    try:
+        if p=='day':a=date.fromisoformat(q.get('date',''));return a,a+one
+        y,m=(int(x) for x in q.get('month','').split('-'));a=date(y,m,1)
+        return a,(a+timedelta(days=32)).replace(day=1)
+    except (TypeError,ValueError):raise ValueError('Choose the day or month')
+
+def period_rows(conn,table,col,q,local_dates=False):
+    """Rows of a log table in the chosen period, newest first, with the total count."""
+    a,b=period_range(q);where='';args=()
+    if a:
+        if local_dates:args=(a.isoformat(),b.isoformat())
+        else:
+            zone=ZoneInfo('America/Vancouver')
+            args=tuple(iso(datetime.combine(d,time.min,zone)) for d in (a,b))
+        where=f' WHERE {col}>=? AND {col}<?'
+    total=conn.execute(f'SELECT COUNT(*) FROM {table}{where}',args).fetchone()[0]
+    rows=[dict(r) for r in conn.execute(f'SELECT * FROM {table}{where} ORDER BY {col} DESC,id DESC LIMIT ?',args+(LIST_MAX,))]
+    return rows,{'total':total,'shown':len(rows),'from':a.isoformat() if a else None,'to':(b-timedelta(days=1)).isoformat() if a else None}
 
 def save_pickup(conn,when,note,who):
     """Log a sludge pickup. when = 'YYYY-MM-DDTHH:MM' in Vancouver time (from the form)."""
@@ -1179,20 +1221,27 @@ def application(env,start_response):
                 with appdb() as conn:return send('200 OK',{'rows':calibration_records(conn),'status':calibration_status(conn,settings(conn)),
                     'sensors':{k:{'label':l,'tag':t} for k,(l,t) in CAL_SENSORS.items()},'max_file_kb':CAL_FILE_MAX//1000})
             if path=='/api/stock':
-                with appdb() as conn:
-                    cfg=settings(conn)
-                    st=stock_status(conn,cfg)
-                    rows=[dict(r) for r in conn.execute('SELECT * FROM chemical_stock ORDER BY at DESC,id DESC LIMIT 100')]
+                q={k:v[0] for k,v in parse_qs(env.get('QUERY_STRING','')).items()}
+                try:
+                    with appdb() as conn:
+                        cfg=settings(conn)
+                        st=stock_status(conn,cfg)
+                        rows,info=period_rows(conn,'chemical_stock','at',q)
+                except ValueError as exc:return send('400 Bad Request',{'error':str(exc)})
                 prods=products(cfg)
-                return send('200 OK',{'status':st,'rows':rows,'products':prods,'labels':{k:p['label'] for k,p in prods.items()}})
+                return send('200 OK',{'status':st,'rows':rows,'period':info,'products':prods,'labels':{k:p['label'] for k,p in prods.items()}})
             if path=='/api/cost':
                 with appdb() as conn:cfg=settings(conn)
                 return send('200 OK',cost_summary(cfg))
             if path=='/api/purchases':
-                with appdb() as conn:
-                    prods=products(settings(conn))
-                    rows=[dict(r,est_cost=purchase_cost(r,prods)[0] if r['cost'] is None else None) for r in purchase_records(conn)[:100]]
-                return send('200 OK',{'rows':rows,'products':prods})
+                q={k:v[0] for k,v in parse_qs(env.get('QUERY_STRING','')).items()}
+                try:
+                    with appdb() as conn:
+                        cfg=settings(conn);prods=products(cfg)
+                        rows,info=period_rows(conn,'chemical_purchases','purchased_on',q,local_dates=True)
+                except ValueError as exc:return send('400 Bad Request',{'error':str(exc)})
+                rows=[dict(r,est_cost=purchase_cost(r,prods)[0] if r['cost'] is None else None,currency=purchase_currency(r,cfg)) for r in rows]
+                return send('200 OK',{'rows':rows,'period':info,'products':prods,'currency':cfg.get('currency','CAD')})
             if path=='/api/shelves':
                 with appdb() as conn:return send('200 OK',{'choices':shelf_choices(settings(conn)),'active':list(active_shelves(conn).values()),'max_hours':SHELF_MAX_HOURS})
             if path=='/api/calibrations/certificate':
@@ -1204,7 +1253,11 @@ def application(env,start_response):
                 return send('200 OK',bytes(row['file_data']),row['file_type'],[('Content-Disposition',f'attachment; filename="{row["file_name"]}"')])
             if path in ('/api/events','/api/audit'):
                 if not can(role,'audit' if path.endswith('audit') else 'view'):return send('403 Forbidden',{'error':'Admin required'})
-                with appdb() as conn:return send('200 OK',{'rows':records(conn,'events' if path.endswith('events') else 'audit')})
+                q={k:v[0] for k,v in parse_qs(env.get('QUERY_STRING','')).items()}
+                try:
+                    with appdb() as conn:rows,info=period_rows(conn,'events' if path.endswith('events') else 'audit','stamp',q)
+                except ValueError as exc:return send('400 Bad Request',{'error':str(exc)})
+                return send('200 OK',{'rows':rows,'period':info})
             files={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8'),'/process.jpg':('process.jpg','image/jpeg'),'/process-overview.webp':('process-overview.webp','image/webp'),
                    **{f'/{n}':(n,'image/svg+xml') for n in ('logo-effluentiq.svg','logo-effluentiq-light.svg','logo-effluentiq-mark.svg')}}
             if path in files:
@@ -1923,11 +1976,11 @@ def pump_rows(start,end,zone,date_range):
 # so other products' usage comes from tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Run':'Flocculant dosing pump'}
-# Settings saved before 1.2.46 (one key per product); read once to build the product list.
+# Settings saved before 1.2.47 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
-         container_l=55*GAL_L,tag='',low_l=20.0,price=None,lead_days=7,supplier='CESCO',active=True),
+         container_l=55*GAL_L,tag='',low_l=20.0,price=None,lead_days=7,supplier='CESCO',active=True,kg_l=1.52),
     dict(key='floc',name='CESCO PF 875AH Flocculant',label='Flocculant (PF 875AH)',part='FPF875AH-P5',container='5 gal pail',
          container_l=5*GAL_L,tag='Floc_Pump_Run',low_l=5.0,price=None,lead_days=7,supplier='CESCO',active=True),
     dict(key='coag',name='CESCO PROTECT 7000 Coagulant',label='Coagulant (PROTECT 7000)',part='FPROT7000-Dr55',container='55 gal drum',
@@ -1938,7 +1991,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.46 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.47 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -1957,9 +2010,14 @@ def price_on(p,day):
     valid=[e for e in p.get('prices') or () if e['from']<=d]
     return max(valid,key=lambda e:e['from'])['price'] if valid else None
 
+CURRENCIES=('CAD','USD')
+LB_KG=0.45359237
+KG_L_DEFAULTS={'caustic':1.52}   # 50% sodium hydroxide; other products: enter the weight per litre from the SDS
+
 def norm_product(p):
-    """Product with a price history (built from a single 'price' if needed) and today's price."""
+    """Product with a price history (built from a single 'price' if needed), today's price and its weight per litre."""
     p=dict(p)
+    if 'kg_l' not in p:p['kg_l']=KG_L_DEFAULTS.get(p.get('key'))
     if not isinstance(p.get('prices'),list):
         p['prices']=[] if p.get('price') is None else [{'from':PRICE_START,'price':float(p['price'])}]
     p['price']=price_on(p,datetime.now(ZoneInfo('America/Vancouver')).date())
@@ -2016,7 +2074,9 @@ def val_products(items,old,used=()):
         if type(lead) is not int or not 0<=lead<=365:raise ValueError(f'{name}: delivery time 0–365 days')
         active=p.get('active',True)
         if type(active) is not bool:raise ValueError('Invalid chemical product')
-        q.update(container_l=float(size),tag=tag,low_l=float(low),prices=prices,lead_days=lead,active=active)
+        kg_l=p.get('kg_l')
+        if kg_l is not None and (type(kg_l) not in (int,float) or not 0.5<=kg_l<=3):raise ValueError(f'{name}: weight per litre 0.5–3 kg/L, or leave blank')
+        q.update(container_l=float(size),tag=tag,low_l=float(low),prices=prices,lead_days=lead,active=active,kg_l=None if kg_l is None else float(kg_l))
         out.append(norm_product(q))
     gone=[p['label'] for p in old if p['key'] not in keys and p['key'] in set(used)]
     if gone:raise ValueError(f"{', '.join(gone)}: has purchases or tank counts, so it cannot be deleted. Untick 'In use' instead.")
@@ -2162,6 +2222,10 @@ def check_stock(conn,cfg,now=None):
             f'{label} order now cleared',f"about {left:.0f} days of stock left" if left is not None else '')
     return out
 
+def entered_text(body):
+    """The quantity as the person typed it, for example '500 kg' (litres are what is stored and used)."""
+    return _cal_text(body.get('entered'),'Quantity entered',30) or None
+
 def save_stock(conn,body,who,cfg=None):
     chem=body.get('chemical');kind=body.get('kind')
     prods=products(cfg if cfg is not None else settings(conn),active_only=True)
@@ -2176,8 +2240,8 @@ def save_stock(conn,body,who,cfg=None):
     if t>now+timedelta(minutes=10):raise AccountError('The time is in the future')
     if t<now-timedelta(days=366):raise AccountError('The time is more than a year ago')
     note=_cal_text(body.get('note'),'Note',200)
-    cur=conn.execute('INSERT INTO chemical_stock(chemical,kind,litres,at,note,logged_by,logged_at) VALUES (?,?,?,?,?,?,?)',
-                     (chem,kind,float(litres),iso(t),note,who,iso(now)))
+    cur=conn.execute('INSERT INTO chemical_stock(chemical,kind,litres,at,note,logged_by,logged_at,entered) VALUES (?,?,?,?,?,?,?,?)',
+                     (chem,kind,float(litres),iso(t),note,who,iso(now),entered_text(body)))
     return cur.lastrowid,prods[chem]['label'],kind,float(litres),t
 
 def product_label(conn,key,field='label'):
@@ -2262,7 +2326,7 @@ def cost_summary(cfg,now=None):
     zone=ZoneInfo('America/Vancouver');now=(now or datetime.now(UTC)).astimezone(zone)
     month=datetime(now.year,now.month,1,tzinfo=zone);prev=(month-timedelta(days=1)).replace(day=1)
     day0=datetime.combine(now.date()+timedelta(days=1),time.min,zone)
-    prods=products(cfg);out={'periods':[],'priced':any(has_prices(p) for p in prods.values())}
+    prods=products(cfg);out={'periods':[],'priced':any(has_prices(p) for p in prods.values()),'currency':cfg.get('currency','CAD')}
     for label,a,b in ((f'{now:%B %Y} so far',month,day0),(f'{prev:%B %Y}',prev,month),('Last 30 days',day0-timedelta(days=30),day0)):
         days,unpriced=chemical_cost(a.astimezone(UTC),b.astimezone(UTC),zone,cfg);t=cost_totals(days)
         per={};pc={}
@@ -2293,8 +2357,11 @@ def _check_received(t,purchased_on):
     if t.astimezone(ZoneInfo('America/Vancouver')).date()<purchased_on:raise AccountError('The received date is before the purchase date')
 
 def save_purchase(conn,body,who,cfg=None):
-    chem=body.get('chemical');prods=products(cfg if cfg is not None else settings(conn),active_only=True)
+    cfg=cfg if cfg is not None else settings(conn)
+    chem=body.get('chemical');prods=products(cfg,active_only=True)
     if chem not in prods:raise AccountError('Choose the chemical')
+    currency=body.get('currency') or cfg.get('currency','CAD')
+    if currency not in CURRENCIES:raise AccountError('Currency: CAD or USD')
     try:bought=date.fromisoformat(body.get('purchased_on') or '')
     except (TypeError,ValueError):raise AccountError('Enter the purchase date')
     today=datetime.now(ZoneInfo('America/Vancouver')).date()
@@ -2309,8 +2376,9 @@ def save_purchase(conn,body,who,cfg=None):
     received=None
     if body.get('received'):
         received=_local_dt(body['received'],'received date and time');_check_received(received,bought)
-    cur=conn.execute('INSERT INTO chemical_purchases(chemical,purchased_on,received_at,litres,cost,po,supplier,note,logged_by,logged_at,received_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                     (chem,bought.isoformat(),iso(received) if received else None,float(litres),None if cost is None else float(cost),po,supplier,note,who,iso(datetime.now(UTC)),who if received else None))
+    cur=conn.execute('INSERT INTO chemical_purchases(chemical,purchased_on,received_at,litres,cost,po,supplier,note,logged_by,logged_at,received_by,currency,entered) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                     (chem,bought.isoformat(),iso(received) if received else None,float(litres),None if cost is None else float(cost),po,supplier,note,who,iso(datetime.now(UTC)),who if received else None,
+                      currency,entered_text(body)))
     return cur.lastrowid,prods[chem]['name'],bought,float(litres),received
 
 def receive_purchase(conn,body,who):
@@ -2328,6 +2396,10 @@ def purchase_records(conn,start=None,end=None):
     if start:q+=' WHERE purchased_on>=? AND purchased_on<?';args=(start.isoformat(),end.isoformat())
     return [dict(r) for r in conn.execute(q+' ORDER BY purchased_on DESC,id DESC',args)]
 
+def purchase_currency(r,cfg):
+    """Currency of a purchase's cost: as entered, else the currency of the Settings prices."""
+    return (r.get('currency') if isinstance(r,dict) else r['currency']) or cfg.get('currency','CAD')
+
 def purchase_cost(r,prods):
     """(cost, estimated?) of a purchase: the entered total, else containers x price per container in Settings."""
     if r['cost'] is not None:return r['cost'],False
@@ -2343,23 +2415,29 @@ def purchase_rows(year,cfg):
         recs=purchase_records(conn,date(year,1,1),date(year+1,1,1))
         years=[r[0] for r in conn.execute("SELECT DISTINCT substr(purchased_on,1,4) FROM chemical_purchases ORDER BY 1")]
         allrecs=purchase_records(conn)
+    cur=lambda r:purchase_currency(r,cfg)
     def totals(items):
-        t={k:dict(n=0,l=0.0,c=0.0,cost=None,est=False) for k in prods}
+        """Per (product, currency): purchases, containers, litres and cost."""
+        t={}
         for r in items:
-            x=t[r['chemical']];x['n']+=1;x['l']+=r['litres'];x['c']+=r['litres']/prods[r['chemical']]['container_l']
+            x=t.setdefault((r['chemical'],cur(r)),dict(n=0,l=0.0,c=0.0,cost=None,est=False))
+            x['n']+=1;x['l']+=r['litres'];x['c']+=r['litres']/prods[r['chemical']]['container_l']
             cost,est=purchase_cost(r,prods)
             if cost is not None:x['cost']=(x['cost'] or 0.0)+cost;x['est']=x['est'] or est
         return t
     def block(title,groups):
-        out=[[B(title),B('Product'),B('Purchases'),B('Containers'),B('Litres'),B('Cost')]]
+        out=[[B(title),B('Product'),B('Purchases'),B('Containers'),B('Litres'),B('Cost'),B('Currency')]]
         for label,items in groups:
-            t=totals(items);grand=None
+            t=totals(items);grand={}
             for k,p in prods.items():
-                x=t[k]
-                if not x['n']:continue
-                out.append([label,p['name'],x['n'],num(x['c']),num(x['l']),num(x['cost']) if x['cost'] is None or not x['est'] else f"{x['cost']:.2f} (estimated)"])
-                if x['cost'] is not None:grand=(grand or 0.0)+x['cost']
-            out.append([label,B('Total'),sum(x['n'] for x in t.values()),'','',num(grand)])
+                for c in CURRENCIES:
+                    x=t.get((k,c))
+                    if not x:continue
+                    out.append([label,p['name'],x['n'],num(x['c']),num(x['l']),num(x['cost']) if x['cost'] is None or not x['est'] else f"{x['cost']:.2f} (estimated)",c])
+                    if x['cost'] is not None:grand[c]=grand.get(c,0.0)+x['cost']
+            n=sum(x['n'] for x in t.values())
+            for c in [c for c in CURRENCIES if c in grand] or ['']:
+                out.append([label,B('Total'+(f' {c}' if c else '')),n,'','',num(grand.get(c)),c])
         return out+[[]]
     month=lambda r:int(r['purchased_on'][5:7])
     rows=[[B(f'Chemical purchases {year}')],['Booked by purchase date (America/Vancouver)'],[]]
@@ -2368,17 +2446,17 @@ def purchase_rows(year,cfg):
     rows+=block('Month',[(f'{m:02d}/{year}',[r for r in recs if month(r)==m]) for m in range(1,13)])
     rows+=block('All years',[(y,[r for r in allrecs if r['purchased_on'][:4]==y]) for y in years])
     rows+=[[B('Purchased'),B('Received (America/Vancouver)'),B('Days to receive'),B('Product'),B('Part #'),B('Containers'),B('Litres'),
-            B('Cost'),B('PO / invoice'),B('Supplier'),B('Note'),B('Logged by')]]
+            B('Cost'),B('Currency'),B('Quantity entered'),B('PO / invoice'),B('Supplier'),B('Note'),B('Logged by')]]
     for r in sorted(recs,key=lambda r:(r['purchased_on'],r['id'])):
         p=prods[r['chemical']];cost,est=purchase_cost(r,prods)
         got=parse(r['received_at']).astimezone(zone) if r['received_at'] else None
         rows.append([date.fromisoformat(r['purchased_on']),got.replace(tzinfo=None) if got else 'not received yet',
                      (got.date()-date.fromisoformat(r['purchased_on'])).days if got else '',p['name'],p['part'],
                      num(r['litres']/p['container_l']),num(r['litres']),'' if cost is None else (f'{cost:.2f} (estimated)' if est else num(cost)),
-                     r['po'],r['supplier'],r['note'],r['logged_by']])
+                     cur(r) if cost is not None else '',r.get('entered') or '',r['po'],r['supplier'],r['note'],r['logged_by']])
     if not recs:rows.append([f'No chemical purchases logged in {year}.'])
     rows+=[[],['Cost is the total entered for the purchase. When it was left blank, it is estimated from the price per container in Settings '
-               '(marked "estimated"), or left empty when no price is set. A purchase adds to the chemical stock from its received date.']]
+               '(marked "estimated"), or left empty when no price is set. US and Canadian dollars are totalled separately. A purchase adds to the chemical stock from its received date.']]
     return rows
 
 # ---------------------------------------------------------------- alarm shelving
@@ -2422,14 +2500,19 @@ def ph_alarm_job(conn,cfg,tracker,ph,now):
           f'Current reading: {ph["value"]:.2f} pH\nLow: {cfg["ph_low"]:.2f}\nHigh: {cfg["ph_high"]:.2f}\n'
           +(f'Follow-up every {every} min for the first hour, then hourly, until pH is back in range.\n' if every else '')
           +f'Incident #{eid}\nTimestamp: {now.isoformat()}')
-    return f'alarm:incident:{eid}'+(f':m{slot}' if slot else ''),subject,body
+    limit=cfg['ph_high'] if kind=='HIGH' else cfg['ph_low']
+    return f'alarm:incident:{eid}'+(f':m{slot}' if slot else ''),subject,body,f"pH now {ph['value']:.2f}, {kind.lower()} limit {limit:.2f}"
+
 
 def ph_alarm_emailed(conn,eid):
     return conn.execute('SELECT 1 FROM delivery WHERE key=? OR key LIKE ? LIMIT 1',(f'alarm:incident:{eid}',f'alarm:incident:{eid}:m%')).fetchone()
 
 # ---------------------------------------------------------------- text messages (email-to-SMS)
-def sms_text(subject,eid,now):
-    return f'{subject}. Incident #{eid} at {now:%b %d %H:%M}. See the dashboard Alarms page.'[:300]
+def sms_text(subject,eid,now,detail=''):
+    """Short text: the alarm, its reading (for example 'pH now 5.42, low limit 5.80') and when."""
+    detail=' '.join(str(detail or '').split()).split('. ')[0]   # first sentence: the reading, not the advice
+    if len(detail)>150:detail=detail[:147]+'...'
+    return f"{subject}. {detail.rstrip('.')+'. ' if detail else ''}Incident #{eid} at {now:%b %d %H:%M}. See the dashboard Alarms page."[:300]
 
 def scheduler():
     now=datetime.now(ZoneInfo('America/Vancouver'))
@@ -2456,8 +2539,8 @@ def scheduler():
         if eligible:
             tracker=conn.execute('SELECT * FROM ph_alarm_v2 WHERE id=1').fetchone()
             if tracker and tracker['active_event'] and tracker['active_kind'] in ('high','low') and ph_status(ph,cfg)==tracker['active_kind']:
-                key,subject,body=ph_alarm_job(conn,cfg,tracker,ph,now)
-                jobs.append((key,subject,body,None,'ph'))
+                key,subject,body,reading=ph_alarm_job(conn,cfg,tracker,ph,now)
+                jobs.append((key,subject,body,None,'ph',reading))
             if tracker and tracker['pending_recovery_event'] and cfg['email_recovery_enabled']:
                 eid=tracker['recovery_origin_event']; rid=tracker['pending_recovery_event']
                 delivered=ph_alarm_emailed(conn,eid)
@@ -2478,7 +2561,7 @@ def scheduler():
                     eid=st['active'];ev=conn.execute('SELECT detail FROM events WHERE id=?',(eid,)).fetchone()
                     jobs.append((f'alarm:incident:{eid}',condition_subject(key,cfg),
                         (condition_subject(key,cfg)+'\n\n' if key in RECOVERY_SUBJECTS else '')+
-                        f'Incident #{eid}\n{ev["detail"] if ev else ""}\nTimestamp: {now.isoformat()}',None,key))
+                        f'Incident #{eid}\n{ev["detail"] if ev else ""}\nTimestamp: {now.isoformat()}',None,key,ev['detail'] if ev else ''))
                 if st.get('pending') and cfg['email_recovery_enabled']:
                     eid,rid=st['pending']
                     delivered=conn.execute('SELECT 1 FROM delivery WHERE key=?',(f'alarm:incident:{eid}',)).fetchone()
@@ -2514,12 +2597,12 @@ def scheduler():
                     lambda s=start,e=first-timedelta(days=1):period_report(s,e,())))
         sms=cfg['sms_enabled'] and cfg['sms_recipients']
         for key,subject,body,build,*rest in jobs:
-            alarm=rest[0] if rest else None
+            alarm=rest[0] if rest else None;reading=rest[1] if len(rest)>1 else ''
             if alarm in shelved:continue   # shelved: no email or text while the shelf lasts (sent later if still active)
             sends=[(key,lambda s=subject,b=body,bd=build:send_mail(mail,s,b,cfg['recipients'],[bd()] if bd else ()),'Email')]
             if sms and alarm and key.startswith('alarm:'):
                 eid=key.split(':')[2]
-                sends.append(('sms:'+key,lambda s=subject,e=eid:send_mail(mail,'',sms_text(s,e,now),cfg['sms_recipients']),'Text message'))
+                sends.append(('sms:'+key,lambda s=subject,e=eid,d=reading:send_mail(mail,'',sms_text(s,e,now,d),cfg['sms_recipients']),'Text message'))
             for dkey,send,what in sends:
                 if conn.execute('SELECT 1 FROM delivery WHERE key=?',(dkey,)).fetchone():
                     continue

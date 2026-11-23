@@ -167,3 +167,12 @@ body[data-view="trends"]{--acc:var(--acc-trends)}
 /* Electric transfer pump turns clockwise (the circulation pump keeps the counter-clockwise spin) */
 .pump-fan.transfer.on svg{animation-name:pumpSpinCw}
 @keyframes pumpSpinCw{to{transform:rotate(360deg)}}
+
+/* Record lists: period picker above each table */
+.list-filter{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px 14px;margin:8px 0 10px}
+.list-filter label{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.list-filter label[hidden]{display:none}
+.list-filter select,.list-filter input{min-width:190px}
+.list-filter small{color:var(--muted);padding-bottom:8px}
+.inline-select{display:inline-flex;align-items:center;gap:8px;margin-left:10px}
+.inline-select select{width:auto}

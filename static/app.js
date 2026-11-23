@@ -131,11 +131,11 @@ async function loadHistory(overview=false){const hours=Number($('period').value)
 // Alarms are acknowledged automatically when recorded: an alarm is 'active' until it clears, then 'closed'.
 const isActive=r=>(r.state==='open'||r.state==='acknowledged')&&!r.cleared_at;
 function stateText(r){const auto=!r.actor||String(r.actor).startsWith('system (auto');if(isActive(r))return auto?'active · auto-acknowledged':'active · acknowledged by '+r.actor;return auto||r.state!=='closed'?'closed':'closed · acknowledged by '+r.actor}
-async function loadEvents(){try{const data=await api('/api/events');$('eventlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Duration</th><th>Status</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.kind)}</td><td>${escapeHTML(r.detail)}</td><td>${durCell(r)}</td><td>${escapeHTML(stateText(r))}</td></tr>`).join('')||'<tr><td colspan="5">No recorded alarms yet.</td></tr>'}</tbody></table></div>`;document.querySelectorAll('[data-ack]').forEach(b=>b.onclick=async()=>{try{await api('/api/ack',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify({id:Number(b.dataset.ack)})});loadEvents()}catch(e){alert('Could not acknowledge: '+e.message)}})}catch(e){$('eventlist').textContent=e.message}}
-async function loadAudit(){try{const data=await api('/api/audit');$('auditlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.actor)}</td><td>${escapeHTML(r.action)}</td><td>${escapeHTML(r.detail)}</td></tr>`).join('')||'<tr><td colspan="4">No audit entries.</td></tr>'}</tbody></table></div>`}catch(e){$('auditlist').textContent='Admin required or audit unavailable: '+e.message}}
+async function loadEvents(){try{const data=await api('/api/events'+periodQuery('eventPeriod'));periodCount('eventPeriod',data.period,['alarm','alarms']);$('eventlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Duration</th><th>Status</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.kind)}</td><td>${escapeHTML(r.detail)}</td><td>${durCell(r)}</td><td>${escapeHTML(stateText(r))}</td></tr>`).join('')||'<tr><td colspan="5">No alarms in this period.</td></tr>'}</tbody></table></div>`;document.querySelectorAll('[data-ack]').forEach(b=>b.onclick=async()=>{try{await api('/api/ack',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify({id:Number(b.dataset.ack)})});loadEvents()}catch(e){alert('Could not acknowledge: '+e.message)}})}catch(e){$('eventlist').textContent=e.message}}
+async function loadAudit(){try{const data=await api('/api/audit'+periodQuery('auditPeriod'));periodCount('auditPeriod',data.period,['entry','entries']);$('auditlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.actor)}</td><td>${escapeHTML(r.action)}</td><td>${escapeHTML(r.detail)}</td></tr>`).join('')||'<tr><td colspan="4">No audit entries in this period.</td></tr>'}</tbody></table></div>`}catch(e){$('auditlist').textContent='Admin required or audit unavailable: '+e.message}}
 const KEYS=['ph_low','ph_high','alarms_enabled','email_enabled','email_recovery_enabled','alarm_confirm_samples','alarm_recovery_samples','ph_repeat_min','alarm_on','alarm_off','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time',
  'stale_alert_enabled','stale_alert_minutes','level_alarm_enabled','level_high_ft','flow_alarm_enabled','flow_low_lpm','flow_low_minutes','quarterly_enabled','plc_alarms_enabled','cal_reminders_enabled','cal_ph_days','cal_level_days','cal_remind_days',
- 'stock_alarm_enabled','sms_enabled',
+ 'stock_alarm_enabled','sms_enabled','currency',
  'ph_trend_enabled','ph_trend_window_min','ph_trend_lookahead_min','dosing_alarm_enabled','dosing_alarm_minutes'];
 const dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];$('alarmDays').innerHTML=dayNames.map((d,i)=>`<label><input type="checkbox" data-day="${i}"> ${d}</label>`).join('');
 async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('sms_recipients').value=(config.sms_recipients||[]).join('\n');renderProducts(config.chemical_products||[]);$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input:not([data-fixed]),#settings textarea,#settings button,#productRows select').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
@@ -230,28 +230,35 @@ $('calCsv').addEventListener('click',()=>{window.location.href='/api/export?tag=
 // ---- Chemical stock and consumption (Reports page) ----
 let stockProducts={},stockLabels={};
 const GAL=3.785411784;
-const toLitres=(q,unit,key)=>unit==='L'?q:unit==='gal'?q*GAL:q*((stockProducts[key]||{}).container_l||0);
+const LB=0.45359237;
+const UNIT_TEXT={container:'containers',L:'L',gal:'US gal',kg:'kg',lb:'lb'};
+// Litres from the quantity entered. kg and lb need the product's weight per litre (Settings > Chemical products).
+const toLitres=(q,unit,key)=>{const p=stockProducts[key]||{};
+ if(unit==='kg'||unit==='lb'){if(!p.kg_l)throw Error(`enter the weight per litre (kg/L) of ${p.name||'this product'} in Settings → Chemical products first, or use litres or containers`);return (unit==='lb'?q*LB:q)/p.kg_l}
+ return unit==='L'?q:unit==='gal'?q*GAL:q*(p.container_l||0)};
+const weightText=(litres,p)=>p&&p.kg_l?`${fmt(litres*p.kg_l)} kg · ${fmt(litres*p.kg_l/LB)} lb`:'';
 const stockMsg=(t,ok)=>{const el=$('stockState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
 async function loadStock(){
  $('stockForm').hidden=!can('pickup');$('consReport').hidden=!can('export');if(!$('stockWhen').value)$('stockWhen').value=vanNow();$('stockWhen').max=vanNow();
  if(!$('consYear').value)$('consYear').value=vanNow().slice(0,4);
- try{const d=await api('/api/stock');const st=d.status||{},rows=d.rows||[];stockProducts=d.products||{};stockLabels=d.labels||{};fillProductLists(stockProducts);
+ try{const d=await api('/api/stock'+periodQuery('stockPeriod'));const st=d.status||{},rows=d.rows||[];stockProducts=d.products||{};stockLabels=d.labels||{};fillProductLists(stockProducts);periodCount('stockPeriod',d.period,['entry','entries']);
   $('stockCards').innerHTML=Object.values(st).map(s=>{const head=`<b>${escapeHTML(s.name||s.label)}</b><span>${escapeHTML(s.container||'')} · Part # ${escapeHTML(s.part||'')}</span>`;
    if(s.litres==null)return `<div>${head}<span>No delivery or tank count logged yet</span></div>`;
    const low=s.low_l>0&&s.litres<s.low_l;const cont=s.container_l?s.litres/s.container_l:null;
    const left=s.days_left==null?'':s.order_now?`<em class="bad">ORDER NOW — about ${Math.floor(s.days_left)} days left, delivery takes ${s.lead_days} days</em>`:
     `<em class="${s.days_left<=s.lead_days+7?'warn':'good'}">About ${Math.floor(s.days_left)} days left · order by ${escapeHTML(calDay(s.order_by))}</em>`;
-   return `<div class="${low||s.order_now?'overdue':s.days_left!=null&&s.days_left<=s.lead_days+7?'soon':'ok'}">${head}<b>${fmt(s.litres)} L${cont!=null?` (${fmt(cont)} × ${escapeHTML(s.container)})`:''}${low?' — LOW':''}</b>${left}`+
+   return `<div class="${low||s.order_now?'overdue':s.days_left!=null&&s.days_left<=s.lead_days+7?'soon':'ok'}">${head}<b>${fmt(s.litres)} L${cont!=null?` (${fmt(cont)} × ${escapeHTML(s.container)})`:''}${low?' — LOW':''}</b>${s.kg_l?`<span>${weightText(s.litres,s)}</span>`:''}${left}`+
     `<span>${s.per_day!=null?`Using about ${fmt(s.per_day)} L/day (${s.rate_from==='pump'?'dosing pump, last 7 days':'from the tank counts'})`:s.tag?'Dosing pump: no usage in the last 7 days':'Log two tank counts at least a day apart to forecast the days left'}${s.low_l>0?` · low below ${fmt(s.low_l)} L`:''}</span>`+
     `<span>Since ${escapeHTML(local(s.since))}: start ${fmt(s.base)} L + delivered ${fmt(s.added)} L${s.tag?` − pump used ${fmt(s.used)} L`:''}</span></div>`}).join('');
   $('stockList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time (Vancouver)</th><th>Chemical</th><th>Entry</th><th>Litres</th><th>Note</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${rows.map(r=>
-   `<tr><td>${escapeHTML(local(r.at))}</td><td>${escapeHTML(stockLabels[r.chemical]||r.chemical)}</td><td>${r.kind==='delivery'?'Delivery':'Tank count'}</td><td>${fmt(r.litres)}${(stockProducts[r.chemical]||{}).container_l?` <small>(${fmt(r.litres/stockProducts[r.chemical].container_l)} cont.)</small>`:''}</td><td>${escapeHTML(r.note)||'—'}</td><td>${escapeHTML(r.logged_by)}</td><td>${can('pickup')?`<button type="button" class="danger" data-stock="${r.id}">Remove</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="7">No chemical deliveries or tank counts logged yet.</td></tr>'}</tbody></table></div>`;
+   `<tr><td>${escapeHTML(local(r.at))}</td><td>${escapeHTML(stockLabels[r.chemical]||r.chemical)}</td><td>${r.kind==='delivery'?'Delivery':'Tank count'}</td><td>${fmt(r.litres)}${(stockProducts[r.chemical]||{}).container_l?` <small>(${fmt(r.litres/stockProducts[r.chemical].container_l)} cont.)</small>`:''}${r.entered?`<br><small>entered as ${escapeHTML(r.entered)}</small>`:''}</td><td>${escapeHTML(r.note)||'—'}</td><td>${escapeHTML(r.logged_by)}</td><td>${can('pickup')?`<button type="button" class="danger" data-stock="${r.id}">Remove</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="7">No tank counts or deliveries in this period.</td></tr>'}</tbody></table></div>`;
   document.querySelectorAll('[data-stock]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this stock entry? Use this only to fix a mistake.'))return;
    try{await postJSON('/api/stock/remove',{id:Number(b.dataset.stock)});stockMsg('Entry removed.',true);loadStock()}catch(e){stockMsg('Not removed: '+e.message)}});
  }catch(e){$('stockList').textContent='Unable to load chemical stock: '+e.message}}
 $('logStock').addEventListener('click',async()=>{if(!$('stockLitres').value){stockMsg('Enter the quantity.');return}
- const litres=Math.round(toLitres(Number($('stockLitres').value),$('stockUnit').value,$('stockChem').value)*100)/100;
- try{await postJSON('/api/stock',{chemical:$('stockChem').value,kind:$('stockKind').value,litres,when:$('stockWhen').value,note:$('stockNote').value});
+ const qty=Number($('stockLitres').value),unit=$('stockUnit').value;let litres;
+ try{litres=Math.round(toLitres(qty,unit,$('stockChem').value)*100)/100}catch(e){stockMsg('Not logged: '+e.message);return}
+ try{await postJSON('/api/stock',{chemical:$('stockChem').value,kind:$('stockKind').value,litres,entered:unit==='L'?null:`${qty} ${UNIT_TEXT[unit]}`,when:$('stockWhen').value,note:$('stockNote').value});
   ['stockLitres','stockNote'].forEach(id=>$(id).value='');$('stockWhen').value=vanNow();stockMsg('Entry logged.',true);loadStock()}catch(e){stockMsg('Not logged: '+e.message)}});
 // ---- Chemical products (lists filled from Settings > Chemical products) ----
 function fillProductLists(prods){document.querySelectorAll('[data-products]').forEach(sel=>{const keep=sel.value;
@@ -265,12 +272,13 @@ function productRow(p){const v=x=>x==null?'':escapeHTML(String(x));const prices=
   `<td><input data-f="part" maxlength="40" value="${v(p.part)}" aria-label="Part number"></td><td><input data-f="supplier" maxlength="80" value="${v(p.supplier)}" aria-label="Supplier"></td>`+
   `<td><input data-f="container" maxlength="40" value="${v(p.container)}" placeholder="55 gal drum" aria-label="Container"></td>`+
   `<td><input data-f="container_l" type="number" min="0.1" max="100000" step="0.001" value="${p.container_l==null?'':Math.round(p.container_l*1000)/1000}" aria-label="Litres per container"></td>`+
+  `<td><input data-f="kg_l" type="number" min="0.5" max="3" step="0.001" value="${v(p.kg_l)}" placeholder="from SDS" aria-label="Weight per litre kg/L"></td>`+
   `<td><select data-f="tag" aria-label="Measured by">${Object.entries(MEASURED).map(([k,t])=>`<option value="${k}"${(p.tag||'')===k?' selected':''}>${t}</option>`).join('')}</select></td>`+
   `<td><input data-f="low_l" type="number" min="0" max="100000" step="0.1" value="${v(p.low_l??0)}" aria-label="Low stock below litres"></td>`+
   `<td><input data-f="lead_days" type="number" min="0" max="365" step="1" value="${v(p.lead_days??7)}" aria-label="Delivery time days"></td>`+
-  `<td><b class="cur-price" data-cur-price>${p.price!=null?money(p.price):'not set'}</b><button type="button" data-prices aria-expanded="false">Prices (${prices.length})</button></td>`+
+  `<td><b class="cur-price" data-cur-price>${p.price!=null?money(p.price,(config||{}).currency):'not set'}</b><button type="button" data-prices aria-expanded="false">Prices (${prices.length})</button></td>`+
   `<td><button type="button" class="danger" data-del-product>Delete</button></td></tr>`+
-  `<tr class="price-row" data-prices-for="${v(p.key)}" hidden><td colspan="12"><b>Price history — ${v(p.name||'new product')}</b> `+
+  `<tr class="price-row" data-prices-for="${v(p.key)}" hidden><td colspan="13"><b>Price history — ${v(p.name||'new product')}</b> `+
   `<small>Each price applies from its date until the next price. Costs, estimated purchase costs and reports use the price valid on each day, so earlier months keep their old price. To change the price, add a new line with the date it starts (do not overwrite the old one).</small>`+
   `<div class="price-list">${prices.map(priceEntry).join('')}</div><button type="button" data-add-price>Add price</button></td></tr>`}
 function priceEntry(e={}){const v=x=>x==null?'':escapeHTML(String(x));
@@ -292,7 +300,7 @@ function readProducts(){return Array.from(document.querySelectorAll('#productRow
  const prices=Array.from(priceRowOf(tr).querySelectorAll('.price-entry'),e=>({from:e.querySelector('[data-pf]').value,price:e.querySelector('[data-pp]').value}))
   .filter(e=>e.from||e.price!=='').map(e=>{if(!e.from||e.price==='')throw Error(name+': each price needs a date and an amount');return {from:e.from,price:Number(e.price)}});
  return {key:tr.dataset.key,active:f('active').checked,name,label:f('label').value.trim(),part:f('part').value.trim(),supplier:f('supplier').value.trim(),container:f('container').value.trim(),
-  container_l:num('container_l'),tag:f('tag').value,low_l:num('low_l')??0,lead_days:Math.round(num('lead_days')??7),prices}})}
+  container_l:num('container_l'),kg_l:num('kg_l'),tag:f('tag').value,low_l:num('low_l')??0,lead_days:Math.round(num('lead_days')??7),prices}})}
 // ---- Chemical cost per m³ (Reports page) ----
 // Cost shown per m³ or per litre (1 m³ = 1000 L); the choice is kept in this browser.
 let costUnit='m3';try{if(localStorage.getItem('ww.costUnit')==='L')costUnit='L'}catch{}
@@ -300,35 +308,38 @@ const perUnit=p=>{if(p.per_m3==null)return 'No discharge';const v=costUnit==='L'
  return '$'+v.toFixed(v>=1?2:v>=0.01?4:6)+(costUnit==='L'?' per litre':' per m³')};
 let costData=null;
 $('costUnit').value=costUnit;$('costUnit').onchange=()=>{costUnit=$('costUnit').value==='L'?'L':'m3';try{localStorage.setItem('ww.costUnit',costUnit)}catch{};if(costData)drawCost(costData)};
-async function loadCost(){try{costData=await api('/api/cost');drawCost(costData)}catch(e){$('costCards').textContent='Unable to load the chemical cost: '+e.message}}
+async function loadCost(){try{costData=await api('/api/cost');priceCur=costData.currency||priceCur;drawCost(costData)}catch(e){$('costCards').textContent='Unable to load the chemical cost: '+e.message}}
 function drawCost(d){
  $('costCards').innerHTML=d.priced?d.periods.map(p=>`<div><b>${escapeHTML(p.label)}</b><b class="cost-big">${perUnit(p)}</b>`+
-  `<span>${money(p.cost)} of chemicals for ${costUnit==='L'?fmt(p.m3*1000)+' L':fmt(p.m3)+' m³'} discharged</span>`+
-  (p.products.length?`<span>${p.products.map(x=>`${escapeHTML(x.label)}: ${fmt(x.litres)} L${x.cost!=null?' · '+money(x.cost):' · no price'}`).join('<br>')}</span>`:'<span>No chemical usage recorded</span>')+
+  `<span>${money(p.cost,priceCur)} of chemicals for ${costUnit==='L'?fmt(p.m3*1000)+' L':fmt(p.m3)+' m³'} discharged</span>`+
+  (p.products.length?`<span>${p.products.map(x=>`${escapeHTML(x.label)}: ${fmt(x.litres)} L${x.cost!=null?' · '+money(x.cost,priceCur):' · no price'}`).join('<br>')}</span>`:'<span>No chemical usage recorded</span>')+
   (p.unpriced.length?`<em class="warn">No price yet for ${escapeHTML(p.unpriced.join(', '))}: not in the cost</em>`:'')+`</div>`).join('')
   :'<div><b>No prices yet</b><span>Enter the price per container of each chemical under Settings → Chemical products to see the cost per m³ or per litre.</span></div>'}
 // ---- Chemical purchases (Reports page) ----
 const buyMsg=(t,ok)=>{const el=$('buyState');el.textContent=t;el.className=ok?'ok-text':'err-text'};
-const money=v=>v==null?'—':'$'+Number(v).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2});
+let priceCur='CAD';   // currency of the Settings prices (cost per m³, estimated purchase costs)
+const money=(v,cur)=>v==null?'—':'$'+Number(v).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2})+(cur?' '+cur:'');
 async function loadPurchases(){
  $('purchaseForm').hidden=!can('pickup');$('buyReport').hidden=!can('export');const now=vanNow();
  if(!$('buyDate').value)$('buyDate').value=now.slice(0,10);$('buyDate').max=now.slice(0,10);$('buyReceived').max=now;if(!$('buyYear').value)$('buyYear').value=now.slice(0,4);
- try{const d=await api('/api/purchases');const rows=d.rows||[],prod=d.products||{};Object.assign(stockProducts,prod);
+ try{const d=await api('/api/purchases'+periodQuery('buyPeriod'));const rows=d.rows||[],prod=d.products||{};Object.assign(stockProducts,prod);priceCur=d.currency||priceCur;
+  if(!$('buyCurrency').dataset.touched)$('buyCurrency').value=d.currency||'CAD';periodCount('buyPeriod',d.period,['purchase','purchases']);
   $('buyList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Purchased</th><th>Product</th><th>Quantity</th><th>Cost</th><th>PO / invoice</th><th>Supplier</th><th>Received</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${rows.map(r=>{const p=prod[r.chemical]||{};
    const cont=p.container_l?r.litres/p.container_l:null;const unit=(p.container||'').includes('drum')?'drums':'pails';
-   const cost=r.cost!=null?money(r.cost):r.est_cost!=null?money(r.est_cost)+' <small>(est.)</small>':'—';
+   const cost=r.cost!=null?money(r.cost,r.currency):r.est_cost!=null?money(r.est_cost,r.currency)+' <small>(est.)</small>':'—';const wt=weightText(r.litres,p);
    const recv=r.received_at?escapeHTML(local(r.received_at)):`<b class="warn-text">Not received yet</b>${can('pickup')?` <button type="button" data-receive="${r.id}">Mark received</button>`:''}`;
-   return `<tr><td>${escapeHTML(calDay(r.purchased_on))}</td><td>${escapeHTML(p.name||r.chemical)}<br><small>Part # ${escapeHTML(p.part||'')}</small></td><td>${cont!=null?fmt(cont)+' '+unit:''}<br><small>${fmt(r.litres)} L</small></td>`+
+   return `<tr><td>${escapeHTML(calDay(r.purchased_on))}</td><td>${escapeHTML(p.name||r.chemical)}<br><small>Part # ${escapeHTML(p.part||'')}</small></td><td>${cont!=null?fmt(cont)+' '+unit:''}<br><small>${fmt(r.litres)} L${wt?' · '+wt:''}${r.entered?'<br>entered as '+escapeHTML(r.entered):''}</small></td>`+
     `<td>${cost}</td><td>${escapeHTML(r.po)||'—'}</td><td>${escapeHTML(r.supplier)||'—'}</td><td>${recv}</td><td>${escapeHTML(r.logged_by)}</td>`+
-    `<td>${can('pickup')?`<button type="button" class="danger" data-buy="${r.id}">Remove</button>`:'—'}</td></tr>`}).join('')||'<tr><td colspan="9">No chemical purchases logged yet.</td></tr>'}</tbody></table></div>`;
+    `<td>${can('pickup')?`<button type="button" class="danger" data-buy="${r.id}">Remove</button>`:'—'}</td></tr>`}).join('')||'<tr><td colspan="9">No chemical purchases in this period.</td></tr>'}</tbody></table></div>`;
   document.querySelectorAll('[data-buy]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this purchase? If it was received, it is also taken off the chemical stock. Use this only to fix a mistake.'))return;
    try{await postJSON('/api/purchases/remove',{id:Number(b.dataset.buy)});buyMsg('Purchase removed.',true);loadPurchases();loadStock()}catch(e){buyMsg('Not removed: '+e.message)}});
   document.querySelectorAll('[data-receive]').forEach(b=>b.onclick=async()=>{const when=prompt('Received date and time (YYYY-MM-DD HH:MM, Vancouver time):',vanNow().replace('T',' '));if(!when)return;
    try{await postJSON('/api/purchases/receive',{id:Number(b.dataset.receive),received:when.trim().replace(' ','T')});buyMsg('Purchase marked received and added to stock.',true);loadPurchases();loadStock()}catch(e){buyMsg('Not changed: '+e.message)}});
  }catch(e){$('buyList').textContent='Unable to load chemical purchases: '+e.message}}
 $('logBuy').addEventListener('click',async()=>{if(!$('buyQty').value){buyMsg('Enter the quantity.');return}if(!$('buyDate').value){buyMsg('Enter the purchase date.');return}
- const litres=Math.round(toLitres(Number($('buyQty').value),$('buyUnit').value,$('buyChem').value)*100)/100;
- try{await postJSON('/api/purchases',{chemical:$('buyChem').value,purchased_on:$('buyDate').value,litres,cost:$('buyCost').value===''?null:Number($('buyCost').value),
+ const qty=Number($('buyQty').value),unit=$('buyUnit').value;let litres;
+ try{litres=Math.round(toLitres(qty,unit,$('buyChem').value)*100)/100}catch(e){buyMsg('Not logged: '+e.message);return}
+ try{await postJSON('/api/purchases',{chemical:$('buyChem').value,purchased_on:$('buyDate').value,litres,entered:unit==='L'?null:`${qty} ${UNIT_TEXT[unit]}`,currency:$('buyCurrency').value,cost:$('buyCost').value===''?null:Number($('buyCost').value),
    po:$('buyPo').value,supplier:$('buySupplier').value,received:$('buyReceived').value||null,note:$('buyNote').value});
   ['buyQty','buyCost','buyPo','buyReceived','buyNote'].forEach(id=>$(id).value='');buyMsg('Purchase logged.',true);loadPurchases();loadStock()}catch(e){buyMsg('Not logged: '+e.message)}});
 $('buyExcel').addEventListener('click',()=>{window.location.href='/api/export?tag=purchases&year='+encodeURIComponent($('buyYear').value)});
@@ -358,3 +369,21 @@ $('openAlarms').onclick=()=>view('events');
 try{$('activeAlarms').open=localStorage.getItem('ww.alarmsOpen')==='1'}catch{}
 $('activeAlarms').addEventListener('toggle',()=>{try{localStorage.setItem('ww.alarmsOpen',$('activeAlarms').open?'1':'0')}catch{};if(summaryData)drawCards()});setInterval(tickAges,5000);
 loadSummary();setInterval(loadSummary,5000);setInterval(()=>{if(!$('trends').hidden)loadHistory()},30000);window.addEventListener('resize',()=>{if(historyData&&!$('trends').hidden)chartRows('historyCharts')});
+
+// ---- Record lists: choose the period to show (alarm events, audit history, tank counts, purchases) ----
+// The choice is remembered per list in this browser. 'A specific day/month' shows a date picker.
+const PERIOD_OPTS=[['today','Today'],['yesterday','Yesterday'],['week','This week (from Monday)'],['7d','Last 7 days'],['month','This month'],['lastmonth','Last month'],
+ ['3m','Last 3 months'],['year','This year'],['day','A specific day…'],['pickmonth','A specific month…'],['all','All records']];
+function periodQuery(id){const box=$(id),sel=box&&box.querySelector('[data-period]');if(!sel)return '?period='+((box&&box.dataset.default)||'7d');const p=sel.value;
+ return '?period='+p+(p==='day'?'&date='+encodeURIComponent(box.querySelector('[data-day]').value):p==='pickmonth'?'&month='+encodeURIComponent(box.querySelector('[data-month]').value):'')}
+function periodCount(id,info,[one,many]){const el=$(id)&&$(id).querySelector('[data-pcount]');if(!el||!info)return;
+ el.textContent=`${info.total.toLocaleString('en-CA')} ${info.total===1?one:many}${info.from?` · ${calDay(info.from)}${info.to!==info.from?' – '+calDay(info.to):''}`:''}${info.shown<info.total?` · showing the newest ${info.shown}, choose a shorter period to see the rest`:''}`}
+function periodBox(id,reload){const box=$(id);if(!box)return;let saved=box.dataset.default||'7d';try{saved=localStorage.getItem('ww.period.'+id)||saved}catch{}
+ box.innerHTML=`<label>Show<select data-period aria-label="Period to show">${PERIOD_OPTS.map(([v,t])=>`<option value="${v}"${v===saved?' selected':''}>${t}</option>`).join('')}</select></label>`+
+  `<label data-pday hidden>Day<input type="date" data-day></label><label data-pmonth hidden>Month<input type="month" data-month></label><small data-pcount role="status"></small>`;
+ const sel=box.querySelector('[data-period]'),day=box.querySelector('[data-day]'),mon=box.querySelector('[data-month]'),today=vanNow().slice(0,10);
+ day.value=day.max=today;mon.value=mon.max=today.slice(0,7);
+ const sync=()=>{box.querySelector('[data-pday]').hidden=sel.value!=='day';box.querySelector('[data-pmonth]').hidden=sel.value!=='pickmonth'};sync();
+ sel.onchange=()=>{sync();try{localStorage.setItem('ww.period.'+id,sel.value)}catch{};reload()};day.onchange=reload;mon.onchange=reload}
+periodBox('eventPeriod',()=>loadEvents());periodBox('auditPeriod',()=>loadAudit());periodBox('stockPeriod',()=>loadStock());periodBox('buyPeriod',()=>loadPurchases());
+$('buyCurrency').addEventListener('change',()=>{$('buyCurrency').dataset.touched='1'});
