@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EffluentIQ — Rev 1.2.44</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>EffluentIQ — Rev 1.2.45</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body data-view="overview">
 <header class="topbar"><div class="brand"><h1><img class="logo" src="/logo-effluentiq.svg" alt="EffluentIQ — Industrial Wastewater Monitoring &amp; Reporting" width="700" height="124"></h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button><button data-view="help">Help</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.44</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.45</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="alarmRibbon" class="sludge-ribbon" role="alert" hidden></div><div id="shelfNote" class="shelf-note" hidden></div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -30,6 +30,23 @@
         <polygon points="462,74 478,81 462,88" fill="#fff"/>
         <rect x="557" y="88" width="18" height="7" rx="2" fill="#9ca3af" stroke="#5d6973"/>
         <polygon points="558,74 574,74 566,85" fill="#fff"/>
+      </g>
+      <g><title>DAF bottom sludge drain to the sludge bin, with gate valve</title>
+        <path d="M1114 352 V364 H925 V384" fill="none" stroke="#00000077" stroke-width="12" stroke-linejoin="round"/>
+        <path d="M1114 352 V364 H925 V384" fill="none" stroke="#f59e0b" stroke-width="9" stroke-linejoin="round"/>
+        <path d="M1114 352 V364 H925 V384" fill="none" stroke="#ffffff55" stroke-width="2" stroke-linejoin="round" transform="translate(0,-2)"/>
+        <rect x="1105" y="349" width="18" height="6" rx="2" fill="#9ca3af" stroke="#5d6973"/>
+        <polygon points="1062,357 1048,364 1062,371" fill="#fff"/>
+        <polygon points="919,372 931,372 925,382" fill="#fff"/>
+        <rect x="954" y="355" width="4" height="18" rx="1" fill="#9ca3af" stroke="#4b5563"/>
+        <rect x="992" y="355" width="4" height="18" rx="1" fill="#9ca3af" stroke="#4b5563"/>
+        <polygon points="958,355 975,364 958,373" fill="#e5e7eb" stroke="#374151" stroke-width="1.5" stroke-linejoin="round"/>
+        <polygon points="992,355 975,364 992,373" fill="#e5e7eb" stroke="#374151" stroke-width="1.5" stroke-linejoin="round"/>
+        <line x1="975" y1="364" x2="975" y2="344" stroke="#374151" stroke-width="3"/>
+        <line x1="975" y1="364" x2="975" y2="344" stroke="#d1d5db" stroke-width="1.5"/>
+        <ellipse cx="975" cy="342" rx="11" ry="3.5" fill="none" stroke="#000000aa" stroke-width="5"/>
+        <ellipse cx="975" cy="342" rx="11" ry="3.5" fill="none" stroke="#ef4444" stroke-width="3"/>
+        <text x="975" y="333" text-anchor="middle" font-size="11" font-weight="800" fill="#f1f9ff" stroke="#04111f" stroke-width="3" paint-order="stroke">GATE VALVE</text>
       </g>
       <g>
         <rect x="40" y="8" width="196" height="42" rx="9" fill="#06202fee" stroke="#0ce7f1" stroke-width="2"/>
@@ -120,6 +137,7 @@
 <li>Coagulant and flocculant pumps: <b>RUNNING</b> while the run reading is at least 0.01 ml/min, <b>STOPPED</b> below that (a leftover reading such as 0.003 ml/min shows as 0.00 and counts as stopped). Point at the word to see the exact reading from the PLC.</li>
 <li>Electric transfer (sump) pump and circulation (mixer) pump: spinning green fan and <b>RUNNING</b>, or <b>OFF</b>.</li>
 <li>Sludge tank: <b>NORMAL</b> or flashing <b>FULL</b>.</li>
+<li>DAF bottom drain: the orange pipe from the bottom of the DAF unit through the <b>gate valve</b> into the sludge bin. It is drawn for reference only; the valve position is not read from the PLC.</li>
 <li>Pickup box: <b>PICKUP EVERY MON &amp; THU</b> and the last pickup logged.</li>
 </ul>
 <p class="help-note">The caustic and acid dosing pumps and other equipment drawings are illustrative only; they are not connected to the PLC.</p></div>
@@ -255,5 +273,5 @@
 <div class="account-box rights-box"><h4>Rights for each role</h4><div class="tablewrap"><table class="rights"><thead><tr><th>Right</th><th>Admin</th><th>Engineering</th><th>Operator</th><th>Guest</th></tr></thead><tbody id="rightsBody"></tbody></table></div><button id="saveRights" type="button">Save rights</button> <small>Changes apply on the person's next page refresh (within 5 seconds).</small></div></div>
 <p id="accountState" role="status"></p>
 <p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
-<footer>EffluentIQ™ Rev 1.2.44 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
+<footer>EffluentIQ™ Rev 1.2.45 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
 </main></body></html>

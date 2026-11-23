@@ -164,3 +164,6 @@ body[data-view="trends"]{--acc:var(--acc-trends)}
 @media(min-width:1101px){.topbar{grid-template-columns:auto 1fr auto}.topbar nav{justify-self:center}}
 @media(min-width:1101px) and (max-width:1500px){.brand .logo{height:80px}}
 @media(min-width:1101px) and (max-width:1300px){.brand .logo{height:66px}}
+/* Electric transfer pump turns clockwise (the circulation pump keeps the counter-clockwise spin) */
+.pump-fan.transfer.on svg{animation-name:pumpSpinCw}
+@keyframes pumpSpinCw{to{transform:rotate(360deg)}}
