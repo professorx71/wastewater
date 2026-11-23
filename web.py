@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.48','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.49','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -562,7 +562,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.48: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.49: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -808,10 +808,14 @@ def actor(role,username):return f'{username} ({role})'
 # Role permissions, enforced server-side for every endpoint. Admin always has everything,
 # including managing logins and these rights. For Engineering, Operator and Guest the Admin
 # chooses the rights in Settings; every role can always view readings, trends and alarms.
-ADMIN_PERMISSIONS=frozenset({'view','export','acknowledge','pickup','settings','audit','accounts'})
-PERMISSION_CHOICES=('export','acknowledge','pickup','settings','audit')
-DEFAULT_ROLE_PERMISSIONS={'Engineering':('export','acknowledge','pickup','settings','audit'),
-                          'Operator':('export','acknowledge','pickup'),'Guest':()}
+# alarms: the Alarms page · shelve: shelve / unshelve alarms · email: email, text message and report settings
+# settings_view: see Settings read-only · settings: change all settings · delete: remove records (Admin only)
+ADMIN_PERMISSIONS=frozenset({'view','export','acknowledge','pickup','alarms','shelve','email','settings_view','settings','audit','accounts','delete'})
+PERMISSION_CHOICES=('alarms','acknowledge','shelve','pickup','export','email','settings_view','settings','audit')
+DEFAULT_ROLE_PERMISSIONS={'Engineering':('alarms','acknowledge','shelve','pickup','export','email','settings_view','settings','audit'),
+                          'Operator':('alarms','acknowledge','pickup','export'),'Guest':('alarms',)}
+# Settings an 'email' right may change without the full 'settings' right.
+EMAIL_SETTING_KEYS=frozenset({'recipients','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time','quarterly_enabled','sms_enabled','sms_recipients'})
 # Rights saved before a choice existed get that choice's default (saves record which choices they knew).
 _FIRST_CHOICES=('export','acknowledge','settings','audit')
 def role_permissions(conn=None):
@@ -841,7 +845,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.48
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.49
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -1019,9 +1023,13 @@ def handle_post(path,env,role,conn,user=''):
     if length<1 or length>(CAL_BODY_MAX if path=='/api/calibrations' else 40000 if path=='/api/settings' else 12000):raise ValueError('Invalid request length')
     body=json.loads(env['wsgi.input'].read(length))
     if not isinstance(body,dict):raise ValueError('JSON object required')
-    if path in REMOVE_PATHS:confirm_password(env,user,body.get('password'))
+    if path in REMOVE_PATHS:
+        if not can(role,'delete'):return '403 Forbidden',{'error':'Only the Admin can remove records'}
+        confirm_password(env,user,body.get('password'))
     if path=='/api/settings':
-        if not can(role,'settings'):return '403 Forbidden',{'error':'Admin required to change settings'}
+        if not can(role,'settings'):
+            if not can(role,'email'):return '403 Forbidden',{'error':'Not permitted to change settings'}
+            if set(body)-EMAIL_SETTING_KEYS:return '403 Forbidden',{'error':'Your login can change only the email, text message and report settings'}
         used={r[0] for r in conn.execute('SELECT chemical FROM chemical_purchases UNION SELECT chemical FROM chemical_stock')}
         before={p['key']:p['prices'] for p in settings(conn)['chemical_products']}
         updated=val_settings(body,settings(conn),used)
@@ -1127,7 +1135,7 @@ def handle_post(path,env,role,conn,user=''):
         audit(conn,who,'Chemical stock entry removed',f"{product_label(conn,row['chemical'])} {row['kind']} {row['litres']:g} L");conn.commit()
         return '200 OK',{'removed':sid}
     if path=='/api/shelves':
-        if not can(role,'settings'):return '403 Forbidden',{'error':'Not permitted to shelve alarms'}
+        if not can(role,'shelve'):return '403 Forbidden',{'error':'Not permitted to shelve alarms'}
         key=body.get('key');hours=body.get('hours');choices=shelf_choices(settings(conn))
         if key not in choices:raise AccountError('Choose the alarm to shelve')
         if type(hours) is not int or not 1<=hours<=SHELF_MAX_HOURS:raise AccountError(f'Shelve for 1–{SHELF_MAX_HOURS} hours')
@@ -1137,7 +1145,7 @@ def handle_post(path,env,role,conn,user=''):
         audit(conn,who,'Alarm shelved',f"{choices[key]} for {hours} h until {until.astimezone(ZoneInfo('America/Vancouver')):%Y-%m-%d %H:%M}: {reason}");conn.commit()
         return '200 OK',{'key':key,'until':iso(until)}
     if path=='/api/shelves/remove':
-        if not can(role,'settings'):return '403 Forbidden',{'error':'Not permitted to unshelve alarms'}
+        if not can(role,'shelve'):return '403 Forbidden',{'error':'Not permitted to unshelve alarms'}
         key=body.get('key')
         if not isinstance(key,str) or not conn.execute('DELETE FROM shelves WHERE key=?',(key,)).rowcount:return '404 Not Found',{'error':'Shelf not found'}
         audit(conn,who,'Alarm unshelved',shelf_choices(settings(conn)).get(key,key));conn.commit()
@@ -1202,7 +1210,7 @@ def application(env,start_response):
                 d['ph_trend']=ph_trend(cfg) if cfg['ph_trend_enabled'] and ph.get('status')=='current' else None
                 return send('200 OK',d)
             if path=='/api/insights':
-                if not can(role,'view'):return send('403 Forbidden',{'error':'Not permitted'})
+                if not can(role,'alarms'):return send('403 Forbidden',{'error':'Not permitted'})
                 with appdb() as conn:cfg=settings(conn)
                 return send('200 OK',{'days':30,'insights':insights(cfg)})
             if path in ('/api/history','/api/export'):
@@ -1218,7 +1226,7 @@ def application(env,start_response):
                 if isinstance(data,bytes):return send('200 OK',data,'text/csv; charset=utf-8',[('Content-Disposition','attachment; filename="wastewater-history.csv"')])
                 return send('200 OK',data)
             if path=='/api/settings':
-                if not can(role,'settings'):return send('403 Forbidden',{'error':'Admin required'})
+                if not any(can(role,p) for p in ('settings','email','settings_view')):return send('403 Forbidden',{'error':'Not permitted'})
                 with appdb() as conn:config=settings(conn)
                 return send('200 OK',{'settings':config,'role':role,'email_configured':EMAIL_CFG.is_file()})
             if path=='/api/accounts':
@@ -1268,6 +1276,7 @@ def application(env,start_response):
                 rows=[dict(r,est_cost=purchase_cost(r,prods)[0] if r['cost'] is None else None,currency=purchase_currency(r,cfg)) for r in rows]
                 return send('200 OK',{'rows':rows,'period':info,'products':prods,'currency':cfg.get('currency','CAD')})
             if path=='/api/shelves':
+                if not can(role,'alarms'):return send('403 Forbidden',{'error':'Not permitted'})
                 with appdb() as conn:return send('200 OK',{'choices':shelf_choices(settings(conn)),'active':list(active_shelves(conn).values()),'max_hours':SHELF_MAX_HOURS})
             if path=='/api/calibrations/certificate':
                 if not can(role,'audit'):return send('403 Forbidden',{'error':'Not permitted'})
@@ -1277,7 +1286,7 @@ def application(env,start_response):
                 if not row or row['file_data'] is None:return send('404 Not Found',{'error':'No certificate file for this calibration'})
                 return send('200 OK',bytes(row['file_data']),row['file_type'],[('Content-Disposition',f'attachment; filename="{row["file_name"]}"')])
             if path in ('/api/events','/api/audit'):
-                if not can(role,'audit' if path.endswith('audit') else 'view'):return send('403 Forbidden',{'error':'Admin required'})
+                if not can(role,'audit' if path.endswith('audit') else 'alarms'):return send('403 Forbidden',{'error':'Not permitted'})
                 q={k:v[0] for k,v in parse_qs(env.get('QUERY_STRING','')).items()}
                 try:
                     with appdb() as conn:rows,info=period_rows(conn,'events' if path.endswith('events') else 'audit','stamp',q)
@@ -2001,7 +2010,7 @@ def pump_rows(start,end,zone,date_range):
 # so other products' usage comes from tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Run':'Flocculant dosing pump'}
-# Settings saved before 1.2.48 (one key per product); read once to build the product list.
+# Settings saved before 1.2.49 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
@@ -2016,7 +2025,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.48 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.49 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")

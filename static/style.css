@@ -187,3 +187,8 @@ body[data-view="trends"]{--acc:var(--acc-trends)}
 h2.with-button{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
 h2.with-button button{font-size:13px;letter-spacing:0;text-transform:none}
 .list-filter[hidden]{display:none}
+
+/* Settings shown read-only for logins without the right to change them */
+.readonly-note{border:1px solid #ffcf75;background:#3a2a07;color:#ffe2a6;border-radius:8px;padding:10px 14px;margin:0 0 14px;font-weight:600}
+#settings :disabled{opacity:.6;cursor:not-allowed}
+#settings .accounts :disabled{opacity:1}

@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.48'
+        assert s['revision']=='1.2.49'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -138,19 +138,23 @@ class RevisionTests(unittest.TestCase):
         self.assertIn('Not picked up yet',book.read('xl/worksheets/sheet1.xml').decode())
         # Removing a pickup is audited
         # Removing needs the person's own password again
-        code,body=self.call('POST','/api/pickups/remove',*O,{'id':rows[0]['id']})
+        # Only the Admin removes records, and needs the password again
+        code,body=self.call('POST','/api/pickups/remove',*O,{'id':rows[0]['id'],'password':'op-pass'})
+        self.assertEqual(code,403);self.assertIn('Only the Admin',json.loads(body)['error'])
+        code,body=self.call('POST','/api/pickups/remove',*A,{'id':rows[0]['id']})
         self.assertEqual(code,400);self.assertIn('password',json.loads(body)['error'])
-        code,body=self.call('POST','/api/pickups/remove',*O,{'id':rows[0]['id'],'password':'admin-pass'})
+        code,body=self.call('POST','/api/pickups/remove',*A,{'id':rows[0]['id'],'password':'op-pass'})
         self.assertEqual(code,400);self.assertIn('Wrong password',json.loads(body)['error'])
-        self.assertEqual(self.call('POST','/api/pickups/remove',*O,{'id':rows[0]['id'],'password':'op-pass'})[0],200)
+        self.assertEqual(self.call('POST','/api/pickups/remove',*A,{'id':rows[0]['id'],'password':'admin-pass'})[0],200)
         with web.appdb() as conn:
             acts=[r['action'] for r in conn.execute('SELECT action FROM audit')]
         self.assertIn('Sludge pickup logged',acts);self.assertIn('Sludge pickup removed',acts)
         # Rights saved before the pickup right existed still give Operator the pickup right
         with web.appdb() as conn:
             conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('role_permissions',?)",(json.dumps({'Engineering':['audit'],'Operator':['export'],'Guest':[]}),))
-        self.assertEqual(sorted(web.role_permissions()['Operator']),['export','pickup','view'])
-        self.assertEqual(sorted(web.role_permissions()['Guest']),['view'])
+        self.assertEqual(sorted(web.role_permissions()['Operator']),['alarms','export','pickup','view'])
+        self.assertEqual(sorted(web.role_permissions()['Guest']),['alarms','view'])
+        self.assertEqual(sorted(web.role_permissions()['Engineering']),['alarms','audit','email','pickup','settings_view','shelve','view'])
         # ...and once the Admin saves rights without it, it is off
         self.assertEqual(self.call('POST','/api/accounts/permissions',*A,{'Engineering':['audit'],'Operator':['export'],'Guest':[]})[0],200)
         self.assertEqual(sorted(web.role_permissions()['Operator']),['export','view'])
@@ -339,7 +343,7 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/accounts','eng','eng-pass-1')[0],403)
         self.assertEqual(self.call('POST','/api/accounts/permissions','eng','eng-pass-1',{'Engineering':['audit'],'Operator':[],'Guest':[]})[0],403)
         guest=json.loads(self.call('GET','/api/summary','visitor','gst1')[1])
-        self.assertEqual(guest['permissions'],['view'])
+        self.assertEqual(guest['permissions'],['alarms','view'])
         self.assertEqual(self.call('GET','/api/export','visitor','gst1',query='startDate=2026-11-01&endDate=2026-11-02')[0],403)
         self.assertEqual(self.call('GET','/api/settings','visitor','gst1')[0],403)
         # Admin changes the rights: Guest may download, Engineering loses Settings
@@ -695,7 +699,8 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query=f'tag=purchases&year={year}&format=csv')[0],200)
         rows=json.loads(self.call('GET','/api/purchases','op','op-pass')[1])['rows']
         self.assertEqual(len(rows),2)
-        self.assertEqual(post('/api/purchases/remove',{'id':sa,'password':'op-pass'})[0],200)
+        self.assertEqual(post('/api/purchases/remove',{'id':sa,'password':'op-pass'})[0],403)   # Admin only
+        self.assertEqual(post('/api/purchases/remove',{'id':sa,'password':'admin-pass'},'admin')[0],200)
         with web.appdb() as db:
             self.assertIsNone(web.stock_status(db)['sa93']['litres'])
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action LIKE 'Chemical purchase%'").fetchone()[0],4)
@@ -729,13 +734,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.48 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.49 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Run'),[]):   # Floc_Pump_Run already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.48 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.49 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -1073,6 +1078,27 @@ class RevisionTests(unittest.TestCase):
         items[1]['kg_l']=9
         with self.assertRaises(ValueError):web.val_products(items,cfg['chemical_products'])
         with self.assertRaises(ValueError):web.val_settings({'currency':'EUR'},dict(web.DEFAULTS))
+
+    def test_separate_alarm_email_and_settings_rights(self):
+        A=('admin','admin-pass');self._login(web.AUTH,*A)
+        self.assertEqual(self.call('POST','/api/accounts/user',*A,{'role':'Engineering','username':'eng','password':'eng-pass-1'})[0],200)
+        # Engineering: may change email settings and shelve alarms, may view settings, may not change other settings
+        self.assertEqual(self.call('POST','/api/accounts/permissions',*A,{'Engineering':['alarms','shelve','email','settings_view'],'Operator':[],'Guest':[]})[0],200)
+        E=('eng','eng-pass-1')
+        self.assertEqual(self.call('GET','/api/settings',*E)[0],200)
+        self.assertEqual(self.call('POST','/api/settings',*E,{'recipients':['ops@example.com'],'daily_enabled':True})[0],200)
+        with web.appdb() as db:self.assertEqual(web.settings(db)['recipients'],['ops@example.com'])
+        code,body=self.call('POST','/api/settings',*E,{'ph_high':9.5})
+        self.assertEqual(code,403);self.assertIn('only the email',json.loads(body)['error'])
+        self.assertEqual(self.call('POST','/api/shelves',*E,{'key':'flow','hours':2,'reason':'pump repair'})[0],200)
+        self.assertEqual(self.call('GET','/api/events',*E)[0],200)
+        # without the alarms right the Alarms page data is refused; without shelve, shelving is refused
+        self.assertEqual(self.call('POST','/api/accounts/permissions',*A,{'Engineering':['settings_view'],'Operator':[],'Guest':[]})[0],200)
+        self.assertEqual(self.call('GET','/api/events',*E)[0],403)
+        self.assertEqual(self.call('POST','/api/shelves',*E,{'key':'flow','hours':2,'reason':'x'})[0],403)
+        self.assertEqual(self.call('POST','/api/settings',*E,{'recipients':[]})[0],403)
+        self.assertEqual(self.call('GET','/api/settings',*E)[0],200)   # still read-only view
+        self.assertIn('delete',web.role_permissions()['Admin']);self.assertNotIn('delete',web.PERMISSION_CHOICES)
 
     def test_insights_find_repeated_alarms(self):
         zone=web.ZoneInfo('America/Vancouver')

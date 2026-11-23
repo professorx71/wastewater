@@ -32,7 +32,7 @@ Check `git status` first: there must be no `.sqlite3`, `*auth.json`, `email.json
 ## 2. Build the release package (Windows)
 
 ```powershell
-git -c core.autocrlf=false archive --format=tar.gz --prefix=pbf-wastewater-rev1.2.48/ -o "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.48.tar.gz" HEAD
+git -c core.autocrlf=false archive --format=tar.gz --prefix=pbf-wastewater-rev1.2.49/ -o "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.49.tar.gz" HEAD
 ```
 
 `core.autocrlf=false` keeps Linux line endings in the `.sh` scripts. Without it, bash fails with errors like `$'\r': command not found`.
@@ -40,7 +40,7 @@ git -c core.autocrlf=false archive --format=tar.gz --prefix=pbf-wastewater-rev1.
 ## 3. Upload to the VPS (Windows)
 
 ```powershell
-scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.48.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
+scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.49.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
 ```
 
 ## 4. Unpack and stage (on the VPS)
@@ -54,12 +54,12 @@ Then, on Ubuntu, unpack into a new dated folder so it doesn't mix with earlier u
 ```bash
 REL=~/ww-upgrade/$(date +%Y%m%d-%H%M)
 mkdir -p "$REL"
-tar xzf ~/pbf-wastewater-rev1.2.48.tar.gz -C "$REL"
-cd "$REL/pbf-wastewater-rev1.2.48"
+tar xzf ~/pbf-wastewater-rev1.2.49.tar.gz -C "$REL"
+cd "$REL/pbf-wastewater-rev1.2.49"
 sudo bash stage.sh
 ```
 
-`stage.sh` compiles `web.py`, runs the regression tests, and copies the code to `/opt/pbf-wastewater/rev1.2.48-stage/`. It also creates a separate staging settings database with all email switches **off**. Production keeps running and isn't touched.
+`stage.sh` compiles `web.py`, runs the regression tests, and copies the code to `/opt/pbf-wastewater/rev1.2.49-stage/`. It also creates a separate staging settings database with all email switches **off**. Production keeps running and isn't touched.
 
 If the tests fail, **stop here** and fix the code before deploying.
 
@@ -68,7 +68,7 @@ If the tests fail, **stop here** and fix the code before deploying.
 **a. Start staging on the VPS** (leave this SSH window open):
 
 ```bash
-sudo -u pbf-wastewater env PBF_APP_DB=/var/lib/pbf-wastewater/dashboard-v1.2.48-stage.sqlite3 bash -c 'cd /opt/pbf-wastewater/rev1.2.48-stage && exec gunicorn --bind 127.0.0.1:8003 --workers 1 web:application'
+sudo -u pbf-wastewater env PBF_APP_DB=/var/lib/pbf-wastewater/dashboard-v1.2.49-stage.sqlite3 bash -c 'cd /opt/pbf-wastewater/rev1.2.49-stage && exec gunicorn --bind 127.0.0.1:8003 --workers 1 web:application'
 ```
 
 **b. Open a tunnel from Windows** in a second PowerShell window:
@@ -90,7 +90,7 @@ ssh -L 8003:127.0.0.1:8003 ubuntu@51.161.52.12
 From the same release folder:
 
 ```bash
-cd ~/ww-upgrade/<the dated folder>/pbf-wastewater-rev1.2.48
+cd ~/ww-upgrade/<the dated folder>/pbf-wastewater-rev1.2.49
 sudo bash deploy.sh --approved
 ```
 
@@ -104,7 +104,7 @@ The script:
 
 If any step fails, it **restores the previous code automatically**.
 
-**Write down the backup path it prints**, e.g. `/var/backups/pbf-wastewater/pre-deploy-1.2.48-20261117-1430`.
+**Write down the backup path it prints**, e.g. `/var/backups/pbf-wastewater/pre-deploy-1.2.49-20261117-1430`.
 
 ## 7. Verify production
 
@@ -116,7 +116,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8001/api/summary   # e
 sudo journalctl -u pbf-wastewater-web -n 20 --no-pager
 ```
 
-All four should say `active`. `pbf-wastewater-backup.timer` is installed by `deploy.sh` from 1.2.48 on. Then open **https://51.161.52.12** in your browser, sign in, and check the new cards. The app sends `no-store` headers, but if the old look still shows, press **Ctrl+F5**.
+All four should say `active`. `pbf-wastewater-backup.timer` is installed by `deploy.sh` from 1.2.49 on. Then open **https://51.161.52.12** in your browser, sign in, and check the new cards. The app sends `no-store` headers, but if the old look still shows, press **Ctrl+F5**.
 
 ## 8. Admin and Operator logins
 
@@ -181,14 +181,14 @@ sudo ls /var/backups/pbf-wastewater-nightly/
 To put the previous web code back, using the backup path from step 6:
 
 ```bash
-sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.48-YYYYMMDD-HHMMSS
+sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.49-YYYYMMDD-HHMMSS
 ```
 
 This restores only the web code. History, settings, email config and the collector are left as they are.
 
 ## Notes
 
-- **Revision number:** this release is **1.2.48**. `deploy.sh` checks that `web.py` reports `1.2.48`, so for the next release update the number everywhere it appears: `web.py` (`summary()`), `test_revision.py`, `deploy.sh`, `stage.sh`, `static/index.html`, `REVISION.txt`, `README.md`/`README.txt` and this guide.
+- **Revision number:** this release is **1.2.49**. `deploy.sh` checks that `web.py` reports `1.2.49`, so for the next release update the number everywhere it appears: `web.py` (`summary()`), `test_revision.py`, `deploy.sh`, `stage.sh`, `static/index.html`, `REVISION.txt`, `README.md`/`README.txt` and this guide.
 - **Not deployed:** `run_local.py`, `.vscode/` and `.local/` are local-development only. They may be in the package, but `deploy.sh` never installs them.
 - **Cleanup (optional):** after a successful deploy you can remove old upload folders under `~/ww-upgrade/`. Keep the `/var/backups/pbf-wastewater/` backups until you're confident in the release.
 - **Never** paste the dashboard, SMTP or Talk2M passwords into chat, commits or this file.
