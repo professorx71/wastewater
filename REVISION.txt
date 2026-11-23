@@ -1,3 +1,13 @@
+Revision 1.2.48 - Wastewater Dashboard
+Design and program by Daniel Salazar.
+Released 2026-11-23.
+
+Changes since Rev 1.2.47:
+- Sludge pick up show tab and Remove - has password
+- Uncommitted work included in this release (see the commit for details).
+
+------------------------------------------------------------------------
+
 Revision 1.2.47 - Wastewater Dashboard
 Design and program by Daniel Salazar.
 Released 2026-11-23.

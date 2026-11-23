@@ -148,8 +148,8 @@ async function loadAccounts(){try{const a=await api('/api/accounts');
  const users=a.users||[];
  $('userState').textContent=users.length?`${users.length} login${users.length>1?'s':''}:`:'None set up — only the Admin can sign in';
  $('userList').innerHTML=users.map(u=>`<li><span><b class="role-tag">${escapeHTML(u.role)}</b> ${escapeHTML(u.username)}${u.source==='file'?' <small>(original server login)</small>':''}</span><button type="button" class="danger" data-remove-user="${escapeHTML(u.username)}" data-remove-role="${escapeHTML(u.role)}">Remove</button></li>`).join('');
- document.querySelectorAll('[data-remove-user]').forEach(b=>b.onclick=async()=>{const name=b.dataset.removeUser,role=b.dataset.removeRole;if(!confirm(`Remove the ${role} login "${name}"? They will no longer be able to sign in.`))return;
-  try{await postJSON('/api/accounts/user/remove',{role,username:name});accountMsg(`${role} login ${name} removed.`,true);loadAccounts()}catch(e){accountMsg('Not removed: '+e.message)}});
+ document.querySelectorAll('[data-remove-user]').forEach(b=>b.onclick=async()=>{const name=b.dataset.removeUser,role=b.dataset.removeRole;const pw=await askPassword(`Remove the ${role} login "${name}"? They will no longer be able to sign in.`);if(!pw)return;
+  try{await postJSON('/api/accounts/user/remove',{role,username:name,password:pw});accountMsg(`${role} login ${name} removed.`,true);loadAccounts()}catch(e){accountMsg('Not removed: '+e.message)}});
  $('opUser').value='';$('disableOperator').disabled=!users.some(u=>u.role==='Operator');
  const P=a.permissions||{},choices=a.permission_choices||[];
  $('rightsBody').innerHTML=[['view','View readings, trends and alarms']].concat(choices.map(c=>[c,RIGHT_LABELS[c]||c])).map(([key,label])=>
@@ -188,11 +188,11 @@ const pickupMsg=(t,ok)=>{const el=$('pickupState');el.textContent=t;el.className
 async function loadPickups(){
  $('pickupForm').hidden=!can('pickup');$('pickupReport').hidden=!can('export');
  const now=vanNow();$('pickupWhen').max=now;if(!$('pickupWhen').value)$('pickupWhen').value=now;if(!$('pickupMonth').value)$('pickupMonth').value=now.slice(0,7);$('pickupMonth').max=now.slice(0,7);
- try{const d=await api('/api/pickups');const rows=d.rows||[];
-  $('pickupList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Pickup (Vancouver)</th><th>Days since previous</th><th>Logged by</th><th>Note</th><th>Action</th></tr></thead><tbody>${rows.map((r,i)=>{const prev=rows[i+1];const gap=prev?((Date.parse(r.picked_at)-Date.parse(prev.picked_at))/864e5).toFixed(1):'—';
-   return `<tr><td>${local(r.picked_at)}</td><td>${gap}</td><td>${escapeHTML(r.logged_by)}</td><td>${escapeHTML(r.note)||'—'}</td><td>${can('pickup')?`<button type="button" class="danger" data-pickup="${r.id}">Remove</button>`:'—'}</td></tr>`}).join('')||'<tr><td colspan="5">No sludge pickups logged yet.</td></tr>'}</tbody></table></div>`;
-  document.querySelectorAll('[data-pickup]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this pickup from the log? Use this only to fix a mistake.'))return;
-   try{await postJSON('/api/pickups/remove',{id:Number(b.dataset.pickup)});pickupMsg('Pickup removed.',true);loadPickups();loadSummary()}catch(e){pickupMsg('Not removed: '+e.message)}});
+ try{const d=await api('/api/pickups'+periodQuery('pickupPeriod'));const rows=d.rows||[];periodCount('pickupPeriod',d.period,['pickup','pickups']);
+  $('pickupList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Pickup (Vancouver)</th><th>Days since previous</th><th>Logged by</th><th>Note</th><th>Action</th></tr></thead><tbody>${rows.map(r=>{const gap=r.gap_days==null?'—':Number(r.gap_days).toFixed(1);
+   return `<tr><td>${local(r.picked_at)}</td><td>${gap}</td><td>${escapeHTML(r.logged_by)}</td><td>${escapeHTML(r.note)||'—'}</td><td>${can('pickup')?`<button type="button" class="danger" data-pickup="${r.id}">Remove</button>`:'—'}</td></tr>`}).join('')||'<tr><td colspan="5">No sludge pickups in this period.</td></tr>'}</tbody></table></div>`;
+  document.querySelectorAll('[data-pickup]').forEach(b=>b.onclick=async()=>{const pw=await askPassword('Remove this pickup from the log? Use this only to fix a mistake.');if(!pw)return;
+   try{await postJSON('/api/pickups/remove',{id:Number(b.dataset.pickup),password:pw});pickupMsg('Pickup removed.',true);loadPickups();loadSummary()}catch(e){pickupMsg('Not removed: '+e.message)}});
  }catch(e){$('pickupList').textContent='Unable to load the pickup log: '+e.message}}
 $('logPickup').addEventListener('click',async()=>{const when=$('pickupWhen').value;if(!when){pickupMsg('Enter the pickup date and time.');return}
  try{await postJSON('/api/pickups',{when,note:$('pickupNote').value});$('pickupNote').value='';$('pickupWhen').value=vanNow();pickupMsg(`Pickup logged for ${when.replace('T',' ')}.`,true);loadPickups();loadSummary()}catch(e){pickupMsg('Not logged: '+e.message)}});
@@ -205,17 +205,17 @@ const calDay=d=>{try{return new Intl.DateTimeFormat('en-CA',{timeZone:'UTC',year
 let calMaxKB=700;
 async function loadCalibrations(){
  $('calReport').hidden=!can('export');const today=vanNow().slice(0,10);$('calDate').max=today;if(!$('calDate').value)$('calDate').value=today;
- try{const d=await api('/api/calibrations');const rows=d.rows||[],sensors=d.sensors||{};calMaxKB=d.max_file_kb||700;$('calMax').textContent=calMaxKB;
+ try{const d=await api('/api/calibrations'+periodQuery('calPeriod'));const rows=d.rows||[],sensors=d.sensors||{},list=d.list||rows;periodCount('calPeriod',d.period,['calibration','calibrations']);calMaxKB=d.max_file_kb||700;$('calMax').textContent=calMaxKB;
   const st=d.status||{};
   $('calLast').innerHTML=Object.entries(sensors).map(([k,s])=>{const last=rows.find(r=>r.sensor===k);const days=last?Math.round((Date.parse(today)-Date.parse(last.calibrated_on))/864e5):null;const c=st[k]||{};
    const due=c.state==='overdue'?`<em class="bad">OVERDUE since ${escapeHTML(calDay(c.due))}</em>`:c.state==='soon'?`<em class="warn">Due ${escapeHTML(calDay(c.due))} (in ${c.days_left} day${c.days_left===1?'':'s'})</em>`:c.due?`<em class="good">Next due ${escapeHTML(calDay(c.due))} (every ${c.every_days} days)</em>`:'';
    return `<div class="${escapeHTML(c.state||'')}"><b>${escapeHTML(s.label)}</b><span>${last?`Last calibrated ${escapeHTML(calDay(last.calibrated_on))} (${days} day${days===1?'':'s'} ago) by ${escapeHTML(last.calibrated_by)}`:'No calibration logged yet'}</span>${due}</div>`}).join('');
-  $('calList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Sensor</th><th>Date calibrated</th><th>Calibrated by</th><th>Certificate no.</th><th>Certificate file</th><th>Note</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${rows.map(r=>
+  $('calList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Sensor</th><th>Date calibrated</th><th>Calibrated by</th><th>Certificate no.</th><th>Certificate file</th><th>Note</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${list.map(r=>
    `<tr><td>${escapeHTML((sensors[r.sensor]||{}).label||r.sensor)}</td><td>${escapeHTML(calDay(r.calibrated_on))}</td><td>${escapeHTML(r.calibrated_by)}</td><td>${escapeHTML(r.certificate_no)||'—'}</td>`+
    `<td>${r.file_name?`<a href="/api/calibrations/certificate?id=${r.id}">${escapeHTML(r.file_name)}</a> <small>(${Math.ceil((r.file_size||0)/1000)} KB)</small>`:'—'}</td><td>${escapeHTML(r.note)||'—'}</td><td>${escapeHTML(r.logged_by)}<br><small>${escapeHTML(local(r.logged_at))}</small></td>`+
-   `<td><button type="button" class="danger" data-cal="${r.id}">Remove</button></td></tr>`).join('')||'<tr><td colspan="8">No calibrations logged yet.</td></tr>'}</tbody></table></div>`;
-  document.querySelectorAll('[data-cal]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this calibration record and its certificate file? Use this only to fix a mistake.'))return;
-   try{await postJSON('/api/calibrations/remove',{id:Number(b.dataset.cal)});calMsg('Calibration removed.',true);loadCalibrations()}catch(e){calMsg('Not removed: '+e.message)}});
+   `<td><button type="button" class="danger" data-cal="${r.id}">Remove</button></td></tr>`).join('')||'<tr><td colspan="8">No calibrations in this period.</td></tr>'}</tbody></table></div>`;
+  document.querySelectorAll('[data-cal]').forEach(b=>b.onclick=async()=>{const pw=await askPassword('Remove this calibration record and its certificate file? Use this only to fix a mistake.');if(!pw)return;
+   try{await postJSON('/api/calibrations/remove',{id:Number(b.dataset.cal),password:pw});calMsg('Calibration removed.',true);loadCalibrations()}catch(e){calMsg('Not removed: '+e.message)}});
  }catch(e){$('calList').textContent='Unable to load the calibration log: '+e.message}}
 const readFile=f=>new Promise((ok,bad)=>{const r=new FileReader();r.onload=()=>ok(String(r.result).split(',')[1]||'');r.onerror=()=>bad(Error('could not read the file'));r.readAsDataURL(f)});
 $('logCal').addEventListener('click',async()=>{const f=$('calFile').files[0];
@@ -252,8 +252,8 @@ async function loadStock(){
     `<span>Since ${escapeHTML(local(s.since))}: start ${fmt(s.base)} L + delivered ${fmt(s.added)} L${s.tag?` − pump used ${fmt(s.used)} L`:''}</span></div>`}).join('');
   $('stockList').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time (Vancouver)</th><th>Chemical</th><th>Entry</th><th>Litres</th><th>Note</th><th>Logged by</th><th>Action</th></tr></thead><tbody>${rows.map(r=>
    `<tr><td>${escapeHTML(local(r.at))}</td><td>${escapeHTML(stockLabels[r.chemical]||r.chemical)}</td><td>${r.kind==='delivery'?'Delivery':'Tank count'}</td><td>${fmt(r.litres)}${(stockProducts[r.chemical]||{}).container_l?` <small>(${fmt(r.litres/stockProducts[r.chemical].container_l)} cont.)</small>`:''}${r.entered?`<br><small>entered as ${escapeHTML(r.entered)}</small>`:''}</td><td>${escapeHTML(r.note)||'—'}</td><td>${escapeHTML(r.logged_by)}</td><td>${can('pickup')?`<button type="button" class="danger" data-stock="${r.id}">Remove</button>`:'—'}</td></tr>`).join('')||'<tr><td colspan="7">No tank counts or deliveries in this period.</td></tr>'}</tbody></table></div>`;
-  document.querySelectorAll('[data-stock]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this stock entry? Use this only to fix a mistake.'))return;
-   try{await postJSON('/api/stock/remove',{id:Number(b.dataset.stock)});stockMsg('Entry removed.',true);loadStock()}catch(e){stockMsg('Not removed: '+e.message)}});
+  document.querySelectorAll('[data-stock]').forEach(b=>b.onclick=async()=>{const pw=await askPassword('Remove this stock entry? Use this only to fix a mistake.');if(!pw)return;
+   try{await postJSON('/api/stock/remove',{id:Number(b.dataset.stock),password:pw});stockMsg('Entry removed.',true);loadStock()}catch(e){stockMsg('Not removed: '+e.message)}});
  }catch(e){$('stockList').textContent='Unable to load chemical stock: '+e.message}}
 $('logStock').addEventListener('click',async()=>{if(!$('stockLitres').value){stockMsg('Enter the quantity.');return}
  const qty=Number($('stockLitres').value),unit=$('stockUnit').value;let litres;
@@ -331,8 +331,8 @@ async function loadPurchases(){
    return `<tr><td>${escapeHTML(calDay(r.purchased_on))}</td><td>${escapeHTML(p.name||r.chemical)}<br><small>Part # ${escapeHTML(p.part||'')}</small></td><td>${cont!=null?fmt(cont)+' '+unit:''}<br><small>${fmt(r.litres)} L${wt?' · '+wt:''}${r.entered?'<br>entered as '+escapeHTML(r.entered):''}</small></td>`+
     `<td>${cost}</td><td>${escapeHTML(r.po)||'—'}</td><td>${escapeHTML(r.supplier)||'—'}</td><td>${recv}</td><td>${escapeHTML(r.logged_by)}</td>`+
     `<td>${can('pickup')?`<button type="button" class="danger" data-buy="${r.id}">Remove</button>`:'—'}</td></tr>`}).join('')||'<tr><td colspan="9">No chemical purchases in this period.</td></tr>'}</tbody></table></div>`;
-  document.querySelectorAll('[data-buy]').forEach(b=>b.onclick=async()=>{if(!confirm('Remove this purchase? If it was received, it is also taken off the chemical stock. Use this only to fix a mistake.'))return;
-   try{await postJSON('/api/purchases/remove',{id:Number(b.dataset.buy)});buyMsg('Purchase removed.',true);loadPurchases();loadStock()}catch(e){buyMsg('Not removed: '+e.message)}});
+  document.querySelectorAll('[data-buy]').forEach(b=>b.onclick=async()=>{const pw=await askPassword('Remove this purchase? If it was received, it is also taken off the chemical stock. Use this only to fix a mistake.');if(!pw)return;
+   try{await postJSON('/api/purchases/remove',{id:Number(b.dataset.buy),password:pw});buyMsg('Purchase removed.',true);loadPurchases();loadStock()}catch(e){buyMsg('Not removed: '+e.message)}});
   document.querySelectorAll('[data-receive]').forEach(b=>b.onclick=async()=>{const when=prompt('Received date and time (YYYY-MM-DD HH:MM, Vancouver time):',vanNow().replace('T',' '));if(!when)return;
    try{await postJSON('/api/purchases/receive',{id:Number(b.dataset.receive),received:when.trim().replace(' ','T')});buyMsg('Purchase marked received and added to stock.',true);loadPurchases();loadStock()}catch(e){buyMsg('Not changed: '+e.message)}});
  }catch(e){$('buyList').textContent='Unable to load chemical purchases: '+e.message}}
@@ -370,6 +370,11 @@ try{$('activeAlarms').open=localStorage.getItem('ww.alarmsOpen')==='1'}catch{}
 $('activeAlarms').addEventListener('toggle',()=>{try{localStorage.setItem('ww.alarmsOpen',$('activeAlarms').open?'1':'0')}catch{};if(summaryData)drawCards()});setInterval(tickAges,5000);
 loadSummary();setInterval(loadSummary,5000);setInterval(()=>{if(!$('trends').hidden)loadHistory()},30000);window.addEventListener('resize',()=>{if(historyData&&!$('trends').hidden)chartRows('historyCharts')});
 
+// ---- Remove needs the signed-in person's password again (guards against deleting a record by accident) ----
+function askPassword(message){return new Promise(resolve=>{const dlg=$('pwDialog'),inp=$('pwInput');$('pwMessage').textContent=message;$('pwUser').textContent=userName||'';inp.value='';
+ const done=v=>{dlg.close();$('pwOk').onclick=$('pwCancel').onclick=null;dlg.onclose=null;resolve(v)};
+ $('pwOk').onclick=e=>{e.preventDefault();if(!inp.value){inp.focus();return}done(inp.value)};$('pwCancel').onclick=e=>{e.preventDefault();done(null)};dlg.oncancel=()=>done(null);
+ inp.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('pwOk').click()}};dlg.showModal();inp.focus()})}
 // ---- Record lists: choose the period to show (alarm events, audit history, tank counts, purchases) ----
 // The choice is remembered per list in this browser. 'A specific day/month' shows a date picker.
 const PERIOD_OPTS=[['today','Today'],['yesterday','Yesterday'],['week','This week (from Monday)'],['7d','Last 7 days'],['month','This month'],['lastmonth','Last month'],
@@ -385,5 +390,10 @@ function periodBox(id,reload){const box=$(id);if(!box)return;let saved=box.datas
  day.value=day.max=today;mon.value=mon.max=today.slice(0,7);
  const sync=()=>{box.querySelector('[data-pday]').hidden=sel.value!=='day';box.querySelector('[data-pmonth]').hidden=sel.value!=='pickmonth'};sync();
  sel.onchange=()=>{sync();try{localStorage.setItem('ww.period.'+id,sel.value)}catch{};reload()};day.onchange=reload;mon.onchange=reload}
-periodBox('eventPeriod',()=>loadEvents());periodBox('auditPeriod',()=>loadAudit());periodBox('stockPeriod',()=>loadStock());periodBox('buyPeriod',()=>loadPurchases());
+periodBox('pickupPeriod',()=>loadPickups());periodBox('calPeriod',()=>loadCalibrations());periodBox('eventPeriod',()=>loadEvents());periodBox('auditPeriod',()=>loadAudit());periodBox('stockPeriod',()=>loadStock());periodBox('buyPeriod',()=>loadPurchases());
 $('buyCurrency').addEventListener('change',()=>{$('buyCurrency').dataset.touched='1'});
+// Audit history: hide or show the whole list (remembered in this browser)
+function setAuditShown(show){$('auditlist').hidden=!show;$('auditPeriod').hidden=!show;$('auditToggle').textContent=show?'Hide list':'Show list';$('auditToggle').setAttribute('aria-expanded',show);
+ try{localStorage.setItem('ww.auditShown',show?'1':'0')}catch{}}
+{let shown=true;try{shown=localStorage.getItem('ww.auditShown')!=='0'}catch{};setAuditShown(shown)}
+$('auditToggle').addEventListener('click',()=>setAuditShown($('auditlist').hidden));

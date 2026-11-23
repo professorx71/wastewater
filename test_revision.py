@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.47'
+        assert s['revision']=='1.2.48'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -137,7 +137,12 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(re.findall(r'<sheet name="([^"]+)"',book.read('xl/workbook.xml').decode()),['Sludge Pickups','SLUDGE_TANK_LEVEL'])
         self.assertIn('Not picked up yet',book.read('xl/worksheets/sheet1.xml').decode())
         # Removing a pickup is audited
-        self.assertEqual(self.call('POST','/api/pickups/remove',*O,{'id':rows[0]['id']})[0],200)
+        # Removing needs the person's own password again
+        code,body=self.call('POST','/api/pickups/remove',*O,{'id':rows[0]['id']})
+        self.assertEqual(code,400);self.assertIn('password',json.loads(body)['error'])
+        code,body=self.call('POST','/api/pickups/remove',*O,{'id':rows[0]['id'],'password':'admin-pass'})
+        self.assertEqual(code,400);self.assertIn('Wrong password',json.loads(body)['error'])
+        self.assertEqual(self.call('POST','/api/pickups/remove',*O,{'id':rows[0]['id'],'password':'op-pass'})[0],200)
         with web.appdb() as conn:
             acts=[r['action'] for r in conn.execute('SELECT action FROM audit')]
         self.assertIn('Sludge pickup logged',acts);self.assertIn('Sludge pickup removed',acts)
@@ -344,7 +349,7 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/settings','eng','eng-pass-1')[0],403)
         self.assertEqual(self.call('GET','/api/audit','eng','eng-pass-1')[0],200)
         # Removing a login stops its sign-in
-        self.assertEqual(self.call('POST','/api/accounts/user/remove',*A,{'role':'Guest','username':'visitor'})[0],200)
+        self.assertEqual(self.call('POST','/api/accounts/user/remove',*A,{'role':'Guest','username':'visitor','password':A[1]})[0],200)
         self.assertEqual(self.call('GET','/api/summary','visitor','gst1')[0],401)
         with web.appdb() as conn:
             details=' '.join(r['action'] for r in conn.execute('SELECT action FROM audit'))
@@ -528,7 +533,7 @@ class RevisionTests(unittest.TestCase):
         self.assertIn('Jane Tech',sheet);self.assertIn('CAL-123',sheet);self.assertIn('EQ tank height (level) sensor',sheet)
         code,text=self.call('GET','/api/export','admin','admin-pass',query='tag=calibration&format=csv')
         self.assertEqual(code,200);self.assertIn('LV-9',text.decode('utf-8-sig'))
-        self.assertEqual(self.call('POST','/api/calibrations/remove','admin','admin-pass',{'id':rows[1]['id']})[0],200)
+        self.assertEqual(self.call('POST','/api/calibrations/remove','admin','admin-pass',{'id':rows[1]['id'],'password':'admin-pass'})[0],200)
         with web.appdb() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM calibrations').fetchone()[0],1)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action LIKE 'Sensor calibration%'").fetchone()[0],3)
@@ -690,7 +695,7 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query=f'tag=purchases&year={year}&format=csv')[0],200)
         rows=json.loads(self.call('GET','/api/purchases','op','op-pass')[1])['rows']
         self.assertEqual(len(rows),2)
-        self.assertEqual(post('/api/purchases/remove',{'id':sa})[0],200)
+        self.assertEqual(post('/api/purchases/remove',{'id':sa,'password':'op-pass'})[0],200)
         with web.appdb() as db:
             self.assertIsNone(web.stock_status(db)['sa93']['litres'])
             self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action LIKE 'Chemical purchase%'").fetchone()[0],4)
@@ -724,13 +729,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.47 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.48 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Run'),[]):   # Floc_Pump_Run already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.47 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.48 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -1035,6 +1040,14 @@ class RevisionTests(unittest.TestCase):
         code,body=self.call('GET','/api/events','admin','admin-pass',query='period=month')
         self.assertEqual(code,200);self.assertIn('period',json.loads(body))
         code,_=self.call('GET','/api/audit','admin','admin-pass',query='period=bogus');self.assertEqual(code,400)
+        with web.appdb() as db:
+            now=datetime.now(timezone.utc)
+            for d in (40,10,2):db.execute('INSERT INTO sludge_pickups(picked_at,note,logged_by,logged_at) VALUES (?,?,?,?)',(web.iso(now-timedelta(days=d)),'','t','x'))
+            db.commit()
+        d=json.loads(self.call('GET','/api/pickups','admin','admin-pass',query='period=7d')[1])
+        self.assertEqual([r['gap_days'] for r in d['rows']],[8.0])   # gap to the pickup before the period
+        d=json.loads(self.call('GET','/api/calibrations','admin','admin-pass',query='period=year')[1])
+        self.assertIn('list',d);self.assertIn('period',d)
 
     def test_purchase_currency_weight_and_entered_quantity(self):
         with web.appdb() as db:

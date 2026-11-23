@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.47','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.48','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -562,7 +562,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.47: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.48: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -841,7 +841,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.47
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.48
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -902,7 +902,7 @@ def period_range(q,today=None):
         return a,(a+timedelta(days=32)).replace(day=1)
     except (TypeError,ValueError):raise ValueError('Choose the day or month')
 
-def period_rows(conn,table,col,q,local_dates=False):
+def period_rows(conn,table,col,q,local_dates=False,cols='*'):
     """Rows of a log table in the chosen period, newest first, with the total count."""
     a,b=period_range(q);where='';args=()
     if a:
@@ -912,7 +912,7 @@ def period_rows(conn,table,col,q,local_dates=False):
             args=tuple(iso(datetime.combine(d,time.min,zone)) for d in (a,b))
         where=f' WHERE {col}>=? AND {col}<?'
     total=conn.execute(f'SELECT COUNT(*) FROM {table}{where}',args).fetchone()[0]
-    rows=[dict(r) for r in conn.execute(f'SELECT * FROM {table}{where} ORDER BY {col} DESC,id DESC LIMIT ?',args+(LIST_MAX,))]
+    rows=[dict(r) for r in conn.execute(f'SELECT {cols} FROM {table}{where} ORDER BY {col} DESC,id DESC LIMIT ?',args+(LIST_MAX,))]
     return rows,{'total':total,'shown':len(rows),'from':a.isoformat() if a else None,'to':(b-timedelta(days=1)).isoformat() if a else None}
 
 def save_pickup(conn,when,note,who):
@@ -972,9 +972,9 @@ def save_calibration(conn,body,who):
                      (sensor,day.isoformat(),name,cert,note,fname,ftype,data,who,iso(datetime.now(UTC))))
     return cur.lastrowid,CAL_SENSORS[sensor][0],day,name,cert
 
+CAL_LIST_COLS='id,sensor,calibrated_on,calibrated_by,certificate_no,note,file_name,file_type,logged_by,logged_at,length(file_data) AS file_size'
 def calibration_records(conn):
-    return [dict(r) for r in conn.execute('SELECT id,sensor,calibrated_on,calibrated_by,certificate_no,note,file_name,file_type,logged_by,logged_at,'
-                                          'length(file_data) AS file_size FROM calibrations ORDER BY calibrated_on DESC,id DESC')]
+    return [dict(r) for r in conn.execute(f'SELECT {CAL_LIST_COLS} FROM calibrations ORDER BY calibrated_on DESC,id DESC')]
 
 def calibration_rows():
     """Excel worksheet rows for the calibration report (all records)."""
@@ -997,6 +997,17 @@ def calibration_rows():
     rows+=[[],['Calibrations are logged on the Audit page. Certificate files are kept in the dashboard database and can be downloaded from the Audit page.']]
     return rows
 
+REMOVE_PATHS=('/api/pickups/remove','/api/purchases/remove','/api/stock/remove','/api/calibrations/remove','/api/accounts/user/remove')
+def confirm_password(env,user,pwd):
+    """Removing a record needs the signed-in person's own password again, so nothing is deleted by a stray click.
+    It is checked like a sign-in: wrong passwords count towards the sign-in lockout."""
+    if not isinstance(pwd,str) or not pwd:raise AccountError('Enter your password to remove this record')
+    if not user:raise AccountError('Sign in with your own login to remove records')
+    token=base64.b64encode(f'{user}:{pwd}'.encode('utf-8')).decode()
+    found=who_for(dict(env,HTTP_AUTHORIZATION='Basic '+token))
+    if found==LOCKED:raise AccountError('Too many wrong passwords. Try again in 15 minutes.')
+    if not isinstance(found,tuple) or found[1]!=user:raise AccountError('Wrong password: nothing was removed')
+
 def handle_post(path,env,role,conn,user=''):
     who=actor(role,user)
     # Custom header + same-origin check defend cookie/browser cross-site submission with Basic auth.
@@ -1008,6 +1019,7 @@ def handle_post(path,env,role,conn,user=''):
     if length<1 or length>(CAL_BODY_MAX if path=='/api/calibrations' else 40000 if path=='/api/settings' else 12000):raise ValueError('Invalid request length')
     body=json.loads(env['wsgi.input'].read(length))
     if not isinstance(body,dict):raise ValueError('JSON object required')
+    if path in REMOVE_PATHS:confirm_password(env,user,body.get('password'))
     if path=='/api/settings':
         if not can(role,'settings'):return '403 Forbidden',{'error':'Admin required to change settings'}
         used={r[0] for r in conn.execute('SELECT chemical FROM chemical_purchases UNION SELECT chemical FROM chemical_stock')}
@@ -1213,13 +1225,26 @@ def application(env,start_response):
                 if not can(role,'accounts'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:return send('200 OK',account_summary(conn))
             if path=='/api/pickups':
-                with appdb() as conn:
-                    rows=[dict(r) for r in conn.execute('SELECT * FROM sludge_pickups ORDER BY picked_at DESC LIMIT 100')]
-                return send('200 OK',{'rows':rows,'pickup_days':PICKUP_DAYS})
+                q={k:v[0] for k,v in parse_qs(env.get('QUERY_STRING','')).items()}
+                try:
+                    with appdb() as conn:
+                        rows,info=period_rows(conn,'sludge_pickups','picked_at',q)
+                        # days since the previous pickup, from the whole log (not only the period shown)
+                        times=[parse(r[0]) for r in conn.execute('SELECT picked_at FROM sludge_pickups ORDER BY picked_at')]
+                except ValueError as exc:return send('400 Bad Request',{'error':str(exc)})
+                for r in rows:
+                    t=parse(r['picked_at']);before=[x for x in times if x<t]
+                    r['gap_days']=round((t-before[-1]).total_seconds()/86400,1) if before else None
+                return send('200 OK',{'rows':rows,'period':info,'pickup_days':PICKUP_DAYS})
             if path=='/api/calibrations':
                 if not can(role,'audit'):return send('403 Forbidden',{'error':'Not permitted'})
-                with appdb() as conn:return send('200 OK',{'rows':calibration_records(conn),'status':calibration_status(conn,settings(conn)),
-                    'sensors':{k:{'label':l,'tag':t} for k,(l,t) in CAL_SENSORS.items()},'max_file_kb':CAL_FILE_MAX//1000})
+                q={k:v[0] for k,v in parse_qs(env.get('QUERY_STRING','')).items()}
+                try:
+                    with appdb() as conn:
+                        lst,info=period_rows(conn,'calibrations','calibrated_on',q,local_dates=True,cols=CAL_LIST_COLS)
+                        return send('200 OK',{'rows':calibration_records(conn),'list':lst,'period':info,'status':calibration_status(conn,settings(conn)),
+                            'sensors':{k:{'label':l,'tag':t} for k,(l,t) in CAL_SENSORS.items()},'max_file_kb':CAL_FILE_MAX//1000})
+                except ValueError as exc:return send('400 Bad Request',{'error':str(exc)})
             if path=='/api/stock':
                 q={k:v[0] for k,v in parse_qs(env.get('QUERY_STRING','')).items()}
                 try:
@@ -1976,7 +2001,7 @@ def pump_rows(start,end,zone,date_range):
 # so other products' usage comes from tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Run':'Flocculant dosing pump'}
-# Settings saved before 1.2.47 (one key per product); read once to build the product list.
+# Settings saved before 1.2.48 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
@@ -1991,7 +2016,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.47 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.48 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
