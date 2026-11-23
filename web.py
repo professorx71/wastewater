@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.43','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.44','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -556,7 +556,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.43: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.44: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -835,7 +835,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.43
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.44
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -1223,7 +1223,9 @@ def application(env,start_response):
 XLSX_MIME=('application','vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 def send_mail(config,subject,body,recipients,attachments=()):
     """attachments: (filename, bytes) Excel files."""
-    msg=EmailMessage();msg['Subject']=subject;msg['From']=config['sender'];msg['To']=', '.join(recipients);msg.set_content(body)
+    msg=EmailMessage()
+    if subject:msg['Subject']=subject   # text messages go without one: phones show "Subj:" and repeat it
+    msg['From']=config['sender'];msg['To']=', '.join(recipients);msg.set_content(body)
     for fname,data in attachments:msg.add_attachment(data,maintype=XLSX_MIME[0],subtype=XLSX_MIME[1],filename=fname)
     import ssl
     host=config['host'];port=int(config.get('port',587))
@@ -1921,7 +1923,7 @@ def pump_rows(start,end,zone,date_range):
 # so other products' usage comes from tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Run':'Flocculant dosing pump'}
-# Settings saved before 1.2.43 (one key per product); read once to build the product list.
+# Settings saved before 1.2.44 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
@@ -1936,7 +1938,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.43 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.44 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -2517,7 +2519,7 @@ def scheduler():
             sends=[(key,lambda s=subject,b=body,bd=build:send_mail(mail,s,b,cfg['recipients'],[bd()] if bd else ()),'Email')]
             if sms and alarm and key.startswith('alarm:'):
                 eid=key.split(':')[2]
-                sends.append(('sms:'+key,lambda s=subject,e=eid:send_mail(mail,s[:60],sms_text(s,e,now),cfg['sms_recipients']),'Text message'))
+                sends.append(('sms:'+key,lambda s=subject,e=eid:send_mail(mail,'',sms_text(s,e,now),cfg['sms_recipients']),'Text message'))
             for dkey,send,what in sends:
                 if conn.execute('SELECT 1 FROM delivery WHERE key=?',(dkey,)).fetchone():
                     continue

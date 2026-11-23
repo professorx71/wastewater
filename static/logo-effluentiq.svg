@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120" role="img" aria-labelledby="t">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 124" role="img" aria-labelledby="t">
   <title id="t">EffluentIQ — Industrial Wastewater Monitoring &amp; Reporting</title>
   <defs>
     <linearGradient id="drop" x1="0" y1="0" x2="0" y2="1">
@@ -23,5 +23,5 @@
   </g>
   <!-- Wordmark -->
   <text x="112" y="70" font-family="'Segoe UI','Inter',Arial,sans-serif" font-size="56" font-weight="800" letter-spacing="0.5" fill="#f1f9ff">Effluent<tspan fill="#f5c542">IQ</tspan></text>
-  <text x="114" y="100" font-family="'Segoe UI','Inter',Arial,sans-serif" font-size="16.5" font-weight="700" letter-spacing="0.8" fill="#a9c5d4">INDUSTRIAL WASTEWATER MONITORING &amp; REPORTING</text>
+  <text x="114" y="104" font-family="'Segoe UI','Inter',Arial,sans-serif" font-size="20" font-weight="700" letter-spacing="0.5" fill="#a9c5d4">INDUSTRIAL WASTEWATER MONITORING &amp; REPORTING</text>
 </svg>

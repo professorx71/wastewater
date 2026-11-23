@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EffluentIQ — Rev 1.2.43</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>EffluentIQ — Rev 1.2.44</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body data-view="overview">
-<header class="topbar"><div class="brand"><h1><img class="logo" src="/logo-effluentiq.svg" alt="EffluentIQ — Industrial Wastewater Monitoring &amp; Reporting" width="600" height="120"></h1><small>Design and program by Daniel Salazar.</small></div>
+<header class="topbar"><div class="brand"><h1><img class="logo" src="/logo-effluentiq.svg" alt="EffluentIQ — Industrial Wastewater Monitoring &amp; Reporting" width="700" height="124"></h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button><button data-view="help">Help</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.43</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.44</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="alarmRibbon" class="sludge-ribbon" role="alert" hidden></div><div id="shelfNote" class="shelf-note" hidden></div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -205,7 +205,7 @@
 <ul>
 <li><b>Alarm email:</b> one email when an alarm comes on, and one when it clears (if the first was sent). Sent only within the alarm notification schedule and not for shelved alarms.</li>
 <li><b>pH alarm follow-ups:</b> while pH stays out of range, another email (and text) says how long the alarm has been active — subject "Wastewater pH HIGH alarm — active 10 min". With the default of 5 minutes they come at 5, 10, 15 … 55 minutes, then every hour (1 h, 2 h …). Set the interval, or 0 to turn follow-ups off, in <b>Settings → pH alarm limits</b>. The recovery email says how long the alarm lasted.</li>
-<li><b>Text message:</b> a short text for each new alarm to the phone addresses in Settings (if turned on).</li>
+<li><b>Text message:</b> a short text for each new alarm to the phone addresses in Settings (if turned on). It is sent without a subject line, so the phone shows the alarm once instead of "Subj: …" followed by the same words.</li>
 <li><b>Daily report:</b> the previous day's readings, a discharge compliance line and the list of alarms.</li>
 <li><b>Monthly</b> and <b>quarterly</b> reports with an Excel attachment.</li>
 <li><b>Calibration reminders</b> at the daily report time.</li>
@@ -255,5 +255,5 @@
 <div class="account-box rights-box"><h4>Rights for each role</h4><div class="tablewrap"><table class="rights"><thead><tr><th>Right</th><th>Admin</th><th>Engineering</th><th>Operator</th><th>Guest</th></tr></thead><tbody id="rightsBody"></tbody></table></div><button id="saveRights" type="button">Save rights</button> <small>Changes apply on the person's next page refresh (within 5 seconds).</small></div></div>
 <p id="accountState" role="status"></p>
 <p>Forgot the Admin password? On the server run <code>sudo -u pbf-wastewater python3 /opt/pbf-wastewater/web/web.py --set-admin USERNAME</code>.</p></div></section>
-<footer>EffluentIQ™ Rev 1.2.43 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
+<footer>EffluentIQ™ Rev 1.2.44 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
 </main></body></html>
