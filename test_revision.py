@@ -38,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.55'
+        assert s['revision']=='1.2.56'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -97,13 +97,27 @@ class RevisionTests(unittest.TestCase):
         with sqlite3.connect(web.DB) as db:
             db.execute("DELETE FROM samples WHERE name IN ('Coag_Pump_Run','Floc_Pump_Rate')")
             for name,stamp,v in [('Coag_Pump_Run',at(16,23),10.0),('Coag_Pump_Run',at(17,1),0.0),
-                                 ('Floc_Pump_Rate',at(17,12),2.0),('Floc_Pump_Rate',at(18,12),0.0)]:
+                                 ('Floc_Pump_Rate',at(17,12),2.0),('Floc_Pump_Rate',at(18,12),0.0),
+                                 ('Caustic_Pump_Run',at(17,8),60.0),('Caustic_Pump_Run',at(17,9),0.0)]:   # 60 mL/min for 1 h = 3.6 L
                 db.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',(name,stamp,v))
         q={'tag':['chemical'],'startDate':['2026-11-17'],'endDate':['2026-11-18']}
         rows=web.report_csv(q)[1].decode('utf-8-sig').splitlines()
-        self.assertEqual(rows[1:],['2026-11-17,0.60,1.44','2026-11-18,0.00,1.44','Total,0.60,2.88'])
+        self.assertEqual(rows[1:],['2026-11-17,0.60,1.44,3.60,0.00','2026-11-18,0.00,1.44,0.00,0.00','Total,0.60,2.88,3.60,0.00'])
+        self.assertEqual(rows[0],'Date (America/Vancouver),Coagulant used (L),Flocculant used (L),Caustic used (L),Acid used (L)')
         book=zipfile.ZipFile(io.BytesIO(web.report_xlsx(q)[1])).read('xl/workbook.xml').decode()
-        self.assertEqual(re.findall(r'<sheet name="([^"]+)"',book),['Chemical Usage','Coag_Pump_Run','Floc_Pump_Rate'])
+        self.assertEqual(re.findall(r'<sheet name="([^"]+)"',book),['Chemical Usage','Coag_Pump_Run','Floc_Pump_Rate','Caustic_Pump_Run','Acid_Pump_Run'])
+
+    def test_acid_and_caustic_pumps(self):
+        stamp=web.iso(datetime.now(timezone.utc)-timedelta(seconds=15))
+        with sqlite3.connect(web.DB) as db:
+            for name,v in [('Caustic_Pump_Run',284.3511),('Caustic_Pump_Rate_Percent',100.9908),('Acid_Pump_Run',0.0),('Acid_Pump_Rate_Percent',0.0)]:
+                db.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',(name,stamp,v))
+        ex=web.summary()['extras']
+        self.assertEqual((ex['Caustic_Pump_Run']['status'],ex['Caustic_Pump_Run']['value'],ex['Caustic_Pump_Run']['raw_unit']),('current',284.3511,'mL/min'))
+        self.assertEqual((ex['Acid_Pump_Rate_Percent']['status'],ex['Acid_Pump_Rate_Percent']['value']),('current',0.0))
+        self.assertIn('Acid_Pump_Run',web.DOSING_TAG_CHOICES)
+        html=(Path(web.__file__).parent/'static'/'index.html').read_text(encoding='utf-8')
+        for i in ('causticRun','acidRun','causticState','acidState','<option value="L/hr">L/hr</option>'):self.assertIn(i,html)
 
     def test_sludge_pickup_log_and_report(self):
         import zipfile
@@ -736,13 +750,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.55 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.56 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.55 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.56 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})

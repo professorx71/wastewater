@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 
 DB = Path('/var/lib/pbf-wastewater/history.sqlite3')
 CREDS = Path('/etc/pbf-wastewater/dmweb.json')
-TAGS = ('pH_Reading', 'EQ_Tank_Level_Ft', 'FLOW_RATE', 'Total_Flow_Li', 'Rake_Speed_VFD', 'Coag_Pump_Rate_Percent', 'Coag_Pump_Run', 'Floc_Pump_Rate_Percent', 'Floc_Pump_Rate', 'SLUDGE_TANK_LEVEL', 'SUMP_PUMP_STATUS', 'Mixer_Pump_Staus', 'SYSTEM_ENABLED', 'EQ_TANK_FULL', 'E_STOP_STATUS', 'MIXER_PUMP_FAULTED', 'RAKE_MOTOR_FAULTED', 'MAX_RGT_PUMP_FAULTED', 'FLOC_COAG_PUMP_FAULTED')
+TAGS = ('pH_Reading', 'EQ_Tank_Level_Ft', 'FLOW_RATE', 'Total_Flow_Li', 'Rake_Speed_VFD', 'Coag_Pump_Rate_Percent', 'Coag_Pump_Run', 'Floc_Pump_Rate_Percent', 'Floc_Pump_Rate', 'Caustic_Pump_Rate_Percent', 'Caustic_Pump_Run', 'Acid_Pump_Rate_Percent', 'Acid_Pump_Run', 'SLUDGE_TANK_LEVEL', 'SUMP_PUMP_STATUS', 'Mixer_Pump_Staus', 'SYSTEM_ENABLED', 'EQ_TANK_FULL', 'E_STOP_STATUS', 'MIXER_PUMP_FAULTED', 'RAKE_MOTOR_FAULTED', 'MAX_RGT_PUMP_FAULTED', 'FLOC_COAG_PUMP_FAULTED')
 
 # Ewon tags renamed in the Ewon: old name -> new name. Floc_Pump_Run (F164:12) became Floc_Pump_Rate (F192:2, mL/min)
 # on 11/23/2026; its earlier readings are moved to the new name so usage and trends continue.

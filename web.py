@@ -17,6 +17,8 @@ TAGS={'pH_Reading':('EQ pH','pH',1), 'EQ_Tank_Level_Ft':('EQ tank level','ft',1)
 DIAGRAM_TAGS={'Rake_Speed_VFD':('Rake motor speed','Hz'),
               'Coag_Pump_Rate_Percent':('Coagulant pump rate','%'),'Coag_Pump_Run':('Coagulant pump run','mL/min'),
               'Floc_Pump_Rate_Percent':('Flocculant pump rate','%'),'Floc_Pump_Rate':('Flocculant pump run','mL/min'),
+              'Caustic_Pump_Rate_Percent':('Caustic pump rate','%'),'Caustic_Pump_Run':('Caustic pump run','mL/min'),
+              'Acid_Pump_Rate_Percent':('Acid pump rate','%'),'Acid_Pump_Run':('Acid pump run','mL/min'),
               'SLUDGE_TANK_LEVEL':('Sludge tank full (PLC B3:0/13, 1 = full)',''),
               'SUMP_PUMP_STATUS':('Electric transfer pump / sump pump running (PLC B3:1/9, 1 = on)',''),
               'Mixer_Pump_Staus':('Electric circulation pump / mixer pump running (PLC N142:0, not 0 = on)',''),
@@ -109,7 +111,7 @@ def summary():
                 if name in DOSING_RUN_TAGS:
                     item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.55','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.56','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
@@ -149,14 +151,16 @@ def history(params,export=False):
 import zipfile
 from xml.sax.saxutils import escape as _xml
 REPORT_TAGS=('EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li','Rake_Speed_VFD',
-             'Coag_Pump_Rate_Percent','Coag_Pump_Run','Floc_Pump_Rate_Percent','Floc_Pump_Rate')
+             'Coag_Pump_Rate_Percent','Coag_Pump_Run','Floc_Pump_Rate_Percent','Floc_Pump_Rate',
+             'Caustic_Pump_Rate_Percent','Caustic_Pump_Run','Acid_Pump_Rate_Percent','Acid_Pump_Run')
 RAW_UNITS={'pH_Reading':'pH','EQ_Tank_Level_Ft':'ft','FLOW_RATE':'GPM','Total_Flow_Li':'L','Rake_Speed_VFD':'Hz',
            'Coag_Pump_Rate_Percent':'%','Coag_Pump_Run':'mL/min','Floc_Pump_Rate_Percent':'%','Floc_Pump_Rate':'mL/min',
+           'Caustic_Pump_Rate_Percent':'%','Caustic_Pump_Run':'mL/min','Acid_Pump_Rate_Percent':'%','Acid_Pump_Run':'mL/min',
            'SLUDGE_TANK_LEVEL':'1 = full'}
 # Unit changes made in the PLC/Ewon: (UTC time from which the new unit applies, unit), oldest first.
 # Coag_Pump_Run (F192:0) changed from mL/min to mL/hr on 11/19/2026 at 11:01 Vancouver time.
 UNIT_CHANGES={'Coag_Pump_Run':(('2026-11-19T18:01:00.000000Z','mL/hr'),)}
-DOSING_RUN_TAGS=('Coag_Pump_Run','Floc_Pump_Rate')
+DOSING_RUN_TAGS=('Coag_Pump_Run','Floc_Pump_Rate','Caustic_Pump_Run','Acid_Pump_Run')
 _PER_MIN={'mL/min':1.0,'mL/hr':1/60}
 def raw_unit(name,stamp):
     """Unit the Ewon used for this tag at this time (stamp: stored ISO UTC text)."""
@@ -252,7 +256,7 @@ def quarter_label(d):
     return f"{d.year} Q{q+1} ({('Jan-Mar','Apr-Jun','Jul-Sep','Oct-Dec')[q]})"
 
 
-CHEMICAL_TAGS=(('Coag_Pump_Run','Coagulant'),('Floc_Pump_Rate','Flocculant'))
+CHEMICAL_TAGS=(('Coag_Pump_Run','Coagulant'),('Floc_Pump_Rate','Flocculant'),('Caustic_Pump_Run','Caustic'),('Acid_Pump_Run','Acid'))
 def chemical_usage(start,end,zone):
     """Litres used per local day for each dosing pump: the pump's reading (converted to mL/min) is held until the
     next reading (the Ewon logs on change) and multiplied by the time it was held."""
@@ -283,7 +287,7 @@ def chemical_rows(start,end,zone,date_range):
     days=[];d=first
     while d<=last:days.append(d);d+=timedelta(days=1)
     names=[n for _,n in CHEMICAL_TAGS]
-    rows=[[B('Chemical usage (litres)')],['Tags','Coag_Pump_Run (mL/hr from 11/19/2026 11:01, mL/min before), Floc_Pump_Rate (mL/min)'],['Date range (America/Vancouver)',date_range],[]]
+    rows=[[B('Chemical usage (litres)')],['Tags','Coag_Pump_Run (mL/hr from 11/19/2026 11:01, mL/min before), Floc_Pump_Rate, Caustic_Pump_Run, Acid_Pump_Run (mL/min)'],['Date range (America/Vancouver)',date_range],[]]
     totals=[sum(used[t].values()) for t,_ in CHEMICAL_TAGS]
     rows+=[[B('Total for date range')]+[B(f'{n} (L)') for n in names],['All days']+[num(v) for v in totals],[]]
     groups={}
@@ -593,7 +597,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.55: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.56: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -876,7 +880,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.55
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.56
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -2087,8 +2091,9 @@ def pump_rows(start,end,zone,date_range):
 # 'chemical_products' setting. Only the coagulant and flocculant dosing pumps report their rate to the PLC,
 # so other products' usage comes from tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
-DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump'}
-# Settings saved before 1.2.55 (one key per product); read once to build the product list.
+DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump',
+                    'Caustic_Pump_Run':'Caustic dosing pump','Acid_Pump_Run':'Acid dosing pump'}
+# Settings saved before 1.2.56 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
@@ -2103,7 +2108,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.55 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.56 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")

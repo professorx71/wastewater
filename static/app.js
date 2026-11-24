@@ -16,6 +16,7 @@ const can=p=>perms.has(p);
 // Discharge flow display unit, remembered per browser. The server sends L/min (raw GPM x 3.78541).
 const GAL_PER_L=1/3.78541;
 let doseUnit='mL/min';try{if(['mL/hr','ml/h'].includes(localStorage.getItem('ww.doseUnit')))doseUnit='mL/hr'}catch{}
+let phDoseUnit='mL/min';try{if(localStorage.getItem('ww.phDoseUnit')==='L/hr')phDoseUnit='L/hr'}catch{}
 let flowUnit='L/min';try{if(['GPM','gal/min'].includes(localStorage.getItem('ww.flowUnit')))flowUnit='GPM'}catch{}
 const flowValue=v=>v==null?v:(flowUnit==='GPM'?v*GAL_PER_L:v);
 const unitFor=(key,unit)=>key==='FLOW_RATE'?flowUnit:unit;
@@ -55,13 +56,16 @@ function drawCards(){
  set('tankPh','pH_Reading');set('tankLevel','EQ_Tank_Level_Ft');{const t=item('FLOW_RATE');$('diagramFlow').textContent=(t.status==='current'&&t.value!=null?fmt(flowValue(t.value)):'--.--')+' '+flowUnit}
  {const ex=summaryData.extras||{};const show=(id,tag,unit,dec)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=(ok?Number(r.value).toFixed(dec):'--.'+'-'.repeat(dec))+' '+unit;el.classList.toggle('live',ok);el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.stamp?' · '+local(r.stamp):''}`};
   // Dosing run rates arrive in mL/min (the server converts PLC mL/hr); shown in the unit picked here.
-  const dose=(id,tag)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=ok?(doseUnit==='mL/hr'?(r.value*60).toFixed(1):Number(r.value).toFixed(2)):'--.--';el.classList.toggle('live',ok);
+  // Acid and caustic run rates have their own unit choice: mL/min or L/hr (mL/min x 60 / 1000).
+  const dose=(id,tag,ph)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=ok?(ph?(phDoseUnit==='L/hr'?(r.value*0.06).toFixed(2):Number(r.value).toFixed(2)):(doseUnit==='mL/hr'?(r.value*60).toFixed(1):Number(r.value).toFixed(2))):'--.--';el.classList.toggle('live',ok);
    el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.raw_value!=null?' · PLC value '+Number(r.raw_value).toFixed(2)+' '+r.raw_unit:''}${r.stamp?' · '+local(r.stamp):''}`};
   document.querySelectorAll('[data-dose-unit]').forEach(s=>{if(s.value!==doseUnit)s.value=doseUnit;s.onchange=()=>{doseUnit=s.value==='mL/hr'?'mL/hr':'mL/min';try{localStorage.setItem('ww.doseUnit',doseUnit)}catch{};drawCards()}});
+  document.querySelectorAll('[data-ph-dose-unit]').forEach(s=>{if(s.value!==phDoseUnit)s.value=phDoseUnit;s.onchange=()=>{phDoseUnit=s.value==='L/hr'?'L/hr':'mL/min';try{localStorage.setItem('ww.phDoseUnit',phDoseUnit)}catch{};drawCards()}});
   show('rakeSpeed','Rake_Speed_VFD','Hz',1);show('coagRate','Coag_Pump_Rate_Percent','%',1);dose('coagRun','Coag_Pump_Run');show('flocRate','Floc_Pump_Rate_Percent','%',1);dose('flocRun','Floc_Pump_Rate');
+  show('causticRate','Caustic_Pump_Rate_Percent','%',1);dose('causticRun','Caustic_Pump_Run',true);show('acidRate','Acid_Pump_Rate_Percent','%',1);dose('acidRun','Acid_Pump_Run',true);
   // Dosing pump run status: RUNNING while its run reading is at least 0.01 mL/min (the server's DOSE_RUNNING_MIN).
   // A smaller leftover reading shows as 0.00 mL/min, so it counts as STOPPED too.
-  for(const [id,tag] of [['coagState','Coag_Pump_Run'],['flocState','Floc_Pump_Rate']]){const r=ex[tag]||{};const known=r.status==='current'&&r.value!=null;const v=Number(r.value);const on=known&&v>=0.01;
+  for(const [id,tag] of [['coagState','Coag_Pump_Run'],['flocState','Floc_Pump_Rate'],['causticState','Caustic_Pump_Run'],['acidState','Acid_Pump_Run']]){const r=ex[tag]||{};const known=r.status==='current'&&r.value!=null;const v=Number(r.value);const on=known&&v>=0.01;
    const el=$(id);el.textContent=known?(on?'● RUNNING':'STOPPED'):'--';el.className='dose-state'+(known?(on?' on':' off'):'');
    el.title=known?`${on?'RUNNING':'STOPPED'}: run reading ${v.toFixed(4)} mL/min${r.raw_value!=null?` (PLC value ${Number(r.raw_value).toFixed(2)} ${r.raw_unit})`:''}; below 0.01 mL/min counts as stopped`:`${tag}: ${r.status||'missing'}`}
   {const r=ex.SLUDGE_TANK_LEVEL||{};const known=r.status==='current'&&r.value!=null;const full=known&&Number(r.value)>=1;

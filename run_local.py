@@ -43,6 +43,8 @@ def reading(t, total):
     return {'pH_Reading': ph, 'EQ_Tank_Level_Ft': level, 'FLOW_RATE': gpm, 'Total_Flow_Li': total, 'Rake_Speed_VFD': rake,
             'Coag_Pump_Rate_Percent': 15 + random.gauss(0, 0.3), 'Coag_Pump_Run': 570 + random.gauss(0, 6),  # Coag run is mL/hr, like the PLC since 11/19/2026
             'Floc_Pump_Rate_Percent': 51 + random.gauss(0, 0.5), 'Floc_Pump_Rate': 1.6 + random.gauss(0, 0.03),
+            'Caustic_Pump_Rate_Percent': 100 + random.gauss(0, 0.5), 'Caustic_Pump_Run': 284 + random.gauss(0, 3),
+            'Acid_Pump_Rate_Percent': 0.0, 'Acid_Pump_Run': 0.0,
             'SLUDGE_TANK_LEVEL': float(int(t.timestamp() // 120) % 2),  # full / not full every 2 minutes
             'SUMP_PUMP_STATUS': float(int(t.timestamp() // 90) % 2), 'Mixer_Pump_Staus': 1.0,
             # PLC alarm bits (1 = alarm): the E-Stop trips for 2 minutes every 10; the faults stay good.
