@@ -34,14 +34,14 @@ def write_auth(path, user, password):
 
 
 def reading(t, total):
-    """Plausible raw tag values at time t (FLOW_RATE is raw US gal/min)."""
+    """Plausible raw tag values at time t (FLOW_RATE is raw GPM)."""
     h = t.timestamp() / 3600
     ph = 7.0 + 0.35 * math.sin(h / 3.1) + random.gauss(0, 0.04)
     level = 2.5 + 0.45 * math.sin(h / 5.3) + random.gauss(0, 0.02)
     gpm = max(0.0, 13.2 + 1.6 * math.sin(h / 2.2) + random.gauss(0, 0.25))
     rake = max(0.0, 30.0 + 2.0 * math.sin(h / 1.7) + random.gauss(0, 0.2))
     return {'pH_Reading': ph, 'EQ_Tank_Level_Ft': level, 'FLOW_RATE': gpm, 'Total_Flow_Li': total, 'Rake_Speed_VFD': rake,
-            'Coag_Pump_Rate_Percent': 15 + random.gauss(0, 0.3), 'Coag_Pump_Run': 570 + random.gauss(0, 6),  # Coag run is ml/h, like the PLC since 11/19/2026
+            'Coag_Pump_Rate_Percent': 15 + random.gauss(0, 0.3), 'Coag_Pump_Run': 570 + random.gauss(0, 6),  # Coag run is mL/hr, like the PLC since 11/19/2026
             'Floc_Pump_Rate_Percent': 51 + random.gauss(0, 0.5), 'Floc_Pump_Rate': 1.6 + random.gauss(0, 0.03),
             'SLUDGE_TANK_LEVEL': float(int(t.timestamp() // 120) % 2),  # full / not full every 2 minutes
             'SUMP_PUMP_STATUS': float(int(t.timestamp() // 90) % 2), 'Mixer_Pump_Staus': 1.0,

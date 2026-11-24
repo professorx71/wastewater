@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.53'
+        assert s['revision']=='1.2.54'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -161,16 +161,16 @@ class RevisionTests(unittest.TestCase):
 
     def test_coag_unit_change_to_ml_per_hour(self):
         import zipfile
-        # Coag_Pump_Run switched from ml/min to ml/h at 2026-11-19 18:01 UTC
+        # Coag_Pump_Run switched from mL/min to mL/hr at 2026-11-19 18:01 UTC
         with sqlite3.connect(web.DB) as db:
             for stamp,v,q in [('2026-11-19T17:00:00.000000Z',10.0,None),('2026-11-19T18:01:02.000000Z',600.0,'initialGood')]:
                 db.execute('INSERT INTO samples(name,stamp,value,quality) VALUES(?,?,?,?)',('Coag_Pump_Run',stamp,v,q))
         self.assertEqual(web.ml_per_min('Coag_Pump_Run','2026-11-19T18:00:59.000000Z',600.0),600.0)
         self.assertEqual(web.ml_per_min('Coag_Pump_Run','2026-11-19T18:01:02.000000Z',600.0),10.0)
         self.assertEqual(web.ml_per_min('Floc_Pump_Rate','2026-11-20T00:00:00.000000Z',1.5),1.5)
-        # Litres: 10 ml/min held 61 min 2 s, then 600 ml/h (= 10 ml/min) to the end of the Vancouver day
+        # Litres: 10 mL/min held 61 min 2 s, then 600 mL/hr (= 10 mL/min) to the end of the Vancouver day
         start=datetime(2026,11,19,17,tzinfo=timezone.utc);end=datetime(2026,11,19,19,tzinfo=timezone.utc)
-        # Summary sends ml/min; 'initialGood' counts as a good reading
+        # Summary sends mL/min; 'initialGood' counts as a good reading
         real=web.datetime
         class Fixed(real):
             @classmethod
@@ -185,11 +185,11 @@ class RevisionTests(unittest.TestCase):
         try:used=web.chemical_usage(start,end,web.ZoneInfo('America/Vancouver'))['Coag_Pump_Run']
         finally:web.datetime=real
         self.assertAlmostEqual(sum(used.values()),10*120/1000)
-        self.assertEqual((item['status'],item['value'],item['raw_value'],item['raw_unit']),('current',10.0,600.0,'ml/h'))
+        self.assertEqual((item['status'],item['value'],item['raw_value'],item['raw_unit']),('current',10.0,600.0,'mL/hr'))
         # Worksheet rows show the unit used at the time
         q={'tag':['Coag_Pump_Run'],'from':[web.iso(start)],'to':[web.iso(end)]}
         rows=web.report_csv(q)[1].decode('utf-8-sig').splitlines()[1:]
-        self.assertEqual([r.split(',')[-1] for r in rows],['ml/min','ml/h'])
+        self.assertEqual([r.split(',')[-1] for r in rows],['mL/min','mL/hr'])
 
     def test_excel_report(self):
         import zipfile
@@ -204,7 +204,7 @@ class RevisionTests(unittest.TestCase):
         sheets=re.findall(r'<sheet name="([^"]+)"',book)
         flow=z.read(f'xl/worksheets/sheet{sheets.index("FLOW_RATE")+1}.xml').decode()
         self.assertIn('Timestamp America/Vancouver',flow)
-        self.assertIn('US gal/min',flow)
+        self.assertIn('GPM',flow)
         summary=z.read('xl/worksheets/sheet1.xml').decode()
         self.assertIn('EOD Daily Usage (L)',summary);self.assertNotIn('FLOW_RATE',summary);self.assertIn('Total_Flow_Li',summary)
         self.assertIn('Total Quarterly Usage',summary);self.assertIn('Total Monthly Usage',summary)
@@ -599,7 +599,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_chemical_stock_estimate_and_low_alarm(self):
         now=datetime.now(timezone.utc)
-        with sqlite3.connect(web.DB) as h:   # coagulant pump at 60 ml/h (= 1 ml/min) for the last 10 hours: 0.6 L used
+        with sqlite3.connect(web.DB) as h:   # coagulant pump at 60 mL/hr (= 1 mL/min) for the last 10 hours: 0.6 L used
             h.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',('Coag_Pump_Run',web.iso(now-timedelta(hours=10)),60.0))
         when=(now-timedelta(hours=10)).astimezone(web.ZoneInfo('America/Vancouver')).strftime('%Y-%m-%dT%H:%M')
         with web.appdb() as db:
@@ -734,13 +734,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.53 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.54 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.53 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.54 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -881,7 +881,7 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(lvl['ahead_min'],60)
         self.assertEqual(f['FLOW_RATE']['predicted'],0)
         self.assertNotIn('Total_Flow_Li',f)   # not live: no prediction
-        # Flow is stored in gal/min and shown in L/min: the prediction is in L/min too
+        # Flow is stored in GPM and shown in L/min: the prediction is in L/min too
         with sqlite3.connect(web.DB) as db:db.execute("DELETE FROM samples WHERE name='FLOW_RATE'")
         self._samples([('FLOW_RATE',now-timedelta(minutes=30-m),10.0+0.01*m) for m in range(31)])
         f=web.card_forecasts([{'name':'FLOW_RATE','status':'current','value':10.3*3.78541}],now)['FLOW_RATE']
@@ -941,7 +941,7 @@ class RevisionTests(unittest.TestCase):
         now=datetime.now(timezone.utc)
         with sqlite3.connect(web.DB) as db:db.execute("DELETE FROM samples WHERE name='FLOW_RATE'")
         self._samples([('FLOW_RATE',now-timedelta(minutes=m),10.0) for m in (14,10,5,1)]+
-                      [('Coag_Pump_Run',now-timedelta(minutes=30),0.2),('Floc_Pump_Rate',now-timedelta(minutes=30),5.0)])   # 0.2 ml/h = 0.003 ml/min shows 0.00: stopped
+                      [('Coag_Pump_Run',now-timedelta(minutes=30),0.2),('Floc_Pump_Rate',now-timedelta(minutes=30),5.0)])   # 0.2 mL/hr = 0.003 mL/min shows 0.00: stopped
         cfg=dict(web.DEFAULTS,dosing_alarm_enabled=True,dosing_alarm_minutes=15)
         local=now.astimezone(web.ZoneInfo('America/Vancouver'))
         with web.appdb() as db:
@@ -960,7 +960,7 @@ class RevisionTests(unittest.TestCase):
         zone=web.ZoneInfo('America/Vancouver');now=datetime.now(timezone.utc);today=now.astimezone(zone).date();y=today-timedelta(days=1)
         at=lambda h,d=y:datetime.combine(d,web.time(h),zone).astimezone(timezone.utc)
         with sqlite3.connect(web.DB) as h:h.execute("DELETE FROM samples WHERE name IN ('Coag_Pump_Run','Floc_Pump_Rate','Total_Flow_Li')")
-        # coagulant pump at 60 ml/h (1 ml/min) all of yesterday; 10,000 L discharged yesterday
+        # coagulant pump at 60 mL/hr (1 mL/min) all of yesterday; 10,000 L discharged yesterday
         self._samples([('Coag_Pump_Run',at(0),60.0),('Coag_Pump_Run',at(0,today),0.0),('Total_Flow_Li',at(9),100.0),('Total_Flow_Li',at(18),10100.0)])
         with web.appdb() as db:
             cfg=web.settings(db);items=[dict(p,prices=[{'from':'2020-01-01','price':v}] if (v:={'coag':100.0,'caustic':500.0}.get(p['key'])) else []) for p in cfg['chemical_products']]

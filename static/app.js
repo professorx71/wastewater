@@ -13,13 +13,13 @@ let summaryData=null;let historyData=null;let userRole='Operator';let userName='
 const VIEW_PERMS={settings:['settings','email','settings_view'],audit:['audit'],reports:['export'],events:['alarms']};
 const canView=name=>!VIEW_PERMS[name]||VIEW_PERMS[name].some(p=>can(p));
 const can=p=>perms.has(p);
-// Discharge flow display unit, remembered per browser. The server sends L/min (raw US gal/min x 3.78541).
+// Discharge flow display unit, remembered per browser. The server sends L/min (raw GPM x 3.78541).
 const GAL_PER_L=1/3.78541;
-let doseUnit='ml/min';try{if(localStorage.getItem('ww.doseUnit')==='ml/h')doseUnit='ml/h'}catch{}
-let flowUnit='L/min';try{if(localStorage.getItem('ww.flowUnit')==='gal/min')flowUnit='gal/min'}catch{}
-const flowValue=v=>v==null?v:(flowUnit==='gal/min'?v*GAL_PER_L:v);
+let doseUnit='mL/min';try{if(['mL/hr','ml/h'].includes(localStorage.getItem('ww.doseUnit')))doseUnit='mL/hr'}catch{}
+let flowUnit='L/min';try{if(['GPM','gal/min'].includes(localStorage.getItem('ww.flowUnit')))flowUnit='GPM'}catch{}
+const flowValue=v=>v==null?v:(flowUnit==='GPM'?v*GAL_PER_L:v);
 const unitFor=(key,unit)=>key==='FLOW_RATE'?flowUnit:unit;
-function setFlowUnit(u){flowUnit=u==='gal/min'?'gal/min':'L/min';try{localStorage.setItem('ww.flowUnit',flowUnit)}catch{};drawCards();if(historyData&&!$('trends').hidden)chartRows('historyCharts')}
+function setFlowUnit(u){flowUnit=u==='GPM'?'GPM':'L/min';try{localStorage.setItem('ww.flowUnit',flowUnit)}catch{};drawCards();if(historyData&&!$('trends').hidden)chartRows('historyCharts')}
 function applyRole(){document.querySelectorAll('.accounts').forEach(p=>p.hidden=!can('accounts'));document.querySelectorAll('nav button').forEach(b=>{b.hidden=!canView(b.dataset.view)});const open=document.querySelector('.view:not([hidden])');if(open&&!canView(open.id))view('overview');lockSettings();$('openAlarms').hidden=!can('alarms')}
 async function api(path,opts={}){const response=await fetch(path,{cache:'no-store',...opts});if(!response.ok)throw Error('HTTP '+response.status);return response.json()}
 function ageText(stamp){if(!stamp)return 'No readings';const s=Math.max(0,Math.round((Date.now()+clockOffset-Date.parse(stamp))/1000));return 'Updated '+(s<60?s+' s':s<3600?Math.floor(s/60)+' min':Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min')+' ago'}
@@ -47,23 +47,23 @@ function drawCards(){
    const item=lookup[key]||{};const status=item.status||'missing';const good=status==='current'&&item.value!=null;
    const pill=good?'LIVE':status.toUpperCase();
    const tip=`${label}: ${status} · ${item.stamp?local(item.stamp):'No records'}${item.source==='live'?' · live from the Ewon (Talk2M M2Web)':item.stamp?' · from the logged history (DataMailbox)':''}`;
-   return `<div class="card ${good?'':'not-live'}" title="${escapeHTML(tip)}"><div class="card-icon" aria-hidden="true">${ICONS[key]||''}</div><div class="card-meta"><div class="name">${escapeHTML(label)}</div><span class="pill-row"><span class="live-pill ${escapeHTML(status)}"><i class="state-dot ${escapeHTML(status)}"></i>${escapeHTML(pill)}</span></span><small class="age" data-stamp="${escapeHTML(item.stamp||'')}">${escapeHTML(ageText(item.stamp))}</small></div><div class="card-divider" aria-hidden="true"></div><div class="value"><span class="reading">${good?fmt(key==='FLOW_RATE'?flowValue(item.value):item.value):'--.--'}${key==='FLOW_RATE'?`<select class="unit unit-select" data-flow-unit aria-label="Discharge flow unit" title="Click to show litres or US gallons per minute"><option value="L/min"${flowUnit==='L/min'?' selected':''}>L/min</option><option value="gal/min"${flowUnit==='gal/min'?' selected':''}>gal/min</option></select>`:`<span class="unit">${unit}</span>`}</span>${good?forecastBadge(key,unit):''}</div></div>`;
+   return `<div class="card ${good?'':'not-live'}" title="${escapeHTML(tip)}"><div class="card-icon" aria-hidden="true">${ICONS[key]||''}</div><div class="card-meta"><div class="name">${escapeHTML(label)}</div><span class="pill-row"><span class="live-pill ${escapeHTML(status)}"><i class="state-dot ${escapeHTML(status)}"></i>${escapeHTML(pill)}</span></span><small class="age" data-stamp="${escapeHTML(item.stamp||'')}">${escapeHTML(ageText(item.stamp))}</small></div><div class="card-divider" aria-hidden="true"></div><div class="value"><span class="reading">${good?fmt(key==='FLOW_RATE'?flowValue(item.value):item.value):'--.--'}${key==='FLOW_RATE'?`<select class="unit unit-select" data-flow-unit aria-label="Discharge flow unit" title="Click to show litres or US gallons per minute"><option value="L/min"${flowUnit==='L/min'?' selected':''}>L/min</option><option value="GPM"${flowUnit==='GPM'?' selected':''}>GPM</option></select>`:`<span class="unit">${unit}</span>`}</span>${good?forecastBadge(key,unit):''}</div></div>`;
  }).join('');
  document.querySelectorAll('[data-flow-unit]').forEach(s=>s.onchange=()=>setFlowUnit(s.value));
  const item=(key)=>lookup[key]||{};
  const set=(id,key,unit='')=>{const t=item(key);$(id).textContent=(t.status==='current'&&t.value!=null?fmt(t.value):'--.--')+(unit?' '+unit:'')};
  set('tankPh','pH_Reading');set('tankLevel','EQ_Tank_Level_Ft');{const t=item('FLOW_RATE');$('diagramFlow').textContent=(t.status==='current'&&t.value!=null?fmt(flowValue(t.value)):'--.--')+' '+flowUnit}
  {const ex=summaryData.extras||{};const show=(id,tag,unit,dec)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=(ok?Number(r.value).toFixed(dec):'--.'+'-'.repeat(dec))+' '+unit;el.classList.toggle('live',ok);el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.stamp?' · '+local(r.stamp):''}`};
-  // Dosing run rates arrive in ml/min (the server converts PLC ml/h); shown in the unit picked here.
-  const dose=(id,tag)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=ok?(doseUnit==='ml/h'?(r.value*60).toFixed(1):Number(r.value).toFixed(2)):'--.--';el.classList.toggle('live',ok);
+  // Dosing run rates arrive in mL/min (the server converts PLC mL/hr); shown in the unit picked here.
+  const dose=(id,tag)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=ok?(doseUnit==='mL/hr'?(r.value*60).toFixed(1):Number(r.value).toFixed(2)):'--.--';el.classList.toggle('live',ok);
    el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.raw_value!=null?' · PLC value '+Number(r.raw_value).toFixed(2)+' '+r.raw_unit:''}${r.stamp?' · '+local(r.stamp):''}`};
-  document.querySelectorAll('[data-dose-unit]').forEach(s=>{if(s.value!==doseUnit)s.value=doseUnit;s.onchange=()=>{doseUnit=s.value==='ml/h'?'ml/h':'ml/min';try{localStorage.setItem('ww.doseUnit',doseUnit)}catch{};drawCards()}});
+  document.querySelectorAll('[data-dose-unit]').forEach(s=>{if(s.value!==doseUnit)s.value=doseUnit;s.onchange=()=>{doseUnit=s.value==='mL/hr'?'mL/hr':'mL/min';try{localStorage.setItem('ww.doseUnit',doseUnit)}catch{};drawCards()}});
   show('rakeSpeed','Rake_Speed_VFD','Hz',1);show('coagRate','Coag_Pump_Rate_Percent','%',1);dose('coagRun','Coag_Pump_Run');show('flocRate','Floc_Pump_Rate_Percent','%',1);dose('flocRun','Floc_Pump_Rate');
-  // Dosing pump run status: RUNNING while its run reading is at least 0.01 ml/min (the server's DOSE_RUNNING_MIN).
-  // A smaller leftover reading shows as 0.00 ml/min, so it counts as STOPPED too.
+  // Dosing pump run status: RUNNING while its run reading is at least 0.01 mL/min (the server's DOSE_RUNNING_MIN).
+  // A smaller leftover reading shows as 0.00 mL/min, so it counts as STOPPED too.
   for(const [id,tag] of [['coagState','Coag_Pump_Run'],['flocState','Floc_Pump_Rate']]){const r=ex[tag]||{};const known=r.status==='current'&&r.value!=null;const v=Number(r.value);const on=known&&v>=0.01;
    const el=$(id);el.textContent=known?(on?'● RUNNING':'STOPPED'):'--';el.className='dose-state'+(known?(on?' on':' off'):'');
-   el.title=known?`${on?'RUNNING':'STOPPED'}: run reading ${v.toFixed(4)} ml/min${r.raw_value!=null?` (PLC value ${Number(r.raw_value).toFixed(2)} ${r.raw_unit})`:''}; below 0.01 ml/min counts as stopped`:`${tag}: ${r.status||'missing'}`}
+   el.title=known?`${on?'RUNNING':'STOPPED'}: run reading ${v.toFixed(4)} mL/min${r.raw_value!=null?` (PLC value ${Number(r.raw_value).toFixed(2)} ${r.raw_unit})`:''}; below 0.01 mL/min counts as stopped`:`${tag}: ${r.status||'missing'}`}
   {const r=ex.SLUDGE_TANK_LEVEL||{};const known=r.status==='current'&&r.value!=null;const full=known&&Number(r.value)>=1;
    $('sludgeState').textContent=known?(full?'FULL':'NORMAL'):'--';$('sludgeTank').className='sludge-tank'+(full?' full':known?' normal':'');
    $('sludgeTank').title=`Sludge tank level switch (SLUDGE_TANK_LEVEL, PLC B3:0/13): ${known?(full?'FULL':'not full'):(r.status||'missing')}${r.stamp?' · since '+local(r.stamp):''}`;

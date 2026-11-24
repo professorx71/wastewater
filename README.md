@@ -1,4 +1,4 @@
-# Wastewater Dashboard — Rev 1.2.53
+# Wastewater Dashboard — Rev 1.2.54
 
 **Design and program by Daniel Salazar**
 
@@ -16,7 +16,7 @@ This repo contains **application source**, interface artwork, deployment scripts
 | --- | --- | --- |
 | `pH_Reading` | EQ pH | pH |
 | `EQ_Tank_Level_Ft` | EQ Tank Level | ft |
-| `FLOW_RATE` | Discharge Flow | L/min (raw US gal/min × 3.78541) |
+| `FLOW_RATE` | Discharge Flow | L/min (raw GPM × 3.78541) |
 | `Total_Flow_Li` | Total Flow | L |
 
 ## Application features
