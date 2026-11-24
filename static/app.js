@@ -46,7 +46,7 @@ function drawCards(){
  $('cards').innerHTML=TAGS.map(([key,label,unit])=>{
    const item=lookup[key]||{};const status=item.status||'missing';const good=status==='current'&&item.value!=null;
    const pill=good?'LIVE':status.toUpperCase();
-   const tip=`${label}: ${status} · ${item.stamp?local(item.stamp):'No records'}`;
+   const tip=`${label}: ${status} · ${item.stamp?local(item.stamp):'No records'}${item.source==='live'?' · live from the Ewon (Talk2M M2Web)':item.stamp?' · from the logged history (DataMailbox)':''}`;
    return `<div class="card ${good?'':'not-live'}" title="${escapeHTML(tip)}"><div class="card-icon" aria-hidden="true">${ICONS[key]||''}</div><div class="card-meta"><div class="name">${escapeHTML(label)}</div><span class="pill-row"><span class="live-pill ${escapeHTML(status)}"><i class="state-dot ${escapeHTML(status)}"></i>${escapeHTML(pill)}</span></span><small class="age" data-stamp="${escapeHTML(item.stamp||'')}">${escapeHTML(ageText(item.stamp))}</small></div><div class="card-divider" aria-hidden="true"></div><div class="value"><span class="reading">${good?fmt(key==='FLOW_RATE'?flowValue(item.value):item.value):'--.--'}${key==='FLOW_RATE'?`<select class="unit unit-select" data-flow-unit aria-label="Discharge flow unit" title="Click to show litres or US gallons per minute"><option value="L/min"${flowUnit==='L/min'?' selected':''}>L/min</option><option value="gal/min"${flowUnit==='gal/min'?' selected':''}>gal/min</option></select>`:`<span class="unit">${unit}</span>`}</span>${good?forecastBadge(key,unit):''}</div></div>`;
  }).join('');
  document.querySelectorAll('[data-flow-unit]').forEach(s=>s.onchange=()=>setFlowUnit(s.value));
@@ -378,8 +378,10 @@ const dateparts=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',ye
 $('toggleDiagram').onclick=()=>{const open=$('processPanel').classList.toggle('open');$('toggleDiagram').setAttribute('aria-expanded',open);$('toggleDiagram').textContent=open?'Hide process diagram':'Show process diagram'};
 $('openAlarms').onclick=()=>view('events');
 try{$('activeAlarms').open=localStorage.getItem('ww.alarmsOpen')==='1'}catch{}
-$('activeAlarms').addEventListener('toggle',()=>{try{localStorage.setItem('ww.alarmsOpen',$('activeAlarms').open?'1':'0')}catch{};if(summaryData)drawCards()});setInterval(tickAges,5000);
-loadSummary();setInterval(loadSummary,5000);setInterval(()=>{if(!$('trends').hidden)loadHistory()},30000);window.addEventListener('resize',()=>{if(historyData&&!$('trends').hidden)chartRows('historyCharts')});
+$('activeAlarms').addEventListener('toggle',()=>{try{localStorage.setItem('ww.alarmsOpen',$('activeAlarms').open?'1':'0')}catch{};if(summaryData)drawCards()});setInterval(tickAges,1000);
+// Overview refresh every 2 seconds; a refresh is skipped while the previous one is still loading.
+let summaryBusy=false;const refreshSummary=async()=>{if(summaryBusy||document.hidden)return;summaryBusy=true;try{await loadSummary()}finally{summaryBusy=false}};
+refreshSummary();setInterval(refreshSummary,2000);document.addEventListener('visibilitychange',refreshSummary);setInterval(()=>{if(!$('trends').hidden)loadHistory()},30000);window.addEventListener('resize',()=>{if(historyData&&!$('trends').hidden)chartRows('historyCharts')});
 
 // ---- Remove needs the signed-in person's password again (guards against deleting a record by accident) ----
 function askPassword(message){return new Promise(resolve=>{const dlg=$('pwDialog'),inp=$('pwInput');$('pwMessage').textContent=message;$('pwUser').textContent=userName||'';inp.value='';

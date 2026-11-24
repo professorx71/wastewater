@@ -44,3 +44,4 @@ Thumbs.db
 
 # Local development data (run_local.py)
 /.local/
+m2web.json

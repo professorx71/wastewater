@@ -1,11 +1,16 @@
 import base64, csv, hashlib, hmac, io, json, os, re, sqlite3
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from time import monotonic
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 ROOT=Path(__file__).parent
 DB=Path(os.environ.get('PBF_DB','/var/lib/pbf-wastewater/history.sqlite3'))
+# Live readings straight from the Ewon (collector/live.py, Talk2M M2Web API): used on the cards, the diagram and
+# the alarm checks while fresh. History, trends, reports and usage always come from DataMailbox (DB above).
+LIVE_DB=Path(os.environ.get('PBF_LIVE_DB','/var/lib/pbf-wastewater-live/live.sqlite3'))
+LIVE_MAX_AGE=60   # seconds: an older live value is ignored and the history value is shown
 AUTH=Path(os.environ.get('PBF_WEB_AUTH','/etc/pbf-wastewater/web-auth.json'))
 TAGS={'pH_Reading':('EQ pH','pH',1), 'EQ_Tank_Level_Ft':('EQ tank level','ft',1),
       'FLOW_RATE':('Discharge flow','L/min',3.78541), 'Total_Flow_Li':('Total flow','L',1)}
@@ -46,8 +51,24 @@ def database():
     db.execute('PRAGMA query_only=ON')
     return db
 
+def live_values(now):
+    """{tag: {'value','read_at','age'}} for fresh, good live readings, or {} when live readings are not set up."""
+    if not LIVE_DB.exists():return {}
+    try:
+        conn=sqlite3.connect(f'file:{LIVE_DB}?mode=ro',uri=True,timeout=2)
+        try:rows=conn.execute('SELECT name,value,good,read_at FROM live').fetchall()
+        finally:conn.close()
+    except sqlite3.Error:return {}
+    out={}
+    for name,value,good,read_at in rows:
+        try:age=(now-parse(read_at)).total_seconds()
+        except (TypeError,ValueError):continue
+        if value is not None and good and -5<=age<=LIVE_MAX_AGE:out[name]={'value':value,'read_at':read_at,'age':max(0,age)}
+    return out
+
 def summary():
     now=datetime.now(UTC)
+    live=live_values(now)
     db=database()
     try:
         state=dict(db.execute("SELECT key,value FROM state WHERE key!='cursor'"))
@@ -61,6 +82,10 @@ def summary():
                 item.update(stamp=row['stamp'],value=None if row['value'] is None else row['value']*factor,age_seconds=round(age),quality=row['quality'])
                 item['status']='stale' if age>180 else 'current'
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
+            item['history_age_seconds']=item['age_seconds'];item['source']='history'
+            lv=live.get(name)
+            if lv and (not row or lv['read_at']>row['stamp']):
+                item.update(stamp=lv['read_at'],value=lv['value']*factor,age_seconds=round(lv['age']),quality='live',status='current',source='live')
             result.append(item)
         ages=[t['age_seconds'] for t in result if t['age_seconds'] is not None]
         # Diagram-only readings: kept out of 'tags' so cards, banner, trends and reports are unchanged.
@@ -77,9 +102,15 @@ def summary():
                 if name in DOSING_RUN_TAGS:   # sent as ml/min whatever unit the PLC uses
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
+            item['source']='history'
+            lv=live.get(name)
+            if lv and (not row or lv['read_at']>row['stamp']):
+                item.update(stamp=lv['read_at'],value=lv['value'],status='current',source='live')
+                if name in DOSING_RUN_TAGS:
+                    item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.51','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
-                'data_age_seconds':min(ages) if ages else None,'extras':extras}
+        return {'revision':'1.2.52','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+                'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
 def window(params,max_days=31):
@@ -562,7 +593,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.51: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.52: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -845,7 +876,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.51
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.52
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -1207,8 +1238,13 @@ def application(env,start_response):
                     d['plc_alarms']=[{'tag':t,'kind':k,'banner':b,'address':a} for t,k,b,a,_ in PLC_ALARMS]
                     d['shelved']=[dict(r,label=shelf_choices(settings(conn)).get(r['key'],r['key'])) for r in active_shelves(conn).values()]
                 ph=next((t for t in d['tags'] if t['name']=='pH_Reading'),{})
-                d['ph_trend']=ph_trend(cfg) if cfg['ph_trend_enabled'] and ph.get('status')=='current' else None
-                d['forecast']=card_forecasts(d['tags'])
+                # trend and predictions change slowly: worked out at most every 20 s (the page refreshes every 2 s)
+                key=(cfg['ph_trend_enabled'],cfg['ph_trend_window_min'],cfg['ph_trend_lookahead_min'],cfg['ph_low'],cfg['ph_high'],ph.get('status'))
+                if _TREND_CACHE.get('key')!=key or monotonic()-_TREND_CACHE.get('at',-1e9)>20:
+                    _TREND_CACHE.update(key=key,at=monotonic(),ph_trend=ph_trend(cfg) if cfg['ph_trend_enabled'] and ph.get('status')=='current' else None,
+                                        slopes=card_slopes(d['tags']))
+                d['ph_trend']=_TREND_CACHE['ph_trend']
+                d['forecast']=card_forecasts(d['tags'],slopes=_TREND_CACHE['slopes'])
                 return send('200 OK',d)
             if path=='/api/insights':
                 if not can(role,'alarms'):return send('403 Forbidden',{'error':'Not permitted'})
@@ -1512,7 +1548,9 @@ def check_conditions(conn,cfg,readings,now):
     """Data stopped, EQ tank high level and no discharge flow. Returns {key: state}."""
     tag=lambda n:next((r for r in readings if r['name']==n),None) or {}
     out={}
-    ages=[r['age_seconds'] for r in readings if r.get('age_seconds') is not None]
+    # history feed (DataMailbox) age: live readings must not hide a gap in the saved history
+    ages=[r.get('history_age_seconds',r.get('age_seconds')) for r in readings]
+    ages=[a for a in ages if a is not None]
     age=min(ages) if ages else None
     limit=cfg['stale_alert_minutes']
     out['data']=update_condition(conn,'data',cfg['stale_alert_enabled'],
@@ -1876,20 +1914,32 @@ def tag_slope(tag,win,now,db=None):
 # FORECAST_AHEAD_MIN minutes ahead, with the % change from the current reading.
 FORECAST_WINDOW_MIN=30;FORECAST_AHEAD_MIN=60
 FORECAST_RANGE={'pH_Reading':(0,14),'EQ_Tank_Level_Ft':(0,None),'FLOW_RATE':(0,None),'Total_Flow_Li':(0,None)}
-def card_forecasts(tags,now=None):
+_TREND_CACHE={}
+def card_slopes(tags,now=None):
+    """{tag: (last logged value, slope per minute)} for the card tags with enough history."""
     now=now or datetime.now(UTC);out={};db=database()
     try:
         for t in tags:
+            if t.get('name') in FORECAST_RANGE:
+                fit=tag_slope(t['name'],FORECAST_WINDOW_MIN,now,db)
+                if fit:out[t['name']]=fit
+    finally:db.close()
+    return out
+
+def card_forecasts(tags,now=None,slopes=None):
+    if slopes is None:slopes=card_slopes(tags,now)
+    out={}
+    for t in tags:
             if t.get('name') not in FORECAST_RANGE or t.get('status')!='current' or t.get('value') is None:continue
-            fit=tag_slope(t['name'],FORECAST_WINDOW_MIN,now,db)
+            fit=slopes.get(t['name'])
             if not fit:continue
-            value,slope=fit;lo,hi=FORECAST_RANGE[t['name']]
+            # in the card's unit (FLOW_RATE is stored in gal/min, shown in L/min), from the value the card shows
+            factor=TAGS[t['name']][2];slope=fit[1]*factor;value=t['value'];lo,hi=FORECAST_RANGE[t['name']]
             pred=value+slope*FORECAST_AHEAD_MIN
             if lo is not None:pred=max(lo,pred)
             if hi is not None:pred=min(hi,pred)
             pct=(pred-value)/abs(value)*100 if value else (0.0 if pred==value else None)
             out[t['name']]={'value':value,'predicted':pred,'change_pct':pct,'rate_per_h':slope*60,'ahead_min':FORECAST_AHEAD_MIN,'window_min':FORECAST_WINDOW_MIN}
-    finally:db.close()
     return out
 
 def ph_trend(cfg,now=None):
@@ -2038,7 +2088,7 @@ def pump_rows(start,end,zone,date_range):
 # so other products' usage comes from tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump'}
-# Settings saved before 1.2.51 (one key per product); read once to build the product list.
+# Settings saved before 1.2.52 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
@@ -2053,7 +2103,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.51 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.52 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")

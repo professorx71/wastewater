@@ -1,0 +1,25 @@
+[Unit]
+Description=EffluentIQ live readings from the Ewon (Talk2M M2Web API)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/pbf-wastewater/m2web.json
+
+[Service]
+Type=simple
+User=pbf-wastewater
+Group=pbf-wastewater
+# The M2Web credentials stay root-only (0600); systemd hands this service a private copy.
+LoadCredential=m2web.json:/etc/pbf-wastewater/m2web.json
+StateDirectory=pbf-wastewater-live
+StateDirectoryMode=0750
+Environment=PBF_LIVE_DB=/var/lib/pbf-wastewater-live/live.sqlite3
+ExecStart=/usr/bin/python3 /opt/pbf-wastewater/live.py
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

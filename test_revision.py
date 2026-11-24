@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.51'
+        assert s['revision']=='1.2.52'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -734,13 +734,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.51 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.52 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.51 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.52 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -829,6 +829,32 @@ class RevisionTests(unittest.TestCase):
         with sqlite3.connect(web.DB) as db:
             for name,t,v in rows:db.execute('INSERT INTO samples(name,stamp,value,quality) VALUES(?,?,?,?)',(name,web.iso(t),v,None))
 
+    def test_live_readings_from_m2web(self):
+        import importlib.util,os,tempfile
+        here=os.path.join(os.path.dirname(web.__file__),'collector')
+        spec=importlib.util.spec_from_file_location('live_mod',os.path.join(here,'live.py'))
+        live=importlib.util.module_from_spec(spec);spec.loader.exec_module(live)
+        reply=('"TagId";"TagName";"Value";"AlStatus";"AlType";"Quality"\n'
+               '1;"pH_Reading";7.31;0;0;65472\n2;"FLOW_RATE";4.0;0;0;192\n3;"Floc_Pump_Rate";1.72;0;0;0\n4;"Other_Tag";5;0;0;192\n')
+        vals=live.parse(reply)
+        self.assertEqual(set(vals),{'pH_Reading','FLOW_RATE','Floc_Pump_Rate'})
+        self.assertTrue(vals['pH_Reading'][2]);self.assertFalse(vals['Floc_Pump_Rate'][2])   # quality 0 = bad
+        with self.assertRaises(ValueError):live.parse('{"success":false,"message":"Invalid credentials"}')
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+            path=os.path.join(d,'live.sqlite3');db=live.connect(path);live.save(db,vals);db.close()
+            with patch.object(web,'LIVE_DB',web.Path(path)):
+                s=web.summary()
+                ph=next(t for t in s['tags'] if t['name']=='pH_Reading');fl=next(t for t in s['tags'] if t['name']=='FLOW_RATE')
+                self.assertEqual((ph['source'],ph['value'],ph['status']),('live',7.31,'current'));self.assertTrue(s['live'])
+                self.assertAlmostEqual(fl['value'],4.0*3.78541)
+                self.assertEqual(s['extras']['Floc_Pump_Rate']['source'],'history')   # bad quality: not used
+                # an old live value is ignored
+                with sqlite3.connect(path) as c:c.execute("UPDATE live SET read_at='2026-01-01T00:00:00.000000Z'")
+                self.assertFalse(web.summary()['live'])
+        # without live readings set up, nothing changes
+        with patch.object(web,'LIVE_DB',web.Path(tempfile.gettempdir())/'no-such-live.sqlite3'):
+            self.assertFalse(web.summary()['live'])
+
     def test_floc_tag_renamed(self):
         # Saved products still naming the old Ewon tag switch to Floc_Pump_Rate
         self.assertEqual(web.norm_product({'key':'floc','tag':'Floc_Pump_Run','prices':[]})['tag'],'Floc_Pump_Rate')
@@ -855,6 +881,11 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(lvl['ahead_min'],60)
         self.assertEqual(f['FLOW_RATE']['predicted'],0)
         self.assertNotIn('Total_Flow_Li',f)   # not live: no prediction
+        # Flow is stored in gal/min and shown in L/min: the prediction is in L/min too
+        with sqlite3.connect(web.DB) as db:db.execute("DELETE FROM samples WHERE name='FLOW_RATE'")
+        self._samples([('FLOW_RATE',now-timedelta(minutes=30-m),10.0+0.01*m) for m in range(31)])
+        f=web.card_forecasts([{'name':'FLOW_RATE','status':'current','value':10.3*3.78541}],now)['FLOW_RATE']
+        self.assertAlmostEqual(f['predicted'],(10.3+0.6)*3.78541,delta=0.05);self.assertAlmostEqual(f['rate_per_h'],0.6*3.78541,delta=0.05)
 
     def test_ph_trend_warns_before_the_limit(self):
         now=datetime.now(timezone.utc)

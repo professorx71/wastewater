@@ -120,7 +120,7 @@ if (-not $DeployOnly) {
     # ------------------------------------------------------------ 2. commit, tag, push, GitHub release
     Say "Step 2: Save to git and GitHub as release $New"
     Run git @('add', '-A')
-    $risky = @(git diff --cached --name-only | Where-Object { $_ -match '\.(sqlite3?|db)$|auth\.json$|email\.json$|dmweb\.json$|(^|/)\.env' })
+    $risky = @(git diff --cached --name-only | Where-Object { $_ -match '\.(sqlite3?|db)$|auth\.json$|email\.json$|dmweb\.json$|m2web\.json$|(^|/)\.env' })
     if ($risky.Count -gt 0) { git reset -q; Fail "These private files were about to be committed: $($risky -join ', '). Nothing was committed." }
     $msg = @('commit', '-q', '-m', "Release $New")
     if ($Notes) { $msg += @('-m', $Notes) }
