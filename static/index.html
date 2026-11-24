@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EffluentIQ — Rev 1.2.49</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>EffluentIQ — Rev 1.2.50</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body data-view="overview">
 <header class="topbar"><div class="brand"><h1><img class="logo" src="/logo-effluentiq.svg" alt="EffluentIQ — Industrial Wastewater Monitoring &amp; Reporting" width="700" height="124"></h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button><button data-view="help">Help</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.49</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.50</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="alarmRibbon" class="sludge-ribbon" role="alert" hidden></div><div id="shelfNote" class="shelf-note" hidden></div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -112,6 +112,7 @@
 
 <div class="panel" id="help-new"><h3>What's new — November 2026</h3>
 <ul>
+<li><b>AI prediction on every reading card</b> (pH, tank level, discharge flow, total flow): a green <span class="forecast up"><b>↑+2.10<i>%</i></b></span> or red <span class="forecast down"><b>↓-1.44<i>%</i></b></span> arrow with the expected change, and the predicted reading an hour from now underneath. See <a href="#help-overview">Overview</a>.</li>
 <li><b>New name: EffluentIQ.</b> New logo at the top left, browser-tab icon and footer. EffluentIQ™ is a trademark of Octave Works Engineering.</li>
 <li><b>How long an alarm has been on:</b> a live <span class="since">active 12 min</span> counter in the Active alarms box, and a <b>Duration</b> column on the Alarms page. See <a href="#help-alarms">Alarms</a>.</li>
 <li><b>pH alarm follow-up emails and texts:</b> "Wastewater pH HIGH alarm — active 10 min", every 5 minutes for the first hour, then hourly, until pH is back in range. The recovery email says how long the alarm lasted. See <a href="#help-email">Emails and texts</a>.</li>
@@ -147,6 +148,7 @@
 <li><span class="help-chip alert">Red</span> pH is outside its limits, or <b>NO NEW DATA</b> — nothing has arrived for longer than the data-stopped limit (check the Ewon, Talk2M and the server).</li>
 <li><span class="help-chip warn">Amber</span> one or more readings are missing, invalid or older than 3 minutes.</li>
 </ul>
+<p><b>AI prediction on the reading cards:</b> next to each live reading, the arrow and % show where it is heading over the next hour, and the grey number under it is the predicted reading in 60 minutes. <span class="forecast up"><b>↑<i></i></b></span> green = rising, <span class="forecast down"><b>↓<i></i></b></span> red = falling, → grey = steady (less than 0.05%). The prediction carries on the trend of the last 30 minutes, so it is a guide, not a guarantee: a sudden change (a new batch, a pump starting) shows up within a few minutes. Hover over it for the rate per hour. It is not shown while a reading is not live.</p>
 <p><b>Red alarm banner</b> (flashing): one line for each PLC alarm that is ON right now, with the time it started and its PLC address — Sludge tank FULL, EQ tank FULL, E-Stop, Mixer pump, Rake motor, MAX RGT pump and Floc / Coag pump faults. It disappears by itself when the PLC bit goes back to 0. A grey dashed note under it lists any <b>shelved</b> alarms.</p>
 <p><b>Reading cards:</b> EQ pH, EQ tank level (ft), discharge flow and total flow (litres). <span class="help-chip ok">LIVE</span> means the reading is current; <i>STALE</i>, <i>INVALID</i> or <i>MISSING</i> means it is not. Click the flow unit to switch between <b>L/min</b> and <b>gal/min</b> (remembered on this computer). Hover a card to see the exact time of the reading.</p>
 <p><b>Active alarms</b> box: alarms whose condition is still present, each with a live <span class="since">active 12 min</span> counter showing how long it has been on. Red while any alarm is active. Click it to open the list; <b>Open Alarms page</b> takes you to the full list.</p>
@@ -191,7 +193,7 @@
 <p><b>Duration column:</b> how long each alarm has been active (counting live while it is still on) or how long it lasted once closed.</p>
 <p><b>Status column:</b> <i>active · auto-acknowledged</i> while the condition lasts → <i>closed</i> when it clears. Every alarm is acknowledged automatically when it is recorded, so nobody has to press anything. Alarm messages describe the problem in plain words, without PLC addresses or tag names.</p>
 <p><b>Shelve an alarm (maintenance):</b> stops the emails and texts for one alarm for 1–72 hours, with a reason — for example while a pump is being repaired. The alarm is still recorded, the shelf ends by itself, and every shelve is in the Audit log. Needs the <i>Shelve and unshelve alarms</i> right. <b>Unshelve</b> ends it early.</p>
-<p><b>Predictive pH</b> on the Overview: the pH card shows where pH is heading (↗ rising, ↘ falling, → steady, in pH per hour). When it is heading for a limit, the banner turns amber and says about how many minutes are left, so the dosing can be checked before the limit is reached.</p>
+<p><b>Predictive pH</b> on the Overview: the pH card's AI prediction (see <a href="#help-overview">Overview</a>) shows where pH is heading. When it is heading for a limit, the prediction gets an amber frame, the banner turns amber and says about how many minutes are left, so the dosing can be checked before the limit is reached.</p>
 <p><b>Insights — last 30 days</b> (top of the Alarms page): alarms that happened 3 or more times, when they tend to happen (time of day, day of the week), how long they last, pH excursions with the litres discharged during them, and a suggested action for each. Suggestions only — the dashboard never changes the chemical dosing or the plant.</p>
 <p class="help-note">These are software alarms for monitoring. They do not replace the PLC safety interlocks.</p></div>
 
@@ -304,5 +306,5 @@
 <label><span>Password for <b id="pwUser"></b></span><input type="password" id="pwInput" autocomplete="current-password" maxlength="256"></label>
 <p class="pw-note">Removing a record needs your password, so nothing is deleted by accident. It is recorded in the Audit log.</p>
 <div class="pw-buttons"><button type="button" id="pwCancel">Cancel</button><button type="submit" id="pwOk" class="danger">Remove</button></div></form></dialog>
-<footer>EffluentIQ™ Rev 1.2.49 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
+<footer>EffluentIQ™ Rev 1.2.50 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
 </main></body></html>

@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.49','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.50','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -562,7 +562,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.49: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.50: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -845,7 +845,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.49
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.50
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -1208,6 +1208,7 @@ def application(env,start_response):
                     d['shelved']=[dict(r,label=shelf_choices(settings(conn)).get(r['key'],r['key'])) for r in active_shelves(conn).values()]
                 ph=next((t for t in d['tags'] if t['name']=='pH_Reading'),{})
                 d['ph_trend']=ph_trend(cfg) if cfg['ph_trend_enabled'] and ph.get('status')=='current' else None
+                d['forecast']=card_forecasts(d['tags'])
                 return send('200 OK',d)
             if path=='/api/insights':
                 if not can(role,'alarms'):return send('403 Forbidden',{'error':'Not permitted'})
@@ -1851,16 +1852,14 @@ def compliance_line(day,cfg):
 
 # ---------------------------------------------------------------- predictive pH (trend toward the limits)
 PH_TREND_MIN_RATE=0.1   # pH per hour: slower drift is not reported
-def ph_trend(cfg,now=None):
-    """Where pH is heading: least-squares slope of the held pH readings on a one-minute grid over the last
-    ph_trend_window_min minutes. Returns {'value','rate_per_h','direction','limit','eta_min'} or None when there
-    is not enough history. direction is 'high' / 'low' when pH is inside the limits but, at this rate, reaches
-    one within ph_trend_lookahead_min minutes; otherwise None."""
-    now=now or datetime.now(UTC);win=int(cfg['ph_trend_window_min']);start=now-timedelta(minutes=win)
-    db=database()
-    try:pts=held_points(db,'pH_Reading',start,now)
-    finally:db.close()
-    if not pts or pts[0][0]>start+timedelta(minutes=win*0.2):return None   # one held reading = steady pH (Ewon logs on change)
+def tag_slope(tag,win,now,db=None):
+    """(latest value, slope per minute): least-squares fit of a tag's held readings on a one-minute grid over the
+    last win minutes, or None when there is not enough history."""
+    start=now-timedelta(minutes=win);own=db is None;db=db or database()
+    try:pts=held_points(db,tag,start,now)
+    finally:
+        if own:db.close()
+    if not pts or pts[0][0]>start+timedelta(minutes=win*0.2):return None   # one held reading = steady value (Ewon logs on change)
     ys=[];j=0
     for m in range(win+1):
         t=start+timedelta(minutes=m)
@@ -1871,8 +1870,37 @@ def ph_trend(cfg,now=None):
     if n<5:return None
     mx=sum(x for x,_ in xy)/n;my=sum(y for _,y in xy)/n
     sxx=sum((x-mx)**2 for x,_ in xy)
-    slope=sum((x-mx)*(y-my) for x,y in xy)/sxx if sxx else 0.0   # pH per minute
-    value=pts[-1][1];rate=slope*60;out={'value':value,'rate_per_h':rate,'direction':None,'limit':None,'eta_min':None}
+    return pts[-1][1],(sum((x-mx)*(y-my) for x,y in xy)/sxx if sxx else 0.0)
+
+# Predicted reading on each Overview card: the trend of the last FORECAST_WINDOW_MIN minutes carried
+# FORECAST_AHEAD_MIN minutes ahead, with the % change from the current reading.
+FORECAST_WINDOW_MIN=30;FORECAST_AHEAD_MIN=60
+FORECAST_RANGE={'pH_Reading':(0,14),'EQ_Tank_Level_Ft':(0,None),'FLOW_RATE':(0,None),'Total_Flow_Li':(0,None)}
+def card_forecasts(tags,now=None):
+    now=now or datetime.now(UTC);out={};db=database()
+    try:
+        for t in tags:
+            if t.get('name') not in FORECAST_RANGE or t.get('status')!='current' or t.get('value') is None:continue
+            fit=tag_slope(t['name'],FORECAST_WINDOW_MIN,now,db)
+            if not fit:continue
+            value,slope=fit;lo,hi=FORECAST_RANGE[t['name']]
+            pred=value+slope*FORECAST_AHEAD_MIN
+            if lo is not None:pred=max(lo,pred)
+            if hi is not None:pred=min(hi,pred)
+            pct=(pred-value)/abs(value)*100 if value else (0.0 if pred==value else None)
+            out[t['name']]={'value':value,'predicted':pred,'change_pct':pct,'rate_per_h':slope*60,'ahead_min':FORECAST_AHEAD_MIN,'window_min':FORECAST_WINDOW_MIN}
+    finally:db.close()
+    return out
+
+def ph_trend(cfg,now=None):
+    """Where pH is heading: least-squares slope of the held pH readings on a one-minute grid over the last
+    ph_trend_window_min minutes. Returns {'value','rate_per_h','direction','limit','eta_min'} or None when there
+    is not enough history. direction is 'high' / 'low' when pH is inside the limits but, at this rate, reaches
+    one within ph_trend_lookahead_min minutes; otherwise None."""
+    now=now or datetime.now(UTC);fit=tag_slope('pH_Reading',int(cfg['ph_trend_window_min']),now)
+    if not fit:return None
+    value,slope=fit   # pH, pH per minute
+    rate=slope*60;out={'value':value,'rate_per_h':rate,'direction':None,'limit':None,'eta_min':None}
     if not cfg['ph_low']<=value<=cfg['ph_high'] or abs(rate)<PH_TREND_MIN_RATE:return out
     limit=cfg['ph_high'] if slope>0 else cfg['ph_low']
     eta=(limit-value)/slope
@@ -2010,7 +2038,7 @@ def pump_rows(start,end,zone,date_range):
 # so other products' usage comes from tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Run':'Flocculant dosing pump'}
-# Settings saved before 1.2.49 (one key per product); read once to build the product list.
+# Settings saved before 1.2.50 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
@@ -2025,7 +2053,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.49 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.50 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")

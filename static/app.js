@@ -31,11 +31,15 @@ function durCell(r){if(isActive(r))return `<span class="since" data-since="${esc
 function escapeHTML(x){return String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function view(name){if(!canView(name))name='overview';document.body.dataset.view=name;document.querySelectorAll('.view').forEach(n=>n.hidden=n.id!==name);document.querySelectorAll('nav button').forEach(n=>n.classList.toggle('selected',n.dataset.view===name));if(name==='events'){loadEvents();loadShelves();loadInsights()}if(name==='reports'){loadPickups();loadPurchases();loadStock();loadCost()}if(name==='audit'){loadAudit();loadCalibrations()}if(name==='settings')loadSettings();if(name==='trends')loadHistory()}
 document.querySelectorAll('nav button').forEach(b=>b.addEventListener('click',()=>view(b.dataset.view)));
-// Predictive pH: where pH is heading (server: least-squares trend of the last 30 minutes by default).
-function trendBadge(){const tr=summaryData.ph_trend;if(!tr||tr.rate_per_h==null)return '';const r=tr.rate_per_h;
- const arrow=Math.abs(r)<0.1?'→':r>0?'↗':'↘';const warn=!!tr.direction;
- const tip=warn?`pH heading for the ${Number(tr.limit).toFixed(2)} limit: about ${Math.max(0,Math.round(tr.eta_min))} minutes at ${Math.abs(r).toFixed(2)} pH per hour`:`pH trend: ${r>=0?'+':''}${r.toFixed(2)} pH per hour`;
- return `<span class="ph-trend${warn?' warn':''}" title="${escapeHTML(tip)}">${arrow} ${r>=0?'+':''}${r.toFixed(2)}/h</span>`}
+// AI prediction on each card: the trend of the last 30 minutes carried 60 minutes ahead (server card_forecasts).
+// Up arrow green, down arrow red, with the % change from now; the predicted reading below in grey.
+function forecastBadge(key,unit){const f=(summaryData.forecast||{})[key];if(!f)return '';const p=f.change_pct;
+ const dir=p==null?(f.predicted>f.value?1:f.predicted<f.value?-1:0):Math.abs(p)<0.05?0:p>0?1:-1;
+ const conv=v=>key==='FLOW_RATE'?flowValue(v):v;const u=key==='FLOW_RATE'?flowUnit:unit;
+ const tr=key==='pH_Reading'?summaryData.ph_trend:null;const warn=!!(tr&&tr.direction);
+ let tip=`AI prediction: about ${fmt(conv(f.predicted))} ${u} in ${f.ahead_min} minutes (${p==null?'':(p>=0?'+':'')+p.toFixed(2)+'%, '}trend of the last ${f.window_min} minutes: ${f.rate_per_h>=0?'+':''}${fmt(conv(f.rate_per_h))} ${u} per hour)`;
+ if(warn)tip+=`. Warning: pH heading for the ${Number(tr.limit).toFixed(2)} limit in about ${Math.max(0,Math.round(tr.eta_min))} minutes`;
+ return `<span class="forecast ${dir>0?'up':dir<0?'down':'flat'}${warn?' warn':''}" title="${escapeHTML(tip)}"><b>${dir>0?'↑':dir<0?'↓':'→'}${p==null?'':(p>0?'+':'')+p.toFixed(2)}<i>%</i></b><small>${fmt(conv(f.predicted))}</small></span>`}
 function drawCards(){
  if(!summaryData)return;
  const lookup=Object.fromEntries(summaryData.tags.map(t=>[t.name,t]));
@@ -43,7 +47,7 @@ function drawCards(){
    const item=lookup[key]||{};const status=item.status||'missing';const good=status==='current'&&item.value!=null;
    const pill=good?'LIVE':status.toUpperCase();
    const tip=`${label}: ${status} · ${item.stamp?local(item.stamp):'No records'}`;
-   return `<div class="card ${good?'':'not-live'}" title="${escapeHTML(tip)}"><div class="card-icon" aria-hidden="true">${ICONS[key]||''}</div><div class="card-meta"><div class="name">${escapeHTML(label)}</div><span class="pill-row"><span class="live-pill ${escapeHTML(status)}"><i class="state-dot ${escapeHTML(status)}"></i>${escapeHTML(pill)}</span></span><small class="age" data-stamp="${escapeHTML(item.stamp||'')}">${escapeHTML(ageText(item.stamp))}</small></div><div class="card-divider" aria-hidden="true"></div><div class="value">${good?fmt(key==='FLOW_RATE'?flowValue(item.value):item.value):'--.--'}${key==='FLOW_RATE'?`<select class="unit unit-select" data-flow-unit aria-label="Discharge flow unit" title="Click to show litres or US gallons per minute"><option value="L/min"${flowUnit==='L/min'?' selected':''}>L/min</option><option value="gal/min"${flowUnit==='gal/min'?' selected':''}>gal/min</option></select>`:`<span class="unit">${unit}</span>`}${key==='pH_Reading'&&good?trendBadge():''}</div></div>`;
+   return `<div class="card ${good?'':'not-live'}" title="${escapeHTML(tip)}"><div class="card-icon" aria-hidden="true">${ICONS[key]||''}</div><div class="card-meta"><div class="name">${escapeHTML(label)}</div><span class="pill-row"><span class="live-pill ${escapeHTML(status)}"><i class="state-dot ${escapeHTML(status)}"></i>${escapeHTML(pill)}</span></span><small class="age" data-stamp="${escapeHTML(item.stamp||'')}">${escapeHTML(ageText(item.stamp))}</small></div><div class="card-divider" aria-hidden="true"></div><div class="value"><span class="reading">${good?fmt(key==='FLOW_RATE'?flowValue(item.value):item.value):'--.--'}${key==='FLOW_RATE'?`<select class="unit unit-select" data-flow-unit aria-label="Discharge flow unit" title="Click to show litres or US gallons per minute"><option value="L/min"${flowUnit==='L/min'?' selected':''}>L/min</option><option value="gal/min"${flowUnit==='gal/min'?' selected':''}>gal/min</option></select>`:`<span class="unit">${unit}</span>`}</span>${good?forecastBadge(key,unit):''}</div></div>`;
  }).join('');
  document.querySelectorAll('[data-flow-unit]').forEach(s=>s.onchange=()=>setFlowUnit(s.value));
  const item=(key)=>lookup[key]||{};

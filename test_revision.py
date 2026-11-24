@@ -36,7 +36,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.49'
+        assert s['revision']=='1.2.50'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -734,13 +734,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.49 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.50 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Run'),[]):   # Floc_Pump_Run already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.49 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.50 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -828,6 +828,21 @@ class RevisionTests(unittest.TestCase):
     def _samples(self,rows):
         with sqlite3.connect(web.DB) as db:
             for name,t,v in rows:db.execute('INSERT INTO samples(name,stamp,value,quality) VALUES(?,?,?,?)',(name,web.iso(t),v,None))
+
+    def test_card_forecast_arrow_and_percent(self):
+        now=datetime.now(timezone.utc)
+        with sqlite3.connect(web.DB) as db:db.execute("DELETE FROM samples WHERE name IN ('EQ_Tank_Level_Ft','FLOW_RATE')")
+        # Level falling 0.01 ft per minute from 3.30 to 3.00: about 2.40 ft in an hour, -20%
+        self._samples([('EQ_Tank_Level_Ft',now-timedelta(minutes=30-m),3.3-0.01*m) for m in range(31)])
+        # Flow falling fast: the prediction stops at 0
+        self._samples([('FLOW_RATE',now-timedelta(minutes=30-m),3.0-0.1*m) for m in range(31)])
+        tags=[{'name':'EQ_Tank_Level_Ft','status':'current','value':3.0},{'name':'FLOW_RATE','status':'current','value':0.0},
+              {'name':'Total_Flow_Li','status':'stale','value':5.0}]
+        f=web.card_forecasts(tags,now)
+        lvl=f['EQ_Tank_Level_Ft'];self.assertAlmostEqual(lvl['predicted'],2.4,delta=0.02);self.assertAlmostEqual(lvl['change_pct'],-20,delta=0.5)
+        self.assertEqual(lvl['ahead_min'],60)
+        self.assertEqual(f['FLOW_RATE']['predicted'],0)
+        self.assertNotIn('Total_Flow_Li',f)   # not live: no prediction
 
     def test_ph_trend_warns_before_the_limit(self):
         now=datetime.now(timezone.utc)
