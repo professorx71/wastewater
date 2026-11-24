@@ -19,6 +19,8 @@ class RevisionTests(unittest.TestCase):
         web.APP_DB=Path(self.tmp.name)/'app.sqlite3'
         web.DB=Path(self.tmp.name)/'history.sqlite3'
         web.AUTH=Path(self.tmp.name)/'admin.json'
+        # never read the server's real live readings (/var/lib/pbf-wastewater-live) during tests
+        web.LIVE_DB=Path(self.tmp.name)/'live.sqlite3'
         with sqlite3.connect(web.DB) as db:
             db.executescript('''CREATE TABLE state(key TEXT,value TEXT);
                 CREATE TABLE samples(tag_id TEXT,name TEXT,stamp TEXT,value REAL,quality TEXT,received_at TEXT);
@@ -36,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.54'
+        assert s['revision']=='1.2.55'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -734,13 +736,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.54 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.55 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.54 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.55 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})

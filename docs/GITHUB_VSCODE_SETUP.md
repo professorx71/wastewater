@@ -52,7 +52,7 @@ Edit → test → Source Control → review changed files → Commit → Sync/Pu
 
 ## 6. Where the server code lives
 
-Production: `/opt/pbf-wastewater/web/`; staging: `/opt/pbf-wastewater/rev1.2.54-stage/`.
+Production: `/opt/pbf-wastewater/web/`; staging: `/opt/pbf-wastewater/rev1.2.55-stage/`.
 
 Collector and scheduler are separate systemd units. Deploy scripts must be reviewed and tested on the current VPS before use. Back up the live system before every production upgrade.
 
