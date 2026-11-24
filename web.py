@@ -11,7 +11,7 @@ TAGS={'pH_Reading':('EQ pH','pH',1), 'EQ_Tank_Level_Ft':('EQ tank level','ft',1)
       'FLOW_RATE':('Discharge flow','L/min',3.78541), 'Total_Flow_Li':('Total flow','L',1)}
 DIAGRAM_TAGS={'Rake_Speed_VFD':('Rake motor speed','Hz'),
               'Coag_Pump_Rate_Percent':('Coagulant pump rate','%'),'Coag_Pump_Run':('Coagulant pump run','ml/min'),
-              'Floc_Pump_Rate_Percent':('Flocculant pump rate','%'),'Floc_Pump_Run':('Flocculant pump run','ml/min'),
+              'Floc_Pump_Rate_Percent':('Flocculant pump rate','%'),'Floc_Pump_Rate':('Flocculant pump run','ml/min'),
               'SLUDGE_TANK_LEVEL':('Sludge tank full (PLC B3:0/13, 1 = full)',''),
               'SUMP_PUMP_STATUS':('Electric transfer pump / sump pump running (PLC B3:1/9, 1 = on)',''),
               'Mixer_Pump_Staus':('Electric circulation pump / mixer pump running (PLC N142:0, not 0 = on)',''),
@@ -78,7 +78,7 @@ def summary():
                     item.update(raw_value=row['value'],raw_unit=raw_unit(name,row['stamp']),value=ml_per_min(name,row['stamp'],row['value']))
                 if row['value'] is None or not good_quality(row['quality']): item['status']='invalid'
             extras[name]=item
-        return {'revision':'1.2.50','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.51','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras}
     finally: db.close()
 
@@ -118,14 +118,14 @@ def history(params,export=False):
 import zipfile
 from xml.sax.saxutils import escape as _xml
 REPORT_TAGS=('EQ_Tank_Level_Ft','FLOW_RATE','Total_Flow_Li','Rake_Speed_VFD',
-             'Coag_Pump_Rate_Percent','Coag_Pump_Run','Floc_Pump_Rate_Percent','Floc_Pump_Run')
+             'Coag_Pump_Rate_Percent','Coag_Pump_Run','Floc_Pump_Rate_Percent','Floc_Pump_Rate')
 RAW_UNITS={'pH_Reading':'pH','EQ_Tank_Level_Ft':'ft','FLOW_RATE':'US gal/min','Total_Flow_Li':'L','Rake_Speed_VFD':'Hz',
-           'Coag_Pump_Rate_Percent':'%','Coag_Pump_Run':'ml/min','Floc_Pump_Rate_Percent':'%','Floc_Pump_Run':'ml/min',
+           'Coag_Pump_Rate_Percent':'%','Coag_Pump_Run':'ml/min','Floc_Pump_Rate_Percent':'%','Floc_Pump_Rate':'ml/min',
            'SLUDGE_TANK_LEVEL':'1 = full'}
 # Unit changes made in the PLC/Ewon: (UTC time from which the new unit applies, unit), oldest first.
 # Coag_Pump_Run (F192:0) changed from ml/min to ml/h on 11/19/2026 at 11:01 Vancouver time.
 UNIT_CHANGES={'Coag_Pump_Run':(('2026-11-19T18:01:00.000000Z','ml/h'),)}
-DOSING_RUN_TAGS=('Coag_Pump_Run','Floc_Pump_Run')
+DOSING_RUN_TAGS=('Coag_Pump_Run','Floc_Pump_Rate')
 _PER_MIN={'ml/min':1.0,'ml/h':1/60}
 def raw_unit(name,stamp):
     """Unit the Ewon used for this tag at this time (stamp: stored ISO UTC text)."""
@@ -221,7 +221,7 @@ def quarter_label(d):
     return f"{d.year} Q{q+1} ({('Jan-Mar','Apr-Jun','Jul-Sep','Oct-Dec')[q]})"
 
 
-CHEMICAL_TAGS=(('Coag_Pump_Run','Coagulant'),('Floc_Pump_Run','Flocculant'))
+CHEMICAL_TAGS=(('Coag_Pump_Run','Coagulant'),('Floc_Pump_Rate','Flocculant'))
 def chemical_usage(start,end,zone):
     """Litres used per local day for each dosing pump: the pump's reading (converted to ml/min) is held until the
     next reading (the Ewon logs on change) and multiplied by the time it was held."""
@@ -252,7 +252,7 @@ def chemical_rows(start,end,zone,date_range):
     days=[];d=first
     while d<=last:days.append(d);d+=timedelta(days=1)
     names=[n for _,n in CHEMICAL_TAGS]
-    rows=[[B('Chemical usage (litres)')],['Tags','Coag_Pump_Run (ml/h from 11/19/2026 11:01, ml/min before), Floc_Pump_Run (ml/min)'],['Date range (America/Vancouver)',date_range],[]]
+    rows=[[B('Chemical usage (litres)')],['Tags','Coag_Pump_Run (ml/h from 11/19/2026 11:01, ml/min before), Floc_Pump_Rate (ml/min)'],['Date range (America/Vancouver)',date_range],[]]
     totals=[sum(used[t].values()) for t,_ in CHEMICAL_TAGS]
     rows+=[[B('Total for date range')]+[B(f'{n} (L)') for n in names],['All days']+[num(v) for v in totals],[]]
     groups={}
@@ -562,7 +562,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.50: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.51: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -845,7 +845,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.50
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.51
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -1914,7 +1914,7 @@ def trend_text(tr):
             f"in about {max(tr['eta_min'],0):.0f} minutes. Check the {'acid' if side=='high' else 'caustic'} dosing and the incoming wastewater.")
 
 # ---------------------------------------------------------------- dosing pump stopped while discharging
-DOSING_PUMPS={'coag':('Coag_Pump_Run','Coagulant'),'floc':('Floc_Pump_Run','Flocculant')}
+DOSING_PUMPS={'coag':('Coag_Pump_Run','Coagulant'),'floc':('Floc_Pump_Rate','Flocculant')}
 # A run reading below this (ml/min) counts as stopped: the dashboard shows 2 decimals, so a tiny leftover
 # value such as 0.003 ml/min (0.2 ml/h) showed 0.00 ml/min yet RUNNING. The dashboard uses the same limit.
 DOSE_RUNNING_MIN=0.01
@@ -2037,14 +2037,14 @@ def pump_rows(start,end,zone,date_range):
 # 'chemical_products' setting. Only the coagulant and flocculant dosing pumps report their rate to the PLC,
 # so other products' usage comes from tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
-DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Run':'Flocculant dosing pump'}
-# Settings saved before 1.2.50 (one key per product); read once to build the product list.
+DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump'}
+# Settings saved before 1.2.51 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
          container_l=55*GAL_L,tag='',low_l=20.0,price=None,lead_days=7,supplier='CESCO',active=True,kg_l=1.52),
     dict(key='floc',name='CESCO PF 875AH Flocculant',label='Flocculant (PF 875AH)',part='FPF875AH-P5',container='5 gal pail',
-         container_l=5*GAL_L,tag='Floc_Pump_Run',low_l=5.0,price=None,lead_days=7,supplier='CESCO',active=True),
+         container_l=5*GAL_L,tag='Floc_Pump_Rate',low_l=5.0,price=None,lead_days=7,supplier='CESCO',active=True),
     dict(key='coag',name='CESCO PROTECT 7000 Coagulant',label='Coagulant (PROTECT 7000)',part='FPROT7000-Dr55',container='55 gal drum',
          container_l=55*GAL_L,tag='Coag_Pump_Run',low_l=20.0,price=None,lead_days=7,supplier='CESCO',active=True),
     dict(key='sa93',name='CESCO SA-93',label='SA-93',part='FSA93-P5',container='5 gal pail',
@@ -2053,7 +2053,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.50 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.51 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -2079,6 +2079,7 @@ KG_L_DEFAULTS={'caustic':1.52}   # 50% sodium hydroxide; other products: enter t
 def norm_product(p):
     """Product with a price history (built from a single 'price' if needed), today's price and its weight per litre."""
     p=dict(p)
+    if p.get('tag')=='Floc_Pump_Run':p['tag']='Floc_Pump_Rate'   # Ewon tag renamed 11/23/2026
     if 'kg_l' not in p:p['kg_l']=KG_L_DEFAULTS.get(p.get('key'))
     if not isinstance(p.get('prices'),list):
         p['prices']=[] if p.get('price') is None else [{'from':PRICE_START,'price':float(p['price'])}]
@@ -2201,7 +2202,7 @@ def stock_status(conn,cfg=None,now=None):
 def chemical_consumption(year,cfg):
     """Monthly delivered and used litres per product for a calendar year (America/Vancouver).
     Usage from tank counts: previous count + deliveries in between − next count, booked to the month of the
-    next count. Usage from the dosing pump (products measured by Coag_Pump_Run / Floc_Pump_Run).
+    next count. Usage from the dosing pump (products measured by Coag_Pump_Run / Floc_Pump_Rate).
     Cost uses the price per container in Settings (blank when no price is set)."""
     zone=ZoneInfo('America/Vancouver')
     start=datetime(year,1,1,tzinfo=zone).astimezone(UTC);end=datetime(year+1,1,1,tzinfo=zone).astimezone(UTC)
@@ -2260,7 +2261,7 @@ def consumption_rows(year,cfg):
                          num(mm['pump']) if p['tag'] else 'no PLC tag',num(mm['used']/size if mm['used'] is not None else None),
                          num(mm['cost_delivered']),num(mm['cost_used'])])
     rows+=[[],['Used per tank counts: previous tank count + deliveries in between − next tank count, booked to the month of the later count. '
-               'Used per dosing pump: from the dosing pump reading (Coag_Pump_Run or Floc_Pump_Run) chosen for the product in Settings. '
+               'Used per dosing pump: from the dosing pump reading (Coag_Pump_Run or Floc_Pump_Rate) chosen for the product in Settings. '
                'Used (containers) and cost of usage use the dosing pump figure where there is one, otherwise the tank counts. '
                'Costs use the price per container valid on the day of each delivery or usage (Settings > Chemical products, price history); '
                'the cost of a month is blank when part of it has no price yet.']]

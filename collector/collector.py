@@ -9,7 +9,11 @@ from urllib.request import Request, urlopen
 
 DB = Path('/var/lib/pbf-wastewater/history.sqlite3')
 CREDS = Path('/etc/pbf-wastewater/dmweb.json')
-TAGS = ('pH_Reading', 'EQ_Tank_Level_Ft', 'FLOW_RATE', 'Total_Flow_Li', 'Rake_Speed_VFD', 'Coag_Pump_Rate_Percent', 'Coag_Pump_Run', 'Floc_Pump_Rate_Percent', 'Floc_Pump_Run', 'SLUDGE_TANK_LEVEL', 'SUMP_PUMP_STATUS', 'Mixer_Pump_Staus', 'SYSTEM_ENABLED', 'EQ_TANK_FULL', 'E_STOP_STATUS', 'MIXER_PUMP_FAULTED', 'RAKE_MOTOR_FAULTED', 'MAX_RGT_PUMP_FAULTED', 'FLOC_COAG_PUMP_FAULTED')
+TAGS = ('pH_Reading', 'EQ_Tank_Level_Ft', 'FLOW_RATE', 'Total_Flow_Li', 'Rake_Speed_VFD', 'Coag_Pump_Rate_Percent', 'Coag_Pump_Run', 'Floc_Pump_Rate_Percent', 'Floc_Pump_Rate', 'SLUDGE_TANK_LEVEL', 'SUMP_PUMP_STATUS', 'Mixer_Pump_Staus', 'SYSTEM_ENABLED', 'EQ_TANK_FULL', 'E_STOP_STATUS', 'MIXER_PUMP_FAULTED', 'RAKE_MOTOR_FAULTED', 'MAX_RGT_PUMP_FAULTED', 'FLOC_COAG_PUMP_FAULTED')
+
+# Ewon tags renamed in the Ewon: old name -> new name. Floc_Pump_Run (F164:12) became Floc_Pump_Rate (F192:2, ml/min)
+# on 11/23/2026; its earlier readings are moved to the new name so usage and trends continue.
+TAG_RENAMES = {'Floc_Pump_Run': 'Floc_Pump_Rate'}
 
 def connect(path=DB):
     db = sqlite3.connect(path, timeout=30)
@@ -24,6 +28,9 @@ def connect(path=DB):
         tag_id TEXT, payload TEXT, received_at TEXT,
         PRIMARY KEY(tag_id,payload));
     ''')
+    with db:   # history kept under a renamed Ewon tag's new name
+        for old, new in TAG_RENAMES.items():
+            db.execute('UPDATE samples SET name=? WHERE name=?', (new, old))
     return db
 
 def timestamp(value):

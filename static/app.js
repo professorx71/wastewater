@@ -58,10 +58,10 @@ function drawCards(){
   const dose=(id,tag)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=ok?(doseUnit==='ml/h'?(r.value*60).toFixed(1):Number(r.value).toFixed(2)):'--.--';el.classList.toggle('live',ok);
    el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.raw_value!=null?' · PLC value '+Number(r.raw_value).toFixed(2)+' '+r.raw_unit:''}${r.stamp?' · '+local(r.stamp):''}`};
   document.querySelectorAll('[data-dose-unit]').forEach(s=>{if(s.value!==doseUnit)s.value=doseUnit;s.onchange=()=>{doseUnit=s.value==='ml/h'?'ml/h':'ml/min';try{localStorage.setItem('ww.doseUnit',doseUnit)}catch{};drawCards()}});
-  show('rakeSpeed','Rake_Speed_VFD','Hz',1);show('coagRate','Coag_Pump_Rate_Percent','%',1);dose('coagRun','Coag_Pump_Run');show('flocRate','Floc_Pump_Rate_Percent','%',1);dose('flocRun','Floc_Pump_Run');
+  show('rakeSpeed','Rake_Speed_VFD','Hz',1);show('coagRate','Coag_Pump_Rate_Percent','%',1);dose('coagRun','Coag_Pump_Run');show('flocRate','Floc_Pump_Rate_Percent','%',1);dose('flocRun','Floc_Pump_Rate');
   // Dosing pump run status: RUNNING while its run reading is at least 0.01 ml/min (the server's DOSE_RUNNING_MIN).
   // A smaller leftover reading shows as 0.00 ml/min, so it counts as STOPPED too.
-  for(const [id,tag] of [['coagState','Coag_Pump_Run'],['flocState','Floc_Pump_Run']]){const r=ex[tag]||{};const known=r.status==='current'&&r.value!=null;const v=Number(r.value);const on=known&&v>=0.01;
+  for(const [id,tag] of [['coagState','Coag_Pump_Run'],['flocState','Floc_Pump_Rate']]){const r=ex[tag]||{};const known=r.status==='current'&&r.value!=null;const v=Number(r.value);const on=known&&v>=0.01;
    const el=$(id);el.textContent=known?(on?'● RUNNING':'STOPPED'):'--';el.className='dose-state'+(known?(on?' on':' off'):'');
    el.title=known?`${on?'RUNNING':'STOPPED'}: run reading ${v.toFixed(4)} ml/min${r.raw_value!=null?` (PLC value ${Number(r.raw_value).toFixed(2)} ${r.raw_unit})`:''}; below 0.01 ml/min counts as stopped`:`${tag}: ${r.status||'missing'}`}
   {const r=ex.SLUDGE_TANK_LEVEL||{};const known=r.status==='current'&&r.value!=null;const full=known&&Number(r.value)>=1;
@@ -275,7 +275,7 @@ $('logStock').addEventListener('click',async()=>{if(!$('stockLitres').value){sto
 function fillProductLists(prods){document.querySelectorAll('[data-products]').forEach(sel=>{const keep=sel.value;
  sel.innerHTML=Object.values(prods).filter(p=>p.active!==false).map(p=>`<option value="${escapeHTML(p.key)}">${escapeHTML(p.name)} · ${escapeHTML(p.container)}${p.part?' · Part # '+escapeHTML(p.part):''}</option>`).join('');
  if(keep&&Array.from(sel.options).some(o=>o.value===keep))sel.value=keep})}
-const MEASURED={'':'Tank counts','Coag_Pump_Run':'Coagulant dosing pump (Coag_Pump_Run)','Floc_Pump_Run':'Flocculant dosing pump (Floc_Pump_Run)'};
+const MEASURED={'':'Tank counts','Coag_Pump_Run':'Coagulant dosing pump (Coag_Pump_Run)','Floc_Pump_Rate':'Flocculant dosing pump (Floc_Pump_Rate)'};
 let productKeys=[];   // keys saved on the server; a new row gets a fresh key and can be deleted before it has records
 function productRow(p){const v=x=>x==null?'':escapeHTML(String(x));const prices=p.prices||[];
  return `<tr data-key="${v(p.key)}"><td><input type="checkbox" data-f="active"${p.active!==false?' checked':''} aria-label="In use"></td>`+
