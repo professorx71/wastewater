@@ -111,7 +111,7 @@ def summary():
                 if name in DOSING_RUN_TAGS:
                     item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.56','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.57','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
@@ -597,7 +597,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.56: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.57: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -880,7 +880,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.56
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.57
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -2093,7 +2093,7 @@ def pump_rows(start,end,zone,date_range):
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump',
                     'Caustic_Pump_Run':'Caustic dosing pump','Acid_Pump_Run':'Acid dosing pump'}
-# Settings saved before 1.2.56 (one key per product); read once to build the product list.
+# Settings saved before 1.2.57 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
@@ -2108,7 +2108,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.56 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.57 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
