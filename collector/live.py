@@ -88,18 +88,53 @@ def parse(text, tags=TAGS):
     return out
 
 
-def read_once(cfg):
-    url = BASE + quote(cfg['ewon_name'], safe='') + '/rcgi.bin/ParamForm?AST_Param=$dtIV$ftT'
-    body = urlencode({'t2maccount': cfg['account'], 't2musername': cfg['username'], 't2mpassword': cfg['password'],
-                      't2mdeveloperid': cfg['developer_id'], 't2mdeviceusername': cfg['device_username'],
-                      't2mdevicepassword': cfg['device_password']}).encode()
-    request = Request(url, data=body, headers={'Content-Type': 'application/x-www-form-urlencoded'})
+API = 'https://m2web.talk2m.com/t2mapi/'
+_METHOD = {'device': None}   # 'post' or 'get', whichever M2Web accepted first
+
+
+def _reason(error):
+    """M2Web's own error message (JSON 'message', never contains our passwords), or the HTTP code."""
+    try:
+        body = error.read().decode('utf-8', 'replace')
+        msg = json.loads(body).get('message')
+        if msg:
+            return f'HTTP {error.code}: {str(msg)[:200]}'
+    except Exception:
+        pass
+    return f'HTTP {error.code}'
+
+
+def call(url, params, method='post'):
+    """M2Web request with the logins in the POST body (method 'post') or the query string ('get')."""
+    if method == 'post':
+        request = Request(url, data=urlencode(params).encode(), headers={'Content-Type': 'application/x-www-form-urlencoded'})
+    else:
+        request = Request(url + ('&' if '?' in url else '?') + urlencode(params))
     try:
         with urlopen(request, timeout=20) as response:
-            text = response.read().decode('utf-8', 'replace')
+            return response.read().decode('utf-8', 'replace')
     except HTTPError as error:
-        raise ValueError(f'M2Web replied HTTP {error.code}') from None
-    return parse(text)
+        raise ValueError(_reason(error)) from None
+
+
+def talk2m_login(cfg):
+    return {'t2maccount': cfg['account'], 't2musername': cfg['username'], 't2mpassword': cfg['password'],
+            't2mdeveloperid': cfg['developer_id']}
+
+
+def read_once(cfg):
+    url = BASE + quote(cfg['ewon_name'], safe='') + '/rcgi.bin/ParamForm?AST_Param=$dtIV$ftT'
+    params = dict(talk2m_login(cfg), t2mdeviceusername=cfg['device_username'], t2mdevicepassword=cfg['device_password'])
+    methods = [_METHOD['device']] if _METHOD['device'] else ['post', 'get']
+    for i, method in enumerate(methods):
+        try:
+            text = call(url, params, method)
+        except ValueError as error:
+            if i + 1 < len(methods) and str(error).startswith(('HTTP 401', 'HTTP 403', 'HTTP 400')):
+                continue   # try the logins in the query string instead
+            raise ValueError(f'Ewon tag read refused: {error}') from None
+        _METHOD['device'] = method
+        return parse(text)
 
 
 def connect(path=DB):
@@ -152,7 +187,36 @@ def run():
 
 def test():
     cfg = load_config(Path('/etc/pbf-wastewater/m2web.json') if 'CREDENTIALS_DIRECTORY' not in os.environ else CREDS)
-    values = read_once(cfg)
+    # 1. Talk2M login only (account, user, password, developer ID)
+    try:
+        info = json.loads(call(API + 'getaccountinfo', talk2m_login(cfg)))
+        print(f'1. Talk2M login OK (account {info.get("accountName", cfg["account"])!r}).')
+    except ValueError as error:
+        print(f'1. Talk2M login FAILED: {error}')
+        print('   Check the Talk2M account name, user name, password and developer ID (the eCatcher login).')
+        print('   A Talk2M user with two-step verification may be refused by the API: use a user without it.')
+        raise ValueError('stopped at step 1') from None
+    # 2. Is the Ewon name known to this account?
+    try:
+        names = [e.get('name') for e in json.loads(call(API + 'getewons', talk2m_login(cfg))).get('ewons', [])]
+        if cfg['ewon_name'] in names:
+            print(f'2. Ewon {cfg["ewon_name"]!r} found in the account.')
+        else:
+            print(f'2. Ewon {cfg["ewon_name"]!r} NOT found. Names in this account: {", ".join(map(str, names)) or "(none)"}')
+            raise ValueError('stopped at step 2: use one of the Ewon names above, exactly as written') from None
+    except ValueError as error:
+        if 'stopped' in str(error):
+            raise
+        print(f'2. Could not list the Ewons ({error}); continuing.')
+    # 3. Read the tags through the Ewon (needs the Ewon's own web login)
+    try:
+        values = read_once(cfg)
+    except ValueError as error:
+        print(f'3. Ewon tag read FAILED: {error}')
+        print('   Talk2M is fine, so check the Ewon login user and password (the Ewon web page login),')
+        print('   and that the Ewon is online in eCatcher.')
+        raise ValueError('stopped at step 3') from None
+    print(f'3. Ewon tag read OK (logins sent by {_METHOD["device"].upper()}).')
     print(f'M2Web OK: {len(values)} of {len(TAGS)} dashboard tags read from {cfg["ewon_name"]!r}.')
     for name in TAGS:
         v = values.get(name)

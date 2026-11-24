@@ -6,7 +6,12 @@ set -euo pipefail
 [ "$(id -u)" -eq 0 ] || { echo 'Run with sudo: sudo bash set-m2web.sh'; exit 1; }
 cd "$(dirname "$0")"
 FILE=/etc/pbf-wastewater/m2web.json
-echo 'Talk2M M2Web login for live readings (Enter keeps nothing: every field is required).'
+NEW=y
+if [ -f "$FILE" ]; then
+  read -r -p 'A login is already saved. Type y to enter new details, or press Enter to test the saved one: ' NEW
+fi
+if [ "${NEW:-n}" = y ] || [ "${NEW:-n}" = Y ]; then
+echo 'Talk2M M2Web login for live readings (every field is required).'
 read -r  -p 'Talk2M account name: ' ACCOUNT
 read -r  -p 'Talk2M user name: ' T2MUSER
 read -r -s -p 'Talk2M password (hidden): ' T2MPASS; echo
@@ -30,6 +35,7 @@ with open(sys.argv[1],'w') as f:json.dump(cfg,f)
 os.chmod(sys.argv[1],0o600)
 print('Saved',sys.argv[1],'(root only).')
 PY
+fi
 echo; echo 'Testing one live read...'
 if python3 collector/live.py --test; then
   install -m 0644 collector/live.py /opt/pbf-wastewater/live.py
