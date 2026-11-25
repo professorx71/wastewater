@@ -38,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.60'
+        assert s['revision']=='1.2.61'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -777,13 +777,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.60 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.61 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.60 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.61 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -1063,6 +1063,8 @@ class RevisionTests(unittest.TestCase):
         self.assertTrue(any('Acid pump (L, not in the cost)' in str(c) for c in flat))
 
     def test_plant_products_11_25(self):
+        js=(Path(web.__file__).parent/'static/app.js').read_text(encoding='utf-8')
+        for tag in web.DOSING_TAG_CHOICES:self.assertIn(f"'{tag}':",js.split('const MEASURED=')[1].split('};')[0])   # every pump in Settings > Measured by
         P=web.products(None)
         self.assertEqual((P['caustic']['tag'],P['caustic']['part'],P['caustic']['container']),('Caustic_Pump_Run','FNEUT5045-Bulk','55 gal drum (700 lb)'))
         self.assertEqual((P['sa93']['tag'],P['sa93']['label'],P['sa93']['kg_l']),('Acid_Pump_Run','Acid (SA-93)',1.678))

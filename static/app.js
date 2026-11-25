@@ -310,7 +310,8 @@ $('logStock').addEventListener('click',async()=>{if(!$('stockLitres').value){sto
 function fillProductLists(prods){document.querySelectorAll('[data-products]').forEach(sel=>{const keep=sel.value;
  sel.innerHTML=Object.values(prods).filter(p=>p.active!==false).map(p=>`<option value="${escapeHTML(p.key)}">${escapeHTML(p.name)} · ${escapeHTML(p.container)}${p.part?' · Part # '+escapeHTML(p.part):''}</option>`).join('');
  if(keep&&Array.from(sel.options).some(o=>o.value===keep))sel.value=keep})}
-const MEASURED={'':'Tank counts','Coag_Pump_Run':'Coagulant dosing pump (Coag_Pump_Run)','Floc_Pump_Rate':'Flocculant dosing pump (Floc_Pump_Rate)'};
+const MEASURED={'':'Tank counts','Coag_Pump_Run':'Coagulant dosing pump (Coag_Pump_Run)','Floc_Pump_Rate':'Flocculant dosing pump (Floc_Pump_Rate)',
+  'Caustic_Pump_Run':'Caustic dosing pump (Caustic_Pump_Run)','Acid_Pump_Run':'Acid dosing pump (Acid_Pump_Run)'};
 let productKeys=[];   // keys saved on the server; a new row gets a fresh key and can be deleted before it has records
 function productRow(p){const v=x=>x==null?'':escapeHTML(String(x));const prices=p.prices||[];
  return `<tr data-key="${v(p.key)}"><td><input type="checkbox" data-f="active"${p.active!==false?' checked':''} aria-label="In use"></td>`+
