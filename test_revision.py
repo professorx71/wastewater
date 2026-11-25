@@ -38,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.59'
+        assert s['revision']=='1.2.60'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -757,6 +757,7 @@ class RevisionTests(unittest.TestCase):
                 db.execute('INSERT INTO chemical_stock(chemical,kind,litres,at,note,logged_by,logged_at) VALUES (?,?,?,?,?,?,?)',(chem,kind,litres,when,'','a','x'))
             db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('chemical_prices',?)",(json.dumps({'caustic':500.0,'floc':None,'coag':None,'sa93':None}),))
             cfg=web.settings(db)
+        cfg['chemical_products']=[dict(p,tag='') if p['key']=='caustic' else p for p in cfg['chemical_products']]   # caustic by tank counts here
         data=web.chemical_consumption(year,cfg)
         march=data['caustic'][3]
         self.assertAlmostEqual(march['counted'],(300+drum-250)+(250-100))   # both intervals end in March
@@ -776,13 +777,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.59 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.60 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.59 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.60 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -1005,7 +1006,7 @@ class RevisionTests(unittest.TestCase):
         # coagulant pump at 60 mL/hr (1 mL/min) all of yesterday; 10,000 L discharged yesterday
         self._samples([('Coag_Pump_Run',at(0),60.0),('Coag_Pump_Run',at(0,today),0.0),('Total_Flow_Li',at(9),100.0),('Total_Flow_Li',at(18),10100.0)])
         with web.appdb() as db:
-            cfg=web.settings(db);items=[dict(p,prices=[{'from':'2020-01-01','price':v}] if (v:={'coag':100.0,'caustic':500.0}.get(p['key'])) else []) for p in cfg['chemical_products']]
+            cfg=web.settings(db);items=[dict(p,tag='' if p['key']=='caustic' else p['tag'],prices=[{'from':'2020-01-01','price':v}] if (v:={'coag':100.0,'caustic':500.0}.get(p['key'])) else []) for p in cfg['chemical_products']]   # caustic by tank counts here
             cfg=web.val_settings({'chemical_products':items},cfg)
             # caustic: 300 L counted 20 days ago, 200 L 10 days ago: 10 L/day, so about 10 days left now
             for litres,days in ((300.0,20),(200.0,10)):
@@ -1039,6 +1040,46 @@ class RevisionTests(unittest.TestCase):
         self.assertIn('Chemical cost per m',zipfile.ZipFile(io.BytesIO(data)).read('xl/worksheets/sheet1.xml').decode())
         summary=json.loads(self.call('GET','/api/cost','admin','admin-pass')[1])
         self.assertEqual(len(summary['periods']),3);self.assertTrue(summary['priced'])
+
+    def test_acid_and_caustic_in_cost(self):
+        zone=web.ZoneInfo('America/Vancouver');now=datetime.now(timezone.utc);start=now-timedelta(hours=5)
+        self._samples([('Acid_Pump_Run',start,10.0),('Caustic_Pump_Run',start,20.0)])
+        with web.appdb() as db:cfg=web.settings(db)
+        cfg['chemical_products']=[dict(p,prices=[{'from':'2020-01-01','price':200.0}],tag='' if p['key'] in ('caustic','sa93') else p['tag']) for p in web.default_products()]
+        days,unpriced=web.chemical_cost(start,now,zone,cfg)
+        acid=sum(x['litres'].get('pump:Acid_Pump_Run',0) for x in days.values())
+        self.assertAlmostEqual(acid,10*5*60/1000,places=1)   # 10 mL/min for 5 h = 3 L, shown but no product: not in the cost
+        self.assertEqual(sum(x['cost'] for x in days.values()),0.0);self.assertEqual(unpriced,[])
+        s=web.cost_summary(cfg);self.assertIn('Acid pump',s['periods'][2]['unlinked'])
+        self.assertIn('Acid pump',web.cost_line(start,now,cfg,'today'))
+        # caustic linked to its pump in Settings: counted in the cost at its price
+        cfg['chemical_products']=[dict(p,tag='Caustic_Pump_Run') if p['key']=='caustic' else p for p in cfg['chemical_products']]
+        days,_=web.chemical_cost(start,now,zone,cfg)
+        litres=sum(x['litres'].get('caustic',0) for x in days.values())
+        self.assertAlmostEqual(litres,20*5*60/1000,places=1)
+        self.assertAlmostEqual(sum(x['cost'] for x in days.values()),litres/(55*web.GAL_L)*200,places=4)
+        self.assertNotIn('Caustic pump',web.cost_summary(cfg)['periods'][2]['unlinked'])
+        flat=[c for r in web.cost_rows(start,now,zone,'x',cfg) for c in r]
+        self.assertTrue(any('Acid pump (L, not in the cost)' in str(c) for c in flat))
+
+    def test_plant_products_11_25(self):
+        P=web.products(None)
+        self.assertEqual((P['caustic']['tag'],P['caustic']['part'],P['caustic']['container']),('Caustic_Pump_Run','FNEUT5045-Bulk','55 gal drum (700 lb)'))
+        self.assertEqual((P['sa93']['tag'],P['sa93']['label'],P['sa93']['kg_l']),('Acid_Pump_Run','Acid (SA-93)',1.678))
+        self.assertEqual((P['floc']['kg_l'],P['coag']['kg_l']),(1.078,1.338))
+        # a product list saved before: pumps linked and weights set once, prices kept; a pump already in use is not taken
+        saved=[dict(p,tag='',prices=[{'from':'2026-01-01','price':450.0}]) if p['key']=='caustic' else dict(p,tag='') if p['key']=='sa93' else p for p in web.default_products()]
+        saved=[dict(p,container='55 gal drum',kg_l=1.52) if p['key']=='caustic' else p for p in saved]
+        with web.appdb() as db:
+            db.execute("DELETE FROM settings WHERE key='products_v1125'")
+            db.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('chemical_products',?)",(json.dumps(saved),))
+            web.migrate_products(db);P=web.products(web.settings(db))
+            self.assertEqual((P['caustic']['tag'],P['caustic']['price'],P['caustic']['kg_l']),('Caustic_Pump_Run',450.0,1.525))
+            self.assertEqual(P['sa93']['tag'],'Acid_Pump_Run')
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM audit WHERE action='Chemical products updated'").fetchone()[0],1)
+            db.execute("UPDATE settings SET value=? WHERE key='chemical_products'",(json.dumps(saved),))
+            web.migrate_products(db)   # only once: a later change in Settings is not undone
+            self.assertEqual(web.products(web.settings(db))['caustic']['tag'],'')
 
     def test_price_history_uses_the_price_of_each_day(self):
         p=web.norm_product(dict(web.products(None)['coag'],prices=[{'from':'2026-03-01','price':120.0},{'from':'2026-01-01','price':100.0}]))
@@ -1158,8 +1199,8 @@ class RevisionTests(unittest.TestCase):
         with web.appdb() as db:
             cfg=web.settings(db)
             self.assertEqual(cfg['currency'],'CAD')
-            caustic=web.products(cfg)['caustic'];self.assertEqual(caustic['kg_l'],1.52)
-            self.assertIsNone(web.products(cfg)['floc']['kg_l'])
+            caustic=web.products(cfg)['caustic'];self.assertEqual(caustic['kg_l'],1.525)   # 700 lb per 55 gal drum
+            self.assertEqual(web.products(cfg)['floc']['kg_l'],1.078)   # 45 lb per 5 gal pail
             body=dict(chemical='caustic',purchased_on='2026-11-01',litres=328.95,cost=500.0,currency='USD',entered='500 kg')
             pid=web.save_purchase(db,body,'t',cfg)[0]
             web.save_purchase(db,dict(body,currency=None,cost=900.0,entered=None),'t',cfg)

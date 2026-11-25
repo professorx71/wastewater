@@ -111,7 +111,7 @@ def summary():
                 if name in DOSING_RUN_TAGS:
                     item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.59','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.60','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
@@ -599,6 +599,7 @@ def appdb():
             try:conn.execute(f'ALTER TABLE {table} ADD COLUMN {col} TEXT')
             except sqlite3.OperationalError:pass
     migrate_alarms(conn)
+    migrate_products(conn)
     conn.commit()
     try:
         yield conn
@@ -610,7 +611,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.59: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.60: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -893,7 +894,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.59
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.60
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -2102,14 +2103,22 @@ def pump_rows(start,end,zone,date_range):
 
 # ---------------------------------------------------------------- chemical products and stock
 # Chemical products are edited by an Admin under Settings > Chemical products and saved in the
-# 'chemical_products' setting. Only the coagulant and flocculant dosing pumps report their rate to the PLC,
-# so other products' usage comes from tank counts. Until the list is first saved, these four are used.
+# 'chemical_products' setting. The coagulant, flocculant, caustic and acid dosing pumps report their rate to the PLC;
+# a product linked to one of them (Dosing pump) uses its reading, other products the tank counts. Until the list is first saved, these four are used.
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump',
                     'Caustic_Pump_Run':'Caustic dosing pump','Acid_Pump_Run':'Acid dosing pump'}
-# Settings saved before 1.2.59 (one key per product); read once to build the product list.
+# Settings saved before 1.2.60 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
-_DEFAULT_PRODUCTS=(
+LB_KG=0.45359237
+# Plant information 11/25/2026: the caustic pump doses NEUTRO 5045 (FNEUT5045-Bulk), the acid pump SA-93;
+# container weights give the weight per litre (kg/L = lb x 0.4536 / (US gal x 3.785)).
+PLANT_PRODUCTS={
+    'caustic':dict(part='FNEUT5045-Bulk',container='55 gal drum (700 lb)',kg_l=round(700*LB_KG/(55*GAL_L),3),tag='Caustic_Pump_Run'),
+    'floc':dict(container='5 gal pail (45 lb)',kg_l=round(45*LB_KG/(5*GAL_L),3)),
+    'coag':dict(container='55 gal drum (614 lb)',kg_l=round(614*LB_KG/(55*GAL_L),3)),
+    'sa93':dict(label='Acid (SA-93)',container='5 gal pail (70 lb)',kg_l=round(70*LB_KG/(5*GAL_L),3),tag='Acid_Pump_Run')}
+_DEFAULT_PRODUCTS=tuple(dict(p,**PLANT_PRODUCTS[p['key']]) for p in (
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
          container_l=55*GAL_L,tag='',low_l=20.0,price=None,lead_days=7,supplier='CESCO',active=True,kg_l=1.52),
     dict(key='floc',name='CESCO PF 875AH Flocculant',label='Flocculant (PF 875AH)',part='FPF875AH-P5',container='5 gal pail',
@@ -2117,12 +2126,29 @@ _DEFAULT_PRODUCTS=(
     dict(key='coag',name='CESCO PROTECT 7000 Coagulant',label='Coagulant (PROTECT 7000)',part='FPROT7000-Dr55',container='55 gal drum',
          container_l=55*GAL_L,tag='Coag_Pump_Run',low_l=20.0,price=None,lead_days=7,supplier='CESCO',active=True),
     dict(key='sa93',name='CESCO SA-93',label='SA-93',part='FSA93-P5',container='5 gal pail',
-         container_l=5*GAL_L,tag='',low_l=5.0,price=None,lead_days=7,supplier='CESCO',active=True))
+         container_l=5*GAL_L,tag='',low_l=5.0,price=None,lead_days=7,supplier='CESCO',active=True)))
+
+def migrate_products(conn):
+    """Once (11/25/2026): apply PLANT_PRODUCTS to a product list already saved in Settings. A pump is linked only
+    if the product has none and no other product uses that pump; prices, stock levels and sizes are kept."""
+    if conn.execute("SELECT 1 FROM settings WHERE key='products_v1125'").fetchone():return
+    row=conn.execute("SELECT value FROM settings WHERE key='chemical_products'").fetchone()
+    if row:
+        items=json.loads(row[0]);used={p.get('tag') for p in items if p.get('tag')};changed=[]
+        for p in items:
+            new=dict(PLANT_PRODUCTS.get(p.get('key'),{}))
+            if 'tag' in new and (p.get('tag') or new['tag'] in used):new.pop('tag')
+            if new.get('tag'):used.add(new['tag'])
+            if any(p.get(k)!=v for k,v in new.items()):p.update(new);changed.append(p.get('label') or p.get('name'))
+        if changed:
+            conn.execute("UPDATE settings SET value=? WHERE key='chemical_products'",(json.dumps(items),))
+            audit(conn,'System','Chemical products updated','Plant information 11/25/2026 (dosing pumps, containers, weight per litre): '+', '.join(changed))
+    conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('products_v1125','true')")
 PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.59 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.60 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -2142,7 +2168,6 @@ def price_on(p,day):
     return max(valid,key=lambda e:e['from'])['price'] if valid else None
 
 CURRENCIES=('CAD','USD')
-LB_KG=0.45359237
 KG_L_DEFAULTS={'caustic':1.52}   # 50% sodium hydroxide; other products: enter the weight per litre from the SDS
 
 def norm_product(p):
@@ -2399,7 +2424,18 @@ def daily_chemical_use(conn,start,end,zone,cfg):
             rate=used/(tb-ta).total_seconds()
             for d,x,y in day_segments(max(ta,start),min(tb,end),zone):
                 if d in days:days[d][key]=days[d].get(key,0.0)+rate*(y-x).total_seconds()
+    # A dosing pump (for example acid or caustic) with no product linked to it in Settings: its litres are kept
+    # under 'pump:<tag>' so the cost pages can show them, but they have no price and are not in the cost.
+    linked={p['tag'] for p in products(cfg).values() if p['tag']}
+    for tag,_ in CHEMICAL_TAGS:
+        if tag in linked:continue
+        for d,l in pump.get(tag,{}).items():
+            if d in days and l>0.0005:days[d]['pump:'+tag]=l
     return days
+
+def unlinked_label(key):
+    """'pump:Acid_Pump_Run' -> 'Acid pump'."""
+    return dict(CHEMICAL_TAGS).get(key[5:],key[5:])+' pump'
 
 def chemical_cost(start,end,zone,cfg):
     """Per local day: litres of each product, chemical cost, m³ discharged and cost per m³.
@@ -2415,6 +2451,7 @@ def chemical_cost(start,end,zone,cfg):
     for d,u in use.items():
         costs={}
         for key,l in u.items():
+            if key.startswith('pump:'):continue   # no product linked to this pump: no price
             p=prods[key];price=price_on(p,d)
             if price is None:
                 if l>0.001:unpriced.add(key)
@@ -2433,6 +2470,7 @@ def cost_rows(start,end,zone,date_range,cfg):
     days,unpriced=chemical_cost(start,end,zone,cfg);prods=products(cfg)
     per_l=lambda x:'' if x['per_m3'] is None else (round(x['per_m3']/1000,6),6)   # 1 m³ = 1000 L
     used=[k for k in prods if any(x['litres'].get(k) for x in days.values())]
+    loose=[f'pump:{t}' for t,_ in CHEMICAL_TAGS if any(x['litres'].get(f'pump:{t}') for x in days.values())]
     t=cost_totals(days)
     rows=[[B('Chemical cost per m³ discharged')],['Date range (America/Vancouver)',date_range],[],
           [B('Total chemical cost ($)'),B('Discharged (m³)'),B('Cost per m³ ($)'),B('Cost per litre ($)')],[num(t['cost']),num(t['m3'],3),num(t['per_m3'],4),per_l(t)],[]]
@@ -2444,9 +2482,11 @@ def cost_rows(start,end,zone,date_range,cfg):
         for (k,label),sub in groups.items():
             if k==kind:s=cost_totals(sub);rows.append([label,num(s['cost']),num(s['m3'],3),num(s['per_m3'],4),per_l(s)])
         rows.append([])
-    rows.append([B('Date'),B('Discharged (m³)')]+[B(f"{prods[k]['label']} (L)") for k in used]+[B('Chemical cost ($)'),B('Cost per m³ ($)'),B('Cost per litre ($)')])
+    rows.append([B('Date'),B('Discharged (m³)')]+[B(f"{prods[k]['label']} (L)") for k in used]+[B(f"{unlinked_label(k)} (L, not in the cost)") for k in loose]+[B('Chemical cost ($)'),B('Cost per m³ ($)'),B('Cost per litre ($)')])
     for d,x in days.items():
-        rows.append([d,num(x['m3'],3)]+[num(x['litres'].get(k,0.0),3) for k in used]+[num(x['cost']),num(x['per_m3'],4),per_l(x)])
+        rows.append([d,num(x['m3'],3)]+[num(x['litres'].get(k,0.0),3) for k in used+loose]+[num(x['cost']),num(x['per_m3'],4),per_l(x)])
+    if loose:rows+=[[],[f"{', '.join(unlinked_label(k) for k in loose)}: no chemical product is linked to this dosing pump, so its litres are listed but not in the cost. "
+                         "Link the product under Settings > Chemical products (Dosing pump) and enter its price."]]
     if unpriced:rows+=[[],[f"No price for some days of: {', '.join(prods[k]['name'] for k in unpriced)}. That usage is listed but not in the cost; add a price (with the date it starts) under Settings > Chemical products."]]
     rows+=[[],['Cost = litres used / litres per container x the price per container valid that day (Settings > Chemical products, price history). Products measured by a dosing pump use '
                'the pump reading; other products use the tank counts, spread evenly over the time between two counts (usage after the last count is not known yet). '
@@ -2465,8 +2505,10 @@ def cost_summary(cfg,now=None):
         for x in days.values():
             for k,l in x['litres'].items():per[k]=per.get(k,0.0)+l
             for k,c in x['costs'].items():pc[k]=pc.get(k,0.0)+c
-        items=[dict(key=k,label=prods[k]['label'],litres=l,cost=pc.get(k),missing=k in unpriced) for k,l in per.items() if l>0.001]
-        out['periods'].append(dict(label=label,**t,products=items,unpriced=[prods[k]['label'] for k in unpriced]))
+        items=[dict(key=k,label=unlinked_label(k),litres=l,cost=None,missing=True,unlinked=True) if k.startswith('pump:')
+               else dict(key=k,label=prods[k]['label'],litres=l,cost=pc.get(k),missing=k in unpriced) for k,l in per.items() if l>0.001]
+        out['periods'].append(dict(label=label,**t,products=items,unpriced=[prods[k]['label'] for k in unpriced],
+                                   unlinked=[x['label'] for x in items if x.get('unlinked')]))
     return out
 
 def cost_line(start,end,cfg,label):
@@ -2476,6 +2518,8 @@ def cost_line(start,end,cfg,label):
     if not any(has_prices(p) for p in products(cfg).values()):return 'Chemical cost: no prices set yet (Settings > Chemical products).'
     per=f"${t['per_m3']:,.4f} per m³ (${t['per_m3']/1000:,.6f} per litre)" if t['per_m3'] is not None else 'no discharge'
     miss=f" (no price yet for {', '.join(products(cfg)[k]['label'] for k in unpriced)})" if unpriced else ''
+    loose=sorted({k for x in days.values() for k,l in x['litres'].items() if k.startswith('pump:') and l>0.001})
+    if loose:miss+=f" ({', '.join(unlinked_label(k) for k in loose)}: no product linked in Settings, not in the cost)"
     return f"Chemical cost {label}: ${t['cost']:,.2f} for {t['m3']:,.1f} m³ discharged = {per}{miss}."
 
 # ---------------------------------------------------------------- chemical purchases
