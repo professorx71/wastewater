@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EffluentIQ — Rev 1.2.61</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>EffluentIQ — Rev 1.2.62</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body data-view="overview">
 <header class="topbar"><div class="brand"><h1><img class="logo" src="/logo-effluentiq.svg" alt="EffluentIQ — Industrial Wastewater Monitoring &amp; Reporting" width="700" height="124"></h1><small>Design and program by Daniel Salazar.</small></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button><button data-view="help">Help</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.61</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.62</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="alarmRibbon" class="sludge-ribbon" role="alert" hidden></div><div id="shelfNote" class="shelf-note" hidden></div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -219,7 +219,7 @@
 <li><b>Log tank count</b> regularly: the start of each month and whenever a drum or pail is changed. The quantity can be in containers, litres, US gallons, kg or lb.</li>
 <li>Cards show the stock in <b>kg and lb</b> too, for products with a weight per litre. <b>Show</b> above the list of tank counts chooses the period.</li>
 <li><b>Download consumption report</b> (choose the year): delivered and used per month and year for each product, with costs once prices are entered.</li></ul>
-<p><b>Chemical cost per m³ or per litre:</b> what the chemicals cost for each cubic metre (or litre — choose in the panel heading; 1 m³ = 1,000 L) discharged, for this month so far, last month and the last 30 days, with the litres and cost of each product. It needs the price per container under Settings → Chemical products; a product used without a price is listed but left out of the cost. The <b>caustic and acid dosing pumps</b> count like the coagulant and flocculant pumps once a product is linked to each one (Settings → Chemical products → Dosing pump: <i>Caustic dosing pump</i> / <i>Acid dosing pump</i>, with the price per container); until then their litres are shown as "Caustic pump" / "Acid pump · no product linked" and are not in the cost. The daily and monthly emails include the same figure.</p>
+<p><b>Chemical cost per m³ or per litre:</b> what the chemicals cost for each cubic metre (or litre — choose in the panel heading; 1 m³ = 1,000 L) discharged, for this month so far, last month and the last 30 days, with the litres and cost of each product. It needs the price per container under Settings → Chemical products. Each price starts on a date: usage before a product's first price date is not in the cost, and the card says so (for example "Caustic (NEUTRO 5045): price starts 2026-11-25, usage before then is not in the cost"). To include it, open <b>Prices</b> for that product and give the price an earlier start date. The <b>caustic and acid dosing pumps</b> count like the coagulant and flocculant pumps once a product is linked to each one (Settings → Chemical products → Dosing pump: <i>Caustic dosing pump</i> / <i>Acid dosing pump</i>, with the price per container); until then their litres are shown as "Caustic pump" / "Acid pump · no product linked" and are not in the cost. The daily and monthly emails include the same figure.</p>
 <p><b>Excel report</b> (choose the type and dates, up to 92 days; or CSV):</p>
 <ul>
 <li><b>EQ_Tank_Level_Ft, FLOW_RATE, Total_Flow_Li, Rake_Speed_VFD</b> — every reading, plus a Summary of daily, monthly and quarterly flow usage in litres and <b>cubic metres (m³)</b> (EOD daily usage), with the <b>pH average</b> for each day, month and quarter.</li>
@@ -316,5 +316,5 @@
 <label><span>Password for <b id="pwUser"></b></span><input type="password" id="pwInput" autocomplete="current-password" maxlength="256"></label>
 <p class="pw-note">Removing a record needs your password, so nothing is deleted by accident. It is recorded in the Audit log.</p>
 <div class="pw-buttons"><button type="button" id="pwCancel">Cancel</button><button type="submit" id="pwOk" class="danger">Remove</button></div></form></dialog>
-<footer>EffluentIQ™ Rev 1.2.61 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
+<footer>EffluentIQ™ Rev 1.2.62 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
 </main></body></html>

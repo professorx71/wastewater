@@ -360,7 +360,7 @@ function drawCost(d){
  $('costCards').innerHTML=d.priced?d.periods.map(p=>`<div><b>${escapeHTML(p.label)}</b><b class="cost-big">${perUnit(p)}</b>`+
   `<span>${money(p.cost,priceCur)} of chemicals for ${costUnit==='L'?fmt(p.m3*1000)+' L':fmt(p.m3)+' m³'} discharged</span>`+
   (p.products.length?`<span>${p.products.map(x=>`${escapeHTML(x.label)}: ${fmt(x.litres)} L${x.unlinked?' · no product linked':x.cost!=null?' · '+money(x.cost,priceCur):' · no price'}`).join('<br>')}</span>`:'<span>No chemical usage recorded</span>')+
-  (p.unpriced.length?`<em class="warn">No price yet for ${escapeHTML(p.unpriced.join(', '))}: not in the cost</em>`:'')+
+  (p.unpriced.length?`<em class="warn">${(p.unpriced_from||p.unpriced.map(l=>({label:l}))).map(u=>u.first?`${escapeHTML(u.label)}: price starts ${escapeHTML(u.first)}, usage before then is not in the cost`:`No price yet for ${escapeHTML(u.label)}: not in the cost`).join('<br>')}. To include it, change the price start date under Settings → Chemical products → Prices.</em>`:'')+
   (p.unlinked&&p.unlinked.length?`<em class="warn">${escapeHTML(p.unlinked.join(', '))}: not in the cost until a product is linked to the pump in Settings → Chemical products</em>`:'')+`</div>`).join('')
   :'<div><b>No prices yet</b><span>Enter the price per container of each chemical under Settings → Chemical products to see the cost per m³ or per litre.</span></div>'}
 // ---- Chemical purchases (Reports page) ----
