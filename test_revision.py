@@ -38,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.58'
+        assert s['revision']=='1.2.59'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -118,6 +118,25 @@ class RevisionTests(unittest.TestCase):
         self.assertIn('Acid_Pump_Run',web.DOSING_TAG_CHOICES)
         html=(Path(web.__file__).parent/'static'/'index.html').read_text(encoding='utf-8')
         for i in ('causticRun','acidRun','causticState','acidState','<option value="L/hr">L/hr</option>'):self.assertIn(i,html)
+        self.assertNotIn('<option value="mL/hr">',html)   # coag / floc show mL/min or L/hr like acid / caustic
+        self.assertIn('id="dosingCanvas"',html);self.assertIn('id="dosingToggle"',html)
+
+    def test_dosing_history_for_trends(self):
+        now=datetime.now(timezone.utc)
+        with sqlite3.connect(web.DB) as db:
+            db.execute("DELETE FROM samples WHERE name IN ('Coag_Pump_Run','Caustic_Pump_Run')")
+            for name,t,v in [('Caustic_Pump_Run',now-timedelta(hours=8),100.0),('Caustic_Pump_Run',now-timedelta(hours=1),284.0),
+                             ('Coag_Pump_Run',now-timedelta(minutes=30),600.0)]:   # Coag is logged in mL/hr: 600 mL/hr = 10 mL/min
+                db.execute('INSERT INTO samples(name,stamp,value) VALUES(?,?,?)',(name,web.iso(t),v))
+        d=web.history({'from':[web.iso(now-timedelta(hours=6))],'to':[web.iso(now)]})['dosing']
+        self.assertEqual(set(d),set(web.DOSING_RUN_TAGS))
+        self.assertEqual([p['value'] for p in d['Caustic_Pump_Run']],[100.0,284.0])   # the reading before the window is held into it
+        self.assertEqual([p['value'] for p in d['Coag_Pump_Run']],[10.0])
+        self.assertEqual(d['Acid_Pump_Run'],[])
+
+    def test_texts_for_alarms_only(self):
+        for alarm in ('ph','plc:E_STOP_STATUS','level','flow','data'):self.assertTrue(web.texted(alarm),alarm)
+        for alarm in ('ph_trend_high','ph_trend_low','dosing:coag','stock:caustic','order:floc',None):self.assertFalse(web.texted(alarm),alarm)
 
     def test_sludge_pickup_log_and_report(self):
         import zipfile
@@ -522,7 +541,14 @@ class RevisionTests(unittest.TestCase):
         with patch.object(web,'summary',return_value=current),patch.object(web,'send_mail') as mail:
             web.scheduler();web.scheduler()
         subjects=[c.args[1] for c in mail.call_args_list]
-        self.assertEqual(subjects.count('Flocculant and Coagulant Pump Motor Stop Faulted (FLOC_COAG_PUMP_FAULTED)'),1)
+        self.assertEqual(subjects.count('Flocculant and Coagulant Pump Motor Stop Faulted'),1)
+        # No incident numbers and no tag names / alarm codes in the emails or their subjects
+        texts=[c.args[1]+'\n'+c.args[2] for c in mail.call_args_list]
+        self.assertEqual(web.RECOVERY_SUBJECTS['plc:E_STOP_STATUS'],'CLEARED: Emergency Stop Activated')
+        for t in texts:
+            self.assertNotRegex(t,r'(?i)incident')
+            self.assertNotRegex(t,r'[A-Z]+_[A-Z_]+')
+        self.assertEqual(web.mail_detail('Incident 99; back to normal'),'back to normal')
         self.assertEqual(set(web.PLC_EMAIL_WORDING),{t for t,*_ in web.PLC_ALARMS})   # every PLC alarm has its wording
 
     def test_sensor_calibration_log(self):
@@ -750,13 +776,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.58 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.59 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.58 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.59 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -1085,10 +1111,10 @@ class RevisionTests(unittest.TestCase):
     def test_text_message_has_the_reading(self):
         now=datetime(2026,11,22,17,19,tzinfo=web.ZoneInfo('America/Vancouver'))
         self.assertEqual(web.sms_text('Wastewater pH LOW alarm — active 15 min',52,now,'pH now 5.42, low limit 5.80'),
-            'Wastewater pH LOW alarm — active 15 min. pH now 5.42, low limit 5.80. Incident #52 at Nov 22 17:19. See the dashboard Alarms page.')
-        self.assertEqual(web.sms_text('X',1,now),'X. Incident #1 at Nov 22 17:19. See the dashboard Alarms page.')
+            'Wastewater pH LOW alarm — active 15 min. pH now 5.42, low limit 5.80. At Nov 22 17:19. See the dashboard Alarms page.')
+        self.assertEqual(web.sms_text('X',1,now),'X. At Nov 22 17:19. See the dashboard Alarms page.')
         self.assertEqual(web.sms_text('pH trending high',3,now,'pH 8.60 is rising 1.20 pH per hour; it reaches 9.00 in about 20 minutes. Check the acid dosing.'),
-            'pH trending high. pH 8.60 is rising 1.20 pH per hour; it reaches 9.00 in about 20 minutes. Incident #3 at Nov 22 17:19. See the dashboard Alarms page.')
+            'pH trending high. pH 8.60 is rising 1.20 pH per hour; it reaches 9.00 in about 20 minutes. At Nov 22 17:19. See the dashboard Alarms page.')
         self.assertLessEqual(len(web.sms_text('X'*100,1,now,'y'*400)),300)
 
     def test_list_periods(self):

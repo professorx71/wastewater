@@ -15,8 +15,8 @@ const canView=name=>!VIEW_PERMS[name]||VIEW_PERMS[name].some(p=>can(p));
 const can=p=>perms.has(p);
 // Discharge flow display unit, remembered per browser. The server sends L/min (raw GPM x 3.78541).
 const GAL_PER_L=1/3.78541;
-let doseUnit='mL/min';try{if(['mL/hr','ml/h'].includes(localStorage.getItem('ww.doseUnit')))doseUnit='mL/hr'}catch{}
-let phDoseUnit='mL/min';try{if(localStorage.getItem('ww.phDoseUnit')==='L/hr')phDoseUnit='L/hr'}catch{}
+let doseUnit='mL/min';try{if(['L/hr','mL/hr','ml/h'].includes(localStorage.getItem('ww.doseUnit'))||localStorage.getItem('ww.phDoseUnit')==='L/hr')doseUnit='L/hr'}catch{}
+const doseValue=v=>v==null?v:(doseUnit==='L/hr'?v*0.06:v);   // mL/min -> L/hr = x 60 / 1000
 let flowUnit='L/min';try{if(['GPM','gal/min'].includes(localStorage.getItem('ww.flowUnit')))flowUnit='GPM'}catch{}
 const flowValue=v=>v==null?v:(flowUnit==='GPM'?v*GAL_PER_L:v);
 const unitFor=(key,unit)=>key==='FLOW_RATE'?flowUnit:unit;
@@ -56,13 +56,12 @@ function drawCards(){
  set('tankPh','pH_Reading');set('tankLevel','EQ_Tank_Level_Ft');{const t=item('FLOW_RATE');$('diagramFlow').textContent=(t.status==='current'&&t.value!=null?fmt(flowValue(t.value)):'--.--')+' '+flowUnit}
  {const ex=summaryData.extras||{};const show=(id,tag,unit,dec)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=(ok?Number(r.value).toFixed(dec):'--.'+'-'.repeat(dec))+' '+unit;el.classList.toggle('live',ok);el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.stamp?' · '+local(r.stamp):''}`};
   // Dosing run rates arrive in mL/min (the server converts PLC mL/hr); shown in the unit picked here.
-  // Acid and caustic run rates have their own unit choice: mL/min or L/hr (mL/min x 60 / 1000).
-  const dose=(id,tag,ph)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=ok?(ph?(phDoseUnit==='L/hr'?(r.value*0.06).toFixed(2):Number(r.value).toFixed(2)):(doseUnit==='mL/hr'?(r.value*60).toFixed(1):Number(r.value).toFixed(2))):'--.--';el.classList.toggle('live',ok);
+  // All four pumps share one unit choice: mL/min or L/hr (mL/min x 60 / 1000).
+  const dose=(id,tag)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=ok?(doseUnit==='L/hr'?(r.value*0.06).toFixed(3):Number(r.value).toFixed(2)):'--.--';el.classList.toggle('live',ok);
    el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.raw_value!=null?' · PLC value '+Number(r.raw_value).toFixed(2)+' '+r.raw_unit:''}${r.stamp?' · '+local(r.stamp):''}`};
-  document.querySelectorAll('[data-dose-unit]').forEach(s=>{if(s.value!==doseUnit)s.value=doseUnit;s.onchange=()=>{doseUnit=s.value==='mL/hr'?'mL/hr':'mL/min';try{localStorage.setItem('ww.doseUnit',doseUnit)}catch{};drawCards()}});
-  document.querySelectorAll('[data-ph-dose-unit]').forEach(s=>{if(s.value!==phDoseUnit)s.value=phDoseUnit;s.onchange=()=>{phDoseUnit=s.value==='L/hr'?'L/hr':'mL/min';try{localStorage.setItem('ww.phDoseUnit',phDoseUnit)}catch{};drawCards()}});
+  document.querySelectorAll('[data-dose-unit]').forEach(s=>{if(s.value!==doseUnit)s.value=doseUnit;s.onchange=()=>{doseUnit=s.value==='L/hr'?'L/hr':'mL/min';try{localStorage.setItem('ww.doseUnit',doseUnit)}catch{};drawCards();if(historyData&&!$('trends').hidden)dosingChart()}});
   show('rakeSpeed','Rake_Speed_VFD','Hz',1);show('coagRate','Coag_Pump_Rate_Percent','%',1);dose('coagRun','Coag_Pump_Run');show('flocRate','Floc_Pump_Rate_Percent','%',1);dose('flocRun','Floc_Pump_Rate');
-  show('causticRate','Caustic_Pump_Rate_Percent','%',1);dose('causticRun','Caustic_Pump_Run',true);show('acidRate','Acid_Pump_Rate_Percent','%',1);dose('acidRun','Acid_Pump_Run',true);
+  show('causticRate','Caustic_Pump_Rate_Percent','%',1);dose('causticRun','Caustic_Pump_Run');show('acidRate','Acid_Pump_Rate_Percent','%',1);dose('acidRun','Acid_Pump_Run');
   // Dosing pump run status: RUNNING while its run reading is at least 0.01 mL/min (the server's DOSE_RUNNING_MIN).
   // A smaller leftover reading shows as 0.00 mL/min, so it counts as STOPPED too.
   for(const [id,tag] of [['coagState','Coag_Pump_Run'],['flocState','Floc_Pump_Rate'],['causticState','Caustic_Pump_Run'],['acidState','Acid_Pump_Run']]){const r=ex[tag]||{};const known=r.status==='current'&&r.value!=null;const v=Number(r.value);const on=known&&v>=0.01;
@@ -130,7 +129,39 @@ function plot(canvas,points,tag){const W=Math.max(280,canvas.clientWidth||600),H
  let mn=Math.min(...valid.map(p=>p.value)),mx=Math.max(...valid.map(p=>p.value));const pad=Math.max((mx-mn)*.14,Math.abs(mx)*.0004,.01);mn-=pad;mx+=pad;
  for(let i=0;i<=3;i++){let y=top+i*(bottom-top)/3;ctx.strokeStyle='#2a4557';ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.fillStyle='#a9c1d2';ctx.fillText(fmt(mx-(mx-mn)*i/3),0,y+4)}
  ctx.beginPath();let old=null;valid.forEach((p)=>{let ts=Date.parse(p.date);if(!Number.isFinite(ts))return;let x=X(ts),y=bottom-(p.value-mn)/(mx-mn)*(bottom-top);if(old&&ts-old.ts<=180000)ctx.lineTo(x,y);else ctx.moveTo(x,y);old={ts}});ctx.strokeStyle='#60d9ce';ctx.lineWidth=2;ctx.stroke()}
-function chartRows(id){if(!summaryData||!historyData)return;const values=Object.fromEntries(summaryData.tags.map(t=>[t.name,t]));const root=$(id);root.innerHTML='';TAGS.forEach(([name,label,unit])=>{const div=document.createElement('div');div.className='trendrow';div.innerHTML=`<div class="trendmetric"><div class="trend-icon" aria-hidden="true">${ICONS[name]||''}</div><div><span>${label}</span><b>${fmt(name==='FLOW_RATE'?flowValue(values[name]?.value):values[name]?.value)} <small>${unitFor(name,unit)}</small></b><small>${escapeHTML(values[name]?.status||'missing')}</small></div></div><div><div class="charttitle">Historical trend · ${label} · ${escapeHTML(local(historyData.from))} – ${escapeHTML(local(historyData.to))}</div><canvas aria-label="${label} trend"></canvas></div>`;root.append(div);plot(div.querySelector('canvas'),(historyData.series[name]||[]).map(p=>name==='FLOW_RATE'?{...p,value:flowValue(p.value)}:p),name)})}
+function chartRows(id){if(!summaryData||!historyData)return;const values=Object.fromEntries(summaryData.tags.map(t=>[t.name,t]));const root=$(id);root.innerHTML='';TAGS.forEach(([name,label,unit])=>{const div=document.createElement('div');div.className='trendrow';div.innerHTML=`<div class="trendmetric"><div class="trend-icon" aria-hidden="true">${ICONS[name]||''}</div><div><span>${label}</span><b>${fmt(name==='FLOW_RATE'?flowValue(values[name]?.value):values[name]?.value)} <small>${unitFor(name,unit)}</small></b><small>${escapeHTML(values[name]?.status||'missing')}</small></div></div><div><div class="charttitle">Historical trend · ${label} · ${escapeHTML(local(historyData.from))} – ${escapeHTML(local(historyData.to))}</div><canvas aria-label="${label} trend"></canvas></div>`;root.append(div);plot(div.querySelector('canvas'),(historyData.series[name]||[]).map(p=>name==='FLOW_RATE'?{...p,value:flowValue(p.value)}:p),name)});if(id==='historyCharts')dosingChart()}
+// Trends: the four dosing pumps' run rates on one graph, one colour each. Readings are held until the next one
+// (the Ewon logs on change). Each pump's line and the whole graph can be hidden; the choice is remembered here.
+const DOSE_LINES=[['Coag_Pump_Run','Coagulant','#2dd4bf'],['Floc_Pump_Rate','Flocculant','#f97316'],['Caustic_Pump_Run','Caustic','#3b82f6'],['Acid_Pump_Run','Acid','#facc15']];
+let doseHidden=new Set();try{doseHidden=new Set(JSON.parse(localStorage.getItem('ww.doseHidden')||'[]'))}catch{}
+let doseGraphOff=false;try{doseGraphOff=localStorage.getItem('ww.doseGraph')==='off'}catch{}
+function dosingChart(){if(!historyData)return;const body=$('dosingBody'),btn=$('dosingToggle');
+ body.hidden=doseGraphOff;btn.textContent=doseGraphOff?'Show graph':'Hide graph';btn.setAttribute('aria-expanded',String(!doseGraphOff));
+ btn.onclick=()=>{doseGraphOff=!doseGraphOff;try{localStorage.setItem('ww.doseGraph',doseGraphOff?'off':'on')}catch{};dosingChart()};
+ document.querySelectorAll('[data-dose-unit]').forEach(s=>{if(s.value!==doseUnit)s.value=doseUnit});
+ if(doseGraphOff)return;
+ const ex=summaryData?.extras||{},dose=historyData.dosing||{};const dec=doseUnit==='L/hr'?3:2;
+ $('dosingLegend').innerHTML=DOSE_LINES.map(([tag,label,color])=>{const r=ex[tag]||{};const now=r.status==='current'&&r.value!=null?doseValue(Number(r.value)).toFixed(dec)+' '+doseUnit:'--';
+  return `<label class="dose-key" style="--c:${color}"><input type="checkbox" data-dose-line="${tag}" ${doseHidden.has(tag)?'':'checked'}><i></i>${label} <small>${escapeHTML(now)}</small></label>`}).join('');
+ $('dosingLegend').querySelectorAll('[data-dose-line]').forEach(c=>c.onchange=()=>{c.checked?doseHidden.delete(c.dataset.doseLine):doseHidden.add(c.dataset.doseLine);try{localStorage.setItem('ww.doseHidden',JSON.stringify([...doseHidden]))}catch{};dosingChart()});
+ const canvas=$('dosingCanvas'),W=Math.max(280,canvas.clientWidth||600),H=230,dpr=window.devicePixelRatio||1;canvas.width=W*dpr;canvas.height=H*dpr;const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
+ ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);const left=58,right=W-14,top=16,bottom=H-44;ctx.font='11px system-ui';ctx.lineWidth=1;
+ const start=Date.parse(historyData.from),to=Date.parse(historyData.to),end=Math.min(to,Date.now()+clockOffset);const X=ts=>left+((Math.max(ts,start)-start)/(to-start))*(right-left);
+ const {ticks,long}=timeTicks(start,to);const px=ticks.length>1?X(ticks[1].t)-X(ticks[0].t):999;const every=Math.max(1,Math.ceil((long?78:62)/px));
+ ticks.forEach((k,n)=>{const x=X(k.t);ctx.strokeStyle=k.midnight?'#3d6a86':'#1d3443';ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,bottom);ctx.stroke();
+  if(n%every)return;ctx.fillStyle='#b4c9d8';ctx.textAlign='center';const d=new Date(k.t);const put=(txt,y)=>{const w=ctx.measureText(txt).width/2;ctx.fillText(txt,Math.min(Math.max(x,left+w),right-w),y)};
+  put(long?VAN_DAY.format(d)+(k.midnight?'':' '+VAN_TIME.format(d)):VAN_TIME.format(d),bottom+16);if(!long&&k.midnight){ctx.fillStyle='#7fa3b8';put(VAN_DAY.format(d),bottom+30)}});
+ ctx.textAlign='left';
+ const lines=DOSE_LINES.filter(([tag])=>!doseHidden.has(tag)).map(([tag,label,color])=>[color,(dose[tag]||[]).map(p=>({ts:Date.parse(p.date),v:p.value==null?null:doseValue(Math.max(0,p.value))})).filter(p=>Number.isFinite(p.ts))]);
+ const vals=lines.flatMap(([,pts])=>pts.filter(p=>p.v!=null&&p.ts<=end).map(p=>p.v));
+ if(!vals.length){ctx.fillStyle='#a9c1d2';ctx.fillText(DOSE_LINES.every(([t])=>doseHidden.has(t))?'Tick a pump above to show its line':'No dosing pump readings for this period',left+10,65);return}
+ let mx=Math.max(...vals,0);mx=mx>0?mx*1.12:1;const Y=v=>bottom-v/mx*(bottom-top);
+ for(let i=0;i<=4;i++){const y=top+i*(bottom-top)/4;ctx.strokeStyle='#2a4557';ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.fillStyle='#a9c1d2';ctx.fillText((mx-mx*i/4).toFixed(mx<1?3:mx<10?2:1),0,y+4)}
+ ctx.fillStyle='#7fa3b8';ctx.fillText(doseUnit,left+4,11);
+ lines.forEach(([color,pts])=>{ctx.beginPath();let pen=false;
+  pts.forEach((p,i)=>{const next=i+1<pts.length?Math.min(pts[i+1].ts,end):end;if(p.v==null||p.ts>end){pen=false;return}
+   const x0=X(p.ts),x1=X(next),y=Y(p.v);if(pen)ctx.lineTo(x0,y);else ctx.moveTo(x0,y);ctx.lineTo(x1,y);pen=true});
+  ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke()})}
 async function loadInsights(){try{const d=await api('/api/insights');
  $('insightList').innerHTML=d.insights.map(i=>`<li class="insight ${escapeHTML(i.severity)}"><b>${escapeHTML(i.title)}</b><span>${escapeHTML(i.detail)}</span><span class="insight-action">Suggested action: ${escapeHTML(i.action)}</span></li>`).join('')}
  catch(e){$('insightList').innerHTML=`<li>Insights unavailable: ${escapeHTML(e.message)}</li>`}}

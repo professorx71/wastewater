@@ -111,7 +111,7 @@ def summary():
                 if name in DOSING_RUN_TAGS:
                     item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.58','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.59','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
@@ -143,7 +143,20 @@ def history(params,export=False):
     series={name:[] for name in TAGS}
     for r in rows:
         series[r['name']].append({'date':r['stamp'],'value':None if r['value'] is None else r['value']*TAGS[r['name']][2]})
-    return {'from':iso(start),'to':iso(end),'series':series}
+    return {'from':iso(start),'to':iso(end),'series':series,'dosing':dosing_history(start,end)}
+
+def dosing_history(start,end):
+    """Run rate of each dosing pump in mL/min for the Trends dosing chart. The Ewon logs on change, so the
+    last reading before the window is included (the chart holds each reading until the next one)."""
+    out={}
+    db=database()
+    try:
+        for tag in DOSING_RUN_TAGS:
+            prior=db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp<? ORDER BY stamp DESC LIMIT 1',(tag,iso(start))).fetchone()
+            rows=([prior] if prior else [])+db.execute('SELECT stamp,value FROM samples WHERE name=? AND stamp>=? AND stamp<? ORDER BY stamp',(tag,iso(start),iso(end))).fetchall()
+            out[tag]=[{'date':s,'value':ml_per_min(tag,s,v)} for s,v in rows]
+    finally:db.close()
+    return out
 
 
 # Excel report (Reports page): one worksheet per tag plus a Summary worksheet.
@@ -597,7 +610,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.58: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.59: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -880,7 +893,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.58
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.59
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -1593,6 +1606,7 @@ def check_conditions(conn,cfg,readings,now):
     return out
 
 # Email wording for each PLC alarm (as specified by the plant): tag -> (email title, alarm code).
+# Emails and texts show the title only: no tag names or alarm codes (plant request 11/24/2026).
 PLC_EMAIL_WORDING={'SLUDGE_TANK_LEVEL':('Wastewater Sludge Tank are Full','SLUDGE_TANK_FULL'),
                    'MIXER_PUMP_FAULTED':('Circulating Mixer Pump Stop Faulted','MIXER_PUMP_FAULTED'),
                    'RAKE_MOTOR_FAULTED':('Sludge Rake Gear Motor Stop Faulted','RAKE_MOTOR_FAULTED'),
@@ -1603,8 +1617,8 @@ PLC_EMAIL_WORDING={'SLUDGE_TANK_LEVEL':('Wastewater Sludge Tank are Full','SLUDG
 CONDITION_SUBJECTS={'ph_trend_high':'Wastewater WARNING: pH trending HIGH','ph_trend_low':'Wastewater WARNING: pH trending LOW',
                     'dosing:coag':'Wastewater WARNING: coagulant pump not dosing','dosing:floc':'Wastewater WARNING: flocculant pump not dosing',
                     'data':'Wastewater ALERT: no new data','level':'Wastewater EQ tank HIGH level alarm','flow':'Wastewater NO DISCHARGE FLOW alarm',
-                    **{'plc:'+t:f'{w} ({c})' for t,(w,c) in PLC_EMAIL_WORDING.items()}}
-RECOVERY_SUBJECTS={'plc:'+t:f'CLEARED: {w} ({c})' for t,(w,c) in PLC_EMAIL_WORDING.items()}
+                    **{'plc:'+t:w for t,(w,c) in PLC_EMAIL_WORDING.items()}}
+RECOVERY_SUBJECTS={'plc:'+t:f'CLEARED: {w}' for t,(w,c) in PLC_EMAIL_WORDING.items()}
 def condition_subject(key,cfg):
     """Email subject of a condition alarm. Chemical products come from Settings, so their subjects are built here."""
     if key in CONDITION_SUBJECTS:return CONDITION_SUBJECTS[key]
@@ -2093,7 +2107,7 @@ def pump_rows(start,end,zone,date_range):
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump',
                     'Caustic_Pump_Run':'Caustic dosing pump','Acid_Pump_Run':'Acid dosing pump'}
-# Settings saved before 1.2.58 (one key per product); read once to build the product list.
+# Settings saved before 1.2.59 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 _DEFAULT_PRODUCTS=(
     dict(key='caustic',name='CESCO NEUTRO 5045 50% Caustic',label='Caustic (NEUTRO 5045)',part='FNEUT5045-Dr55',container='55 gal drum',
@@ -2108,7 +2122,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.58 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.59 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -2617,7 +2631,7 @@ def ph_alarm_job(conn,cfg,tracker,ph,now):
     body=(f'pH {kind} alarm — active for {minutes_text(mins)} (since {started.astimezone(now.tzinfo):%b %d %H:%M})\n'
           f'Current reading: {ph["value"]:.2f} pH\nLow: {cfg["ph_low"]:.2f}\nHigh: {cfg["ph_high"]:.2f}\n'
           +(f'Follow-up every {every} min for the first hour, then hourly, until pH is back in range.\n' if every else '')
-          +f'Incident #{eid}\nTimestamp: {now.isoformat()}')
+          +f'Timestamp: {now.isoformat()}')
     limit=cfg['ph_high'] if kind=='HIGH' else cfg['ph_low']
     return f'alarm:incident:{eid}'+(f':m{slot}' if slot else ''),subject,body,f"pH now {ph['value']:.2f}, {kind.lower()} limit {limit:.2f}"
 
@@ -2626,11 +2640,21 @@ def ph_alarm_emailed(conn,eid):
     return conn.execute('SELECT 1 FROM delivery WHERE key=? OR key LIKE ? LIMIT 1',(f'alarm:incident:{eid}',f'alarm:incident:{eid}:m%')).fetchone()
 
 # ---------------------------------------------------------------- text messages (email-to-SMS)
+# Text messages go out for alarms only. These are warnings or supply notices: email only, never a text.
+NO_TEXT_PREFIXES=('ph_trend','dosing:','stock:','order:')
+def texted(alarm):
+    return bool(alarm) and not str(alarm).startswith(NO_TEXT_PREFIXES)
+
+def mail_detail(detail):
+    """Event detail for an email or text, without the 'Incident 99; ' prefix kept in the database."""
+    return re.sub(r'^Incident \d+;\s*','',str(detail or ''))
+
 def sms_text(subject,eid,now,detail=''):
-    """Short text: the alarm, its reading (for example 'pH now 5.42, low limit 5.80') and when."""
+    """Short text: the alarm, its reading (for example 'pH now 5.42, low limit 5.80') and when. No incident number."""
+    detail=mail_detail(detail)
     detail=' '.join(str(detail or '').split()).split('. ')[0]   # first sentence: the reading, not the advice
     if len(detail)>150:detail=detail[:147]+'...'
-    return f"{subject}. {detail.rstrip('.')+'. ' if detail else ''}Incident #{eid} at {now:%b %d %H:%M}. See the dashboard Alarms page."[:300]
+    return f"{subject}. {detail.rstrip('.')+'. ' if detail else ''}At {now:%b %d %H:%M}. See the dashboard Alarms page."[:300]
 
 def scheduler():
     now=datetime.now(ZoneInfo('America/Vancouver'))
@@ -2671,30 +2695,30 @@ def scheduler():
                         a=parse(origin['stamp']);b=parse(recovery['stamp'])
                         lasted=(f"{origin['kind']} alarm lasted {minutes_text(max(0,(b-a).total_seconds()//60))} "
                                 f"({a.astimezone(now.tzinfo):%b %d %H:%M} to {b.astimezone(now.tzinfo):%H:%M}).\n")
-                    jobs.append((f'recovery:incident:{eid}',f'Wastewater pH recovered — incident #{eid}',
-                        f'{lasted}Incident #{eid} recovered after {cfg["alarm_recovery_samples"]} normal readings.\nTimestamp: {now.isoformat()}',None))
+                    jobs.append((f'recovery:incident:{eid}','Wastewater pH recovered',
+                        f'{lasted}pH recovered after {cfg["alarm_recovery_samples"]} normal readings.\nTimestamp: {now.isoformat()}',None))
         if notify:
             for key,st in conditions.items():
                 if st.get('active'):
                     eid=st['active'];ev=conn.execute('SELECT detail FROM events WHERE id=?',(eid,)).fetchone()
                     jobs.append((f'alarm:incident:{eid}',condition_subject(key,cfg),
                         (condition_subject(key,cfg)+'\n\n' if key in RECOVERY_SUBJECTS else '')+
-                        f'Incident #{eid}\n{ev["detail"] if ev else ""}\nTimestamp: {now.isoformat()}',None,key,ev['detail'] if ev else ''))
+                        f'{mail_detail(ev["detail"]) if ev else ""}\nTimestamp: {now.isoformat()}',None,key,ev['detail'] if ev else ''))
                 if st.get('pending') and cfg['email_recovery_enabled']:
                     eid,rid=st['pending']
                     delivered=conn.execute('SELECT 1 FROM delivery WHERE key=?',(f'alarm:incident:{eid}',)).fetchone()
                     rec=conn.execute('SELECT kind,detail,stamp FROM events WHERE id=?',(rid,)).fetchone()
                     if delivered and rec and datetime.now(UTC)-parse(rec['stamp'])<timedelta(hours=24):
                         subject=RECOVERY_SUBJECTS.get(key,f'Wastewater {rec["kind"]}')
-                        jobs.append((f'recovery:incident:{eid}',f'{subject} — incident #{eid}',
-                            (subject+'\n\n' if key in RECOVERY_SUBJECTS else '')+f'{rec["detail"]}\nTimestamp: {now.isoformat()}',None))
+                        jobs.append((f'recovery:incident:{eid}',subject,
+                            (subject+'\n\n' if key in RECOVERY_SUBJECTS else '')+f'{mail_detail(rec["detail"])}\nTimestamp: {now.isoformat()}',None))
         # Calibration reminders: once when a sensor is due within the reminder days, once when overdue.
         if cfg['cal_reminders_enabled'] and hhmm==cfg['daily_time']:
             for key,c in calibration_status(conn,cfg,now.date()).items():
                 if c['state'] in ('soon','overdue'):
                     when='is OVERDUE' if c['state']=='overdue' else f"is due in {c['days_left']} day{'s' if c['days_left']!=1 else ''}"
                     jobs.append((f"caldue:{key}:{c['last_id']}:{c['state']}",f"Wastewater calibration reminder: {c['label']} {when}",
-                        f"{c['label']} ({c['tag']}) calibration {when}.\nLast calibrated: {c['last']} by {c['last_by']}\nDue: {c['due']} "
+                        f"{c['label']} calibration {when}.\nLast calibrated: {c['last']} by {c['last_by']}\nDue: {c['due']} "
                         f"(every {c['every_days']} days)\n\nLog the new calibration and certificate on the dashboard Audit page.",None))
         if cfg['daily_enabled'] and hhmm==cfg['daily_time']:
             jobs.append((f'daily:{today}','Wastewater Daily Report '+today,historical_report(now,'daily'),None))
@@ -2718,7 +2742,7 @@ def scheduler():
             alarm=rest[0] if rest else None;reading=rest[1] if len(rest)>1 else ''
             if alarm in shelved:continue   # shelved: no email or text while the shelf lasts (sent later if still active)
             sends=[(key,lambda s=subject,b=body,bd=build:send_mail(mail,s,b,cfg['recipients'],[bd()] if bd else ()),'Email')]
-            if sms and alarm and key.startswith('alarm:'):
+            if sms and texted(alarm) and key.startswith('alarm:'):
                 eid=key.split(':')[2]
                 sends.append(('sms:'+key,lambda s=subject,e=eid,d=reading:send_mail(mail,'',sms_text(s,e,now,d),cfg['sms_recipients']),'Text message'))
             for dkey,send,what in sends:
