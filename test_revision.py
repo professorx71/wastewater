@@ -38,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.63'
+        assert s['revision']=='1.2.64'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -497,6 +497,54 @@ class RevisionTests(unittest.TestCase):
             web.check_conditions(db,dict(cfg,flow_alarm_enabled=False),[lvl(2.0,5)],now+timedelta(minutes=4))
             self.assertEqual(db.execute("SELECT COUNT(*) FROM events WHERE kind='No discharge flow' AND state IN ('open','acknowledged')").fetchone()[0],0)
 
+    def test_unstable_discharge_flow_alarm(self):
+        import importlib.util,os
+        spec=importlib.util.spec_from_file_location('live_mod',os.path.join(os.path.dirname(web.__file__),'collector','live.py'))
+        live=importlib.util.module_from_spec(spec);spec.loader.exec_module(live)
+        db=live.connect(str(web.LIVE_DB))
+        def feed(values):   # one live reading every 3 s ending now
+            db.execute('DELETE FROM recent')
+            t=datetime.now(timezone.utc)
+            for i,v in enumerate(reversed(values)):
+                db.execute('INSERT INTO recent(name,value,read_at) VALUES (?,?,?)',('FLOW_RATE',v,web.iso(t-timedelta(seconds=3*i))))
+            db.commit()
+        cfg=dict(web.DEFAULTS,flow_stable_enabled=True,flow_target_gpm=50.0,flow_stable_pct=10,flow_stable_minutes=1,alarm_recovery_samples=1)
+        steady=[50+(i%3-1) for i in range(21)]            # 49–51 GPM: inside ±10 %
+        swing=[40 if i%2 else 62 for i in range(21)]      # 40/62 GPM: outside every time
+        feed(steady);self.assertFalse(web.flow_stability(cfg)[0])
+        feed(swing);unstable,_,text=web.flow_stability(cfg)
+        self.assertTrue(unstable)
+        self.assertTrue(text.startswith('Flow 40.0–62.0 GPM, desired 50.0 GPM ±10%; Note: Check Mixer Pump or Check Flow meter sensor. '))
+        self.assertIn('Allowed 45.0–55.0 GPM',text)
+        feed([50]*10+[58]*11);self.assertTrue(web.flow_stability(cfg)[0])    # off target for most of the minute
+        feed([50]*15+[58]*6);self.assertFalse(web.flow_stability(cfg)[0])    # a short excursion is not an alarm
+        feed([0.0]*21);self.assertIsNone(web.flow_stability(cfg)[0])          # not discharging: the no-flow alarm's job
+        feed([40,62]);self.assertIsNone(web.flow_stability(cfg)[0])           # too few readings to judge
+        # the alarm opens, emails/texts carry the note, and it recovers
+        feed(swing)
+        with web.appdb() as a:
+            st=web.check_conditions(a,cfg,[],datetime.now(web.ZoneInfo('America/Vancouver')))['flow_stable']
+            ev=a.execute('SELECT kind,detail FROM events WHERE id=?',(st['active'],)).fetchone()
+            self.assertEqual(ev['kind'],'Discharge flow not stable');self.assertIn('Check Mixer Pump',ev['detail'])
+            self.assertEqual(web.condition_subject('flow_stable',cfg),'Wastewater Discharge Flow Reading GPM not Stable')
+            sms=web.sms_text(web.condition_subject('flow_stable',cfg),1,datetime.now(),ev['detail'])
+            self.assertIn('Note: Check Mixer Pump or Check Flow meter sensor',sms)
+            self.assertTrue(web.texted('flow_stable'))
+            feed(steady)
+            web.check_conditions(a,cfg,[],datetime.now(web.ZoneInfo('America/Vancouver')))
+            self.assertEqual(a.execute("SELECT COUNT(*) FROM events WHERE kind='Discharge flow stable'").fetchone()[0],1)
+        db.close()
+        # old readings are pruned by the live reader
+        db=live.connect(str(web.LIVE_DB));db.execute('DELETE FROM recent')
+        db.execute('INSERT INTO recent(name,value,read_at) VALUES (?,?,?)',('FLOW_RATE',1.0,'2026-01-01T00:00:00.000000Z'));db.commit()
+        live.save(db,{'FLOW_RATE':(50.0,'192',True),'pH_Reading':(7.0,'192',True)})
+        self.assertEqual([r[0] for r in db.execute('SELECT name FROM recent')],['FLOW_RATE'])
+        db.close()
+        # settings: desired flow needed to turn it on; band 10–20 %; 1–60 minutes
+        for bad in ({'flow_stable_enabled':True},{'flow_stable_pct':5},{'flow_stable_pct':25},{'flow_stable_minutes':0},{'flow_target_gpm':-1}):
+            with self.assertRaises(ValueError):web.val_settings(bad,dict(web.DEFAULTS))
+        self.assertEqual(web.val_settings({'flow_stable_enabled':True,'flow_target_gpm':50.0,'flow_stable_pct':20},dict(web.DEFAULTS))['flow_stable_pct'],20)
+
     def test_plc_alarms_latch_auto_ack_and_email(self):
         cfg=dict(web.DEFAULTS)
         bit=lambda v,m:{'value':v,'status':'current','stamp':f'2026-11-16T12:{m:02d}:00Z'}
@@ -777,13 +825,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.63 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.64 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.63 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.64 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})

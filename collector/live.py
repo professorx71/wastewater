@@ -22,7 +22,7 @@ import os
 import sqlite3
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
@@ -35,6 +35,10 @@ DB = Path(os.environ.get('PBF_LIVE_DB', '/var/lib/pbf-wastewater-live/live.sqlit
 CREDS = Path(os.environ.get('CREDENTIALS_DIRECTORY', '/etc/pbf-wastewater')) / 'm2web.json'
 FIELDS = ('account', 'username', 'password', 'developer_id', 'ewon_name', 'device_username', 'device_password')
 BASE = 'https://m2web.talk2m.com/t2mapi/get/'
+# Tags whose recent readings are kept (not only the latest), for alarms that judge how a reading moves
+# over the last minutes: the unstable discharge flow alarm. Older rows are removed on every save.
+RECENT_TAGS = ('FLOW_RATE',)
+RECENT_KEEP = timedelta(minutes=70)
 
 
 def now_iso():
@@ -144,6 +148,8 @@ def connect(path=DB):
     db.executescript('''
       CREATE TABLE IF NOT EXISTS live (name TEXT PRIMARY KEY, value REAL, quality TEXT, good INTEGER, read_at TEXT);
       CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT);
+      CREATE TABLE IF NOT EXISTS recent (name TEXT, value REAL, read_at TEXT);
+      CREATE INDEX IF NOT EXISTS recent_name_at ON recent(name, read_at);
     ''')
     return db
 
@@ -154,6 +160,10 @@ def save(db, values, at=None):
         for name, (value, quality, good) in values.items():
             db.execute('INSERT OR REPLACE INTO live(name,value,quality,good,read_at) VALUES (?,?,?,?,?)',
                        (name, value, quality, 1 if good else 0, at))
+            if name in RECENT_TAGS and good and value is not None:
+                db.execute('INSERT INTO recent(name,value,read_at) VALUES (?,?,?)', (name, value, at))
+        cutoff = (datetime.now(timezone.utc) - RECENT_KEEP).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+        db.execute('DELETE FROM recent WHERE read_at<?', (cutoff,))
         db.execute("INSERT OR REPLACE INTO state(key,value) VALUES ('last_ok',?)", (at,))
 
 

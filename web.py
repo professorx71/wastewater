@@ -111,7 +111,7 @@ def summary():
                 if name in DOSING_RUN_TAGS:
                     item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.63','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.64','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
@@ -539,6 +539,9 @@ DEFAULTS={'ph_low':5.8,'ph_high':9.0,'alarms_enabled':False,'email_enabled':Fals
           'level_alarm_enabled':False,'level_high_ft':10.0,
           # No discharge flow: flow below this rate (L/min) for this many minutes.
           'flow_alarm_enabled':False,'flow_low_lpm':1.0,'flow_low_minutes':30,
+          # Unstable discharge flow: while discharging, the reading is more than ±pct % from the desired flow (GPM)
+          # for most of the last N minutes (live readings). Off until the desired flow is entered.
+          'flow_stable_enabled':False,'flow_target_gpm':0.0,'flow_stable_pct':10,'flow_stable_minutes':1,
           # Quarterly Excel report, sent on the monthly day/time in Jan, Apr, Jul and Oct.
           'quarterly_enabled':False,
           # PLC alarms: sludge tank FULL, E-Stop and pump/motor faults (PLC_ALARMS).
@@ -612,7 +615,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.63: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.64: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -895,7 +898,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.63
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.64
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -903,12 +906,16 @@ def val_settings(data,old,used_products=()):
     if new['ph_low']>=new['ph_high']:raise ValueError('pH low must be less than high')
     for key in ('alarms_enabled','email_enabled','daily_enabled','monthly_enabled','email_recovery_enabled',
                 'stale_alert_enabled','level_alarm_enabled','flow_alarm_enabled','quarterly_enabled','plc_alarms_enabled',
-                'cal_reminders_enabled','stock_alarm_enabled','sms_enabled','ph_trend_enabled','dosing_alarm_enabled'):
+                'cal_reminders_enabled','stock_alarm_enabled','sms_enabled','ph_trend_enabled','dosing_alarm_enabled','flow_stable_enabled'):
         if type(new[key]) is not bool:raise ValueError('Invalid switch')
     if type(new['stale_alert_minutes']) is not int or not 5<=new['stale_alert_minutes']<=1440:raise ValueError('Data-stopped alert: 5–1440 minutes')
     if type(new['level_high_ft']) not in (int,float) or not 0<new['level_high_ft']<=100:raise ValueError('High level: 0–100 ft')
     if type(new['flow_low_lpm']) not in (int,float) or not 0<new['flow_low_lpm']<=10000:raise ValueError('Low flow: 0–10000 L/min')
     if type(new['flow_low_minutes']) is not int or not 5<=new['flow_low_minutes']<=1440:raise ValueError('Low flow duration: 5–1440 minutes')
+    if type(new['flow_target_gpm']) not in (int,float) or not 0<=new['flow_target_gpm']<=10000:raise ValueError('Desired discharge flow: 0–10000 GPM')
+    if new['flow_stable_enabled'] and not new['flow_target_gpm']>0:raise ValueError('Enter the desired discharge flow (GPM) to turn on the unstable flow alarm')
+    if type(new['flow_stable_pct']) is not int or not 10<=new['flow_stable_pct']<=20:raise ValueError('Unstable flow band: ±10–20 %')
+    if type(new['flow_stable_minutes']) is not int or not 1<=new['flow_stable_minutes']<=60:raise ValueError('Unstable flow duration: 1–60 minutes')
     if type(new['ph_trend_window_min']) is not int or not 10<=new['ph_trend_window_min']<=240:raise ValueError('pH trend: look back 10–240 minutes')
     if type(new['ph_trend_lookahead_min']) is not int or not 10<=new['ph_trend_lookahead_min']<=480:raise ValueError('pH trend: warn 10–480 minutes ahead')
     if type(new['dosing_alarm_minutes']) is not int or not 5<=new['dosing_alarm_minutes']<=240:raise ValueError('Dosing pump stopped: 5–240 minutes')
@@ -1551,6 +1558,42 @@ def flow_window(minutes):
     if len(rows)<2 or parse(rows[0]['stamp'])>start+timedelta(minutes=minutes*0.2):return None,None
     return max(r['value'] for r in rows)*TAGS['FLOW_RATE'][2],rows[-1]['stamp']
 
+FLOW_STABLE_NOTE='Note: Check Mixer Pump or Check Flow meter sensor'
+def flow_readings(minutes,now=None):
+    """[(stamp, GPM)] discharge flow readings over the last `minutes`: the live readings (every few seconds)
+    when they cover the window, otherwise the history. [] when neither covers it."""
+    now=now or datetime.now(UTC);start=now-timedelta(minutes=minutes);late=start+timedelta(minutes=minutes*0.2)
+    def covered(rows):return rows if len(rows)>=3 and parse(rows[0][0])<=late else []
+    if LIVE_DB.exists():
+        try:
+            c=sqlite3.connect(f'file:{LIVE_DB}?mode=ro',uri=True,timeout=2)
+            try:rows=c.execute("SELECT read_at,value FROM recent WHERE name='FLOW_RATE' AND read_at>=? AND read_at<=? AND value IS NOT NULL ORDER BY read_at",
+                               (iso(start),iso(now))).fetchall()
+            finally:c.close()
+            if covered(rows):return rows
+        except sqlite3.Error:pass   # older live database without the recent table
+    db=database()
+    try:rows=db.execute("SELECT stamp,value FROM samples WHERE name='FLOW_RATE' AND stamp>=? AND stamp<=? AND value IS NOT NULL ORDER BY stamp",
+                        (iso(start),iso(now))).fetchall()
+    finally:db.close()
+    return covered([tuple(r) for r in rows])
+
+def flow_stability(cfg,now=None):
+    """(unstable?, latest stamp, text) for the unstable discharge flow alarm, or (None, None, '') when there is
+    nothing to judge: not enough readings, or not discharging for most of the window (the no-flow alarm covers that).
+    Unstable: more than half the readings are outside desired ±pct % (a reading that swings, or stays off target)."""
+    target=cfg['flow_target_gpm'];pct=cfg['flow_stable_pct'];mins=cfg['flow_stable_minutes']
+    rows=flow_readings(mins,now)
+    if not rows or not target>0:return None,None,''
+    vals=[v for _,v in rows];idle=cfg['flow_low_lpm']/TAGS['FLOW_RATE'][2]   # no-flow limit, in GPM
+    if sum(v>=idle for v in vals)*2<len(vals):return None,None,''
+    lo,hi=target*(1-pct/100),target*(1+pct/100)
+    out=sum(not lo<=v<=hi for v in vals)
+    # The first sentence is what a text message shows: the reading and the note.
+    text=(f'Flow {min(vals):.1f}–{max(vals):.1f} GPM, desired {target:.1f} GPM ±{pct}%; {FLOW_STABLE_NOTE}. '
+          f'Allowed {lo:.1f}–{hi:.1f} GPM; outside for {out} of {len(vals)} readings over the last {minutes_text(mins)}.')
+    return out*2>len(vals),rows[-1][0],text
+
 def check_plc_alarms(conn,cfg,extras):
     """PLC alarm bits (PLC_ALARMS, 1 = alarm). Returns {'plc:<tag>': state}."""
     out={}
@@ -1588,6 +1631,11 @@ def check_conditions(conn,cfg,readings,now):
         None if peak is None else peak<cfg['flow_low_lpm'], stamp,
         'No discharge flow',f"Discharge flow stayed below {cfg['flow_low_lpm']:.2f} L/min for {cfg['flow_low_minutes']} minutes (highest {0 if peak is None else peak:.2f} L/min). Check the pumps.",
         'Discharge flow restored',f"flow up to {0 if peak is None else peak:.2f} L/min")
+    unstable,stamp,text=flow_stability(cfg,datetime.now(UTC)) if cfg['flow_stable_enabled'] else (None,None,'')
+    out['flow_stable']=update_condition(conn,'flow_stable',cfg['flow_stable_enabled'],unstable,stamp,
+        'Discharge flow not stable',text,
+        'Discharge flow stable',f"flow back within ±{cfg['flow_stable_pct']}% of {cfg['flow_target_gpm']:.1f} GPM",
+        1,cfg['alarm_recovery_samples'])
     # Predictive pH: judged once a minute while pH is live and inside the limits (outside: the pH alarm takes over).
     ph=tag('pH_Reading')
     tr=ph_trend(cfg) if cfg['ph_trend_enabled'] and ph.get('status')=='current' else None
@@ -1619,6 +1667,7 @@ PLC_EMAIL_WORDING={'SLUDGE_TANK_LEVEL':('Wastewater Sludge Tank are Full','SLUDG
 CONDITION_SUBJECTS={'ph_trend_high':'Wastewater WARNING: pH trending HIGH','ph_trend_low':'Wastewater WARNING: pH trending LOW',
                     'dosing:coag':'Wastewater WARNING: coagulant pump not dosing','dosing:floc':'Wastewater WARNING: flocculant pump not dosing',
                     'data':'Wastewater ALERT: no new data','level':'Wastewater EQ tank HIGH level alarm','flow':'Wastewater NO DISCHARGE FLOW alarm',
+                    'flow_stable':'Wastewater Discharge Flow Reading GPM not Stable',
                     **{'plc:'+t:w for t,(w,c) in PLC_EMAIL_WORDING.items()}}
 RECOVERY_SUBJECTS={'plc:'+t:f'CLEARED: {w}' for t,(w,c) in PLC_EMAIL_WORDING.items()}
 def condition_subject(key,cfg):
@@ -2009,6 +2058,7 @@ INSIGHT_ACTIONS=(
     ('EQ level high','Check the transfer to the DAF and the discharge pump; consider whether production wash-downs can be spread out.'),
     ('EQ tank FULL','Check the transfer to the DAF and the discharge pump; consider whether production wash-downs can be spread out.'),
     ('No discharge flow','Check the discharge pump, valves and the flow meter.'),
+    ('Discharge flow not stable','Check the Mixer Pump and the flow meter sensor; repeated swings can point to air in the line or a failing sensor.'),
     ('Data stopped','Check the Ewon internet connection and power; repeated stops at the same time can point to a router or power schedule.'),
     ('Sludge tank FULL','Sludge fills faster than the pickups empty it: consider an extra pickup or check the DAF sludge settings.'),
     ('E-Stop','Find out why the E-Stop is being pressed; repeated stops may point to an equipment or training issue.'),
@@ -2109,7 +2159,7 @@ def pump_rows(start,end,zone,date_range):
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump',
                     'Caustic_Pump_Run':'Caustic dosing pump','Acid_Pump_Run':'Acid dosing pump'}
-# Settings saved before 1.2.63 (one key per product); read once to build the product list.
+# Settings saved before 1.2.64 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 LB_KG=0.45359237
 # Plant information 11/25/2026: the caustic pump doses NEUTRO 5045 (FNEUT5045-Bulk), the acid pump SA-93;
@@ -2149,7 +2199,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.63 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.64 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -2769,7 +2819,7 @@ def scheduler():
                     suffix,tail,line=still_active(conn,cfg,eid,key,now)
                     title=condition_subject(key,cfg)
                     jobs.append((f'alarm:incident:{eid}{suffix}',title+tail,
-                        (title+'\n\n' if key in RECOVERY_SUBJECTS else '')+
+                        (title.removeprefix('Wastewater ')+'\n\n' if key=='flow_stable' else title+'\n\n' if key in RECOVERY_SUBJECTS else '')+
                         f'{mail_detail(ev["detail"]) if ev else ""}\n'+(line if followed_up(key) else '')+
                         f'Timestamp: {now.isoformat()}',None,key,ev['detail'] if ev else ''))
                 if st.get('pending') and cfg['email_recovery_enabled']:
