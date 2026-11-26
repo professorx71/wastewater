@@ -204,3 +204,17 @@ h2.with-button button{font-size:13px;letter-spacing:0;text-transform:none}
 .card .value:has(.forecast){column-gap:8px}
 @media(min-width:1101px) and (max-width:1500px){.card{gap:10px;padding:12px 14px}.card .value{font-size:24px}.card .unit{font-size:13px}}
 @media(min-width:1101px) and (max-width:1300px){.card .value{font-size:20px}.card-icon{width:26px;height:26px}.card .name{font-size:13px}}
+
+/* Settings: larger text, yellow box titles and setting names, a clear Save button in every box (26 Nov 2026) */
+#settings{font-size:16px}
+#settings .panel h3{color:#ffd400;font-size:20px;font-weight:800;letter-spacing:.03em}
+#settings label{color:#ffe680;font-size:16px;font-weight:600}
+#settings .panel p,#settings small{font-size:15px}
+#settings input,#settings select,#settings textarea{font-size:16px}
+#settings .save-row{display:flex;align-items:center;flex-wrap:wrap;gap:14px;margin-top:18px;padding-top:14px;border-top:1px solid #33414e}
+#settings .save-row .save-state{margin:0;font-weight:700;color:#7dffa8}
+#settings button.save-settings{font-family:var(--hmi-font);font-size:18px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;
+  color:#062b12;background:#2fd36b;border:2px solid #8dffb5;border-radius:8px;padding:12px 24px;box-shadow:0 0 12px #2fd36b55}
+#settings button.save-settings:hover:not(:disabled){color:#03210d;background:#52ef8b;border-color:#c9ffdb;box-shadow:0 0 16px #52ef8b88}
+#settings button.save-settings:disabled{background:#3a4a42;color:#b7c4bc;border-color:#56685d;box-shadow:none}
+#settings .save-row[hidden]{display:none}
