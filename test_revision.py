@@ -38,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.62'
+        assert s['revision']=='1.2.63'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -777,13 +777,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.62 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.63 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.62 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.63 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -1134,22 +1134,39 @@ class RevisionTests(unittest.TestCase):
         now=datetime.now(web.ZoneInfo('America/Vancouver'))
         with web.appdb() as db:
             cfg=dict(web.settings(db),alarms_enabled=True)
-            self.assertEqual(cfg['ph_repeat_min'],5)
+            self.assertEqual(cfg['alarm_repeat_min'],30)
+            cfg['alarm_repeat_min']=5
             ev=web.new_alarm_event(db,web.iso(datetime.now(timezone.utc)-timedelta(minutes=12)),'pH high','x').lastrowid
             tracker={'active_event':ev,'active_kind':'high'}
             key,subject,body,reading=web.ph_alarm_job(db,cfg,tracker,{'value':9.6},now)
             self.assertEqual(reading,'pH now 9.60, high limit 9.00')
             self.assertEqual(key,f'alarm:incident:{ev}:m10')
-            self.assertEqual(subject,'Wastewater pH HIGH alarm — active 10 min')
+            self.assertEqual(subject,'Wastewater pH HIGH alarm — still active 10 min')
             self.assertIn('active for 12 min',body);self.assertIn('9.60 pH',body)
-            key,subject,_,_=web.ph_alarm_job(db,dict(cfg,ph_repeat_min=0),tracker,{'value':9.6},now)
+            key,subject,_,_=web.ph_alarm_job(db,dict(cfg,alarm_repeat_min=0),tracker,{'value':9.6},now)
             self.assertEqual((key,subject),(f'alarm:incident:{ev}','Wastewater pH HIGH alarm'))
             self.assertIsNone(web.ph_alarm_emailed(db,ev))
             db.execute('INSERT INTO delivery(key,stamp,outcome) VALUES (?,?,?)',(f'alarm:incident:{ev}:m10','x','sent'))
             self.assertIsNotNone(web.ph_alarm_emailed(db,ev))
             self.assertIsNone(web.ph_alarm_emailed(db,ev*10+1))
         for bad in (3,61,-1,'5'):
-            with self.assertRaises(ValueError):web.val_settings({'ph_repeat_min':bad},dict(web.DEFAULTS))
+            with self.assertRaises(ValueError):web.val_settings({'alarm_repeat_min':bad},dict(web.DEFAULTS))
+
+    def test_every_alarm_gets_still_active_follow_ups(self):
+        now=datetime.now(web.ZoneInfo('America/Vancouver'))
+        with web.appdb() as db:
+            cfg=web.settings(db)
+            started=lambda m:web.new_alarm_event(db,web.iso(datetime.now(timezone.utc)-timedelta(minutes=m)),'x','y').lastrowid
+            self.assertEqual(web.still_active(db,cfg,started(10),'plc:E_STOP_STATUS',now)[:2],('',''))
+            suffix,tail,line=web.still_active(db,cfg,started(31),'plc:E_STOP_STATUS',now)
+            self.assertEqual((suffix,tail),(':m30',' — still active 30 min'));self.assertIn('Still active for 31 min',line)
+            self.assertEqual(web.still_active(db,cfg,started(75),'data',now)[:2],(':m60',' — still active 1 h'))
+            self.assertEqual(web.still_active(db,cfg,started(185),'level',now)[:2],(':m180',' — still active 3 h'))
+            for warning in ('ph_trend_high','dosing:coag','stock:acid','order:acid'):   # warnings and supply notices: one email
+                self.assertEqual(web.still_active(db,cfg,started(90),warning,now)[:2],('',''))
+            ev=started(40)
+            db.execute('INSERT INTO delivery(key,stamp,outcome) VALUES (?,?,?)',(f'alarm:incident:{ev}:m30','x','sent'))
+            self.assertIsNotNone(web.alarm_emailed(db,ev))   # recovery email follows a follow-up-only alarm too
 
     def test_text_message_has_the_reading(self):
         now=datetime(2026,11,22,17,19,tzinfo=web.ZoneInfo('America/Vancouver'))

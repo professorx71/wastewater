@@ -111,7 +111,7 @@ def summary():
                 if name in DOSING_RUN_TAGS:
                     item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.62','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.63','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
@@ -529,8 +529,9 @@ DEFAULTS={'ph_low':5.8,'ph_high':9.0,'alarms_enabled':False,'email_enabled':Fals
           'daily_enabled':False,'daily_time':'08:00','monthly_enabled':False,'monthly_day':1,
           'monthly_time':'08:00','recipients':[],
           'alarm_confirm_samples':2,'alarm_recovery_samples':2,
-          # Follow-up pH alarm email while still out of range: every N minutes for the first hour, then hourly (0 = off).
-          'ph_repeat_min':5,
+          # "Still active" follow-up email and text for every alarm (not warnings or stock notices) while it stays on:
+          # every N minutes for the first hour, then hourly (0 = off). Replaces the pH-only ph_repeat_min (5).
+          'alarm_repeat_min':30,
           'email_recovery_enabled':True,
           # Data-stopped alert: no new reading from any tag for this many minutes.
           'stale_alert_enabled':True,'stale_alert_minutes':15,
@@ -611,7 +612,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.62: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.63: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -894,7 +895,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.62
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.63
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -919,7 +920,7 @@ def val_settings(data,old,used_products=()):
     if type(new['monthly_day']) is not int or not 1<=new['monthly_day']<=28:raise ValueError('Choose day 1–28')
     for key in ('alarm_confirm_samples','alarm_recovery_samples'):
         if type(new[key]) is not int or not 1<=new[key]<=10:raise ValueError('Alarm confirmation must be 1–10 consecutive readings')
-    if type(new['ph_repeat_min']) is not int or not (new['ph_repeat_min']==0 or 5<=new['ph_repeat_min']<=60):raise ValueError('pH follow-up email: 0 (off) or 5–60 minutes')
+    if type(new['alarm_repeat_min']) is not int or not (new['alarm_repeat_min']==0 or 5<=new['alarm_repeat_min']<=60):raise ValueError('Still-active follow-up: 0 (off) or 5–60 minutes')
     for key,hi in (('cal_ph_days',3650),('cal_level_days',3650),('cal_remind_days',90)):
         if type(new[key]) is not int or not 1<=new[key]<=hi:raise ValueError(f'Calibration days: 1–{hi}')
     new['chemical_products']=val_products(default_products() if new['chemical_products'] is None else new['chemical_products'],old.get('chemical_products') or default_products(),used_products)
@@ -2108,7 +2109,7 @@ def pump_rows(start,end,zone,date_range):
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump',
                     'Caustic_Pump_Run':'Caustic dosing pump','Acid_Pump_Run':'Acid dosing pump'}
-# Settings saved before 1.2.62 (one key per product); read once to build the product list.
+# Settings saved before 1.2.63 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 LB_KG=0.45359237
 # Plant information 11/25/2026: the caustic pump doses NEUTRO 5045 (FNEUT5045-Bulk), the acid pump SA-93;
@@ -2148,7 +2149,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.62 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.63 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -2669,26 +2670,39 @@ def reminder_step(elapsed_min,every):
     if not every or elapsed_min<every:return 0
     return elapsed_min//every*every if elapsed_min<60 else elapsed_min//60*60
 
-def ph_alarm_job(conn,cfg,tracker,ph,now):
-    """(delivery key, subject, body) for the live pH alarm: the first email when it is confirmed, then a
-    follow-up per reminder_step slot that says how long the alarm has been active."""
-    eid=tracker['active_event'];kind=tracker['active_kind'].upper()
+def followed_up(alarm):
+    """Alarms that get "still active" follow-ups. Warnings and supply notices (email only) get one email."""
+    return bool(alarm) and not str(alarm).startswith(NO_TEXT_PREFIXES)
+
+def still_active(conn,cfg,eid,alarm,now):
+    """(key suffix, subject suffix, body line) for alarm event `eid`: how long it has been on, and the
+    reminder_step slot that picks which follow-up is due (none for slot 0 or for warnings)."""
     ev=conn.execute('SELECT stamp FROM events WHERE id=?',(eid,)).fetchone()
     started=parse(ev['stamp']) if ev else datetime.now(UTC)
     mins=max(0,int((datetime.now(UTC)-started).total_seconds()//60))
-    slot=reminder_step(mins,cfg.get('ph_repeat_min',0))
-    subject=f'Wastewater pH {kind} alarm'+(f' — active {minutes_text(slot)}' if slot else '')
-    every=cfg.get('ph_repeat_min',0)
-    body=(f'pH {kind} alarm — active for {minutes_text(mins)} (since {started.astimezone(now.tzinfo):%b %d %H:%M})\n'
+    every=cfg.get('alarm_repeat_min',0) if followed_up(alarm) else 0
+    slot=reminder_step(mins,every)
+    since=f'{started.astimezone(now.tzinfo):%b %d %H:%M}'
+    line=((f'Still active for {minutes_text(mins)} (since {since})\n' if slot else f'Active since {since}\n')
+          +(f'Follow-up every {every} min for the first hour, then hourly, until the alarm clears.\n' if every else ''))
+    return (f':m{slot}' if slot else ''),(f' — still active {minutes_text(slot)}' if slot else ''),line
+
+def ph_alarm_job(conn,cfg,tracker,ph,now):
+    """(delivery key, subject, body, reading) for the live pH alarm: the first email when it is confirmed, then a
+    "still active" follow-up per reminder_step slot."""
+    eid=tracker['active_event'];kind=tracker['active_kind'].upper()
+    suffix,tail,line=still_active(conn,cfg,eid,'ph',now)
+    body=(f'pH {kind} alarm\n{line}'
           f'Current reading: {ph["value"]:.2f} pH\nLow: {cfg["ph_low"]:.2f}\nHigh: {cfg["ph_high"]:.2f}\n'
-          +(f'Follow-up every {every} min for the first hour, then hourly, until pH is back in range.\n' if every else '')
-          +f'Timestamp: {now.isoformat()}')
+          f'Timestamp: {now.isoformat()}')
     limit=cfg['ph_high'] if kind=='HIGH' else cfg['ph_low']
-    return f'alarm:incident:{eid}'+(f':m{slot}' if slot else ''),subject,body,f"pH now {ph['value']:.2f}, {kind.lower()} limit {limit:.2f}"
+    return f'alarm:incident:{eid}{suffix}',f'Wastewater pH {kind} alarm{tail}',body,f"pH now {ph['value']:.2f}, {kind.lower()} limit {limit:.2f}"
 
 
-def ph_alarm_emailed(conn,eid):
+def alarm_emailed(conn,eid):
+    """The first alarm email or any follow-up of event `eid` was sent."""
     return conn.execute('SELECT 1 FROM delivery WHERE key=? OR key LIKE ? LIMIT 1',(f'alarm:incident:{eid}',f'alarm:incident:{eid}:m%')).fetchone()
+ph_alarm_emailed=alarm_emailed
 
 # ---------------------------------------------------------------- text messages (email-to-SMS)
 # Text messages go out for alarms only. These are warnings or supply notices: email only, never a text.
@@ -2752,12 +2766,15 @@ def scheduler():
             for key,st in conditions.items():
                 if st.get('active'):
                     eid=st['active'];ev=conn.execute('SELECT detail FROM events WHERE id=?',(eid,)).fetchone()
-                    jobs.append((f'alarm:incident:{eid}',condition_subject(key,cfg),
-                        (condition_subject(key,cfg)+'\n\n' if key in RECOVERY_SUBJECTS else '')+
-                        f'{mail_detail(ev["detail"]) if ev else ""}\nTimestamp: {now.isoformat()}',None,key,ev['detail'] if ev else ''))
+                    suffix,tail,line=still_active(conn,cfg,eid,key,now)
+                    title=condition_subject(key,cfg)
+                    jobs.append((f'alarm:incident:{eid}{suffix}',title+tail,
+                        (title+'\n\n' if key in RECOVERY_SUBJECTS else '')+
+                        f'{mail_detail(ev["detail"]) if ev else ""}\n'+(line if followed_up(key) else '')+
+                        f'Timestamp: {now.isoformat()}',None,key,ev['detail'] if ev else ''))
                 if st.get('pending') and cfg['email_recovery_enabled']:
                     eid,rid=st['pending']
-                    delivered=conn.execute('SELECT 1 FROM delivery WHERE key=?',(f'alarm:incident:{eid}',)).fetchone()
+                    delivered=alarm_emailed(conn,eid)
                     rec=conn.execute('SELECT kind,detail,stamp FROM events WHERE id=?',(rid,)).fetchone()
                     if delivered and rec and datetime.now(UTC)-parse(rec['stamp'])<timedelta(hours=24):
                         subject=RECOVERY_SUBJECTS.get(key,f'Wastewater {rec["kind"]}')
