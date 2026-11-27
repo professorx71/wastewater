@@ -218,3 +218,12 @@ h2.with-button button{font-size:13px;letter-spacing:0;text-transform:none}
 #settings button.save-settings:hover:not(:disabled){color:#03210d;background:#52ef8b;border-color:#c9ffdb;box-shadow:0 0 16px #52ef8b88}
 #settings button.save-settings:disabled{background:#3a4a42;color:#b7c4bc;border-color:#56685d;box-shadow:none}
 #settings .save-row[hidden]{display:none}
+/* Settings: large check boxes with a bold border; green with a dark tick when on (26 Nov 2026) */
+#settings input[type=checkbox]{appearance:none;-webkit-appearance:none;flex:0 0 auto;width:24px;height:24px;margin:0 10px 0 0;padding:0;
+  border:3px solid #ffd400;border-radius:5px;background:#0f161d center/18px 18px no-repeat;cursor:pointer;vertical-align:middle}
+#settings input[type=checkbox]:checked{background-color:#2fd36b;border-color:#8dffb5;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8.5l3.2 3.2L13 4.8' fill='none' stroke='%23062b12' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
+#settings input[type=checkbox]:focus-visible{outline:3px solid #4aa3ff;outline-offset:2px}
+#settings input[type=checkbox]:hover:not(:disabled){box-shadow:0 0 8px #ffd40088}
+#settings input[type=checkbox]:disabled{border-color:#7d7a5c;cursor:not-allowed}
+#settings .days label{gap:2px;margin-right:16px}

@@ -1,6 +1,6 @@
 # How to put the new dashboard version on the server — plain step-by-step
 
-This guide updates the live dashboard at **https://51.161.52.12** to **version 1.2.65**. You don't need to know programming. You will **copy commands from this page and paste them** into a window, then check that what you see matches what this guide says.
+This guide updates the live dashboard at **https://51.161.52.12** to **version 1.2.66**. You don't need to know programming. You will **copy commands from this page and paste them** into a window, then check that what you see matches what this guide says.
 
 **Time needed:** about 30 minutes.
 **What stays safe:** the readings history, alarm settings, email settings and passwords are **not** changed. The server makes a backup automatically before changing anything.
@@ -81,10 +81,10 @@ Paste this and press Enter:
 
 ```powershell
 git add -A
-git commit -m "Release 1.2.65"
+git commit -m "Release 1.2.66"
 ```
 
-✅ **You should see** a line like `[main 1a2b3c4] Release 1.2.65` and a count of files changed.
+✅ **You should see** a line like `[main 1a2b3c4] Release 1.2.66` and a count of files changed.
 ℹ️ If it says `nothing to commit`, that's fine. The changes were already saved. Continue.
 
 ### Step 3. Build the upload package
@@ -92,17 +92,17 @@ git commit -m "Release 1.2.65"
 Paste this as **one line** and press Enter:
 
 ```powershell
-git -c core.autocrlf=false archive --format=tar.gz --prefix=pbf-wastewater-rev1.2.65/ -o "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.65.tar.gz" HEAD
+git -c core.autocrlf=false archive --format=tar.gz --prefix=pbf-wastewater-rev1.2.66/ -o "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.66.tar.gz" HEAD
 ```
 
-✅ **You should see** nothing, just a new empty line. That means it worked. The file `pbf-wastewater-rev1.2.65.tar.gz` is now in your **Downloads** folder.
+✅ **You should see** nothing, just a new empty line. That means it worked. The file `pbf-wastewater-rev1.2.66.tar.gz` is now in your **Downloads** folder.
 
 ### Step 4. Send the package to the server
 
 Paste this and press Enter:
 
 ```powershell
-scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.65.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
+scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.66.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
 ```
 
 - If it asks **"Are you sure you want to continue connecting (yes/no)?"**, type `yes` and press Enter.
@@ -132,10 +132,10 @@ Paste this whole box and press Enter:
 
 ```bash
 cd ~
-sudo rm -rf ~/ww-upgrade/rev1.2.65
-mkdir -p ~/ww-upgrade/rev1.2.65
-tar xzf ~/pbf-wastewater-rev1.2.65.tar.gz -C ~/ww-upgrade/rev1.2.65
-cd ~/ww-upgrade/rev1.2.65/pbf-wastewater-rev1.2.65
+sudo rm -rf ~/ww-upgrade/rev1.2.66
+mkdir -p ~/ww-upgrade/rev1.2.66
+tar xzf ~/pbf-wastewater-rev1.2.66.tar.gz -C ~/ww-upgrade/rev1.2.66
+cd ~/ww-upgrade/rev1.2.66/pbf-wastewater-rev1.2.66
 ls
 ```
 
@@ -161,7 +161,7 @@ This step uses **two windows**.
 **8a. Start the test copy.** In the **server window** you already have open, paste:
 
 ```bash
-sudo -u pbf-wastewater env PBF_APP_DB=/var/lib/pbf-wastewater/dashboard-v1.2.65-stage.sqlite3 bash -c 'cd /opt/pbf-wastewater/rev1.2.65-stage && exec gunicorn --bind 127.0.0.1:8003 --workers 1 web:application'
+sudo -u pbf-wastewater env PBF_APP_DB=/var/lib/pbf-wastewater/dashboard-v1.2.66-stage.sqlite3 bash -c 'cd /opt/pbf-wastewater/rev1.2.66-stage && exec gunicorn --bind 127.0.0.1:8003 --workers 1 web:application'
 ```
 
 ✅ You should see a few lines including **"Listening at: http://127.0.0.1:8003"**. **Leave this window alone.** It stays busy while the test copy runs.
@@ -182,7 +182,7 @@ Sign in with the **Admin** login (`wastewater` and its password). Check that:
 
 - [ ] The four boxes at the top have **pictures**, a green **● LIVE** label and numbers
 - [ ] The numbers are about the same as on the live site, https://51.161.52.12
-- [ ] The top-right corner shows **Admin**, **Rev 1.2.65** and a **Switch user** button
+- [ ] The top-right corner shows **Admin**, **Rev 1.2.66** and a **Switch user** button
 - [ ] **Trends**, **Alarms**, **Reports** and **Settings** pages open
 
 🛑 If something looks wrong, skip to **"If you want to stop"** at the bottom. Nothing live has been changed yet.
@@ -198,14 +198,14 @@ Sign in with the **Admin** login (`wastewater` and its password). Check that:
 In the **first** server window, paste:
 
 ```bash
-cd ~/ww-upgrade/rev1.2.65/pbf-wastewater-rev1.2.65
+cd ~/ww-upgrade/rev1.2.66/pbf-wastewater-rev1.2.66
 sudo bash deploy.sh --approved
 ```
 
 Wait about a minute. The live dashboard is offline for a few seconds during this step.
 
 ✅ **You should see** at the end:
-- `Revision 1.2.65 deployed. Backup: /var/backups/pbf-wastewater/pre-deploy-1.2.65-...`
+- `Revision 1.2.66 deployed. Backup: /var/backups/pbf-wastewater/pre-deploy-1.2.66-...`
 
 📝 **Copy that whole Backup line and save it** in Notepad or an email to yourself. You need it if you ever want to go back to the old version.
 
@@ -221,7 +221,7 @@ sudo systemctl is-active pbf-wastewater-web pbf-wastewater-collector.timer pbf-w
 
 ✅ **You should see** `active` four times. The fourth is the nightly backup.
 
-Then, in your browser, open **https://51.161.52.12** and sign in. Check that you see the new boxes and **Rev 1.2.65** in the top-right corner. If it still looks old, press **Ctrl+F5**.
+Then, in your browser, open **https://51.161.52.12** and sign in. Check that you see the new boxes and **Rev 1.2.66** in the top-right corner. If it still looks old, press **Ctrl+F5**.
 
 ### Step 11 (optional). Set up passwords
 
@@ -263,8 +263,8 @@ exit
 - **After step 9, to go back to the old version:** connect to the server (step 5), then paste the line below. Replace the part after `rollback.sh` with the **Backup** path you saved in step 9.
 
 ```bash
-cd ~/ww-upgrade/rev1.2.65/pbf-wastewater-rev1.2.65
-sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.65-PASTE-YOUR-DATE-HERE
+cd ~/ww-upgrade/rev1.2.66/pbf-wastewater-rev1.2.66
+sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.66-PASTE-YOUR-DATE-HERE
 ```
 
 ✅ **You should see** "Previous web code restored". Readings history and settings are not affected.
