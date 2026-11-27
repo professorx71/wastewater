@@ -299,3 +299,7 @@ table.history td:first-child{white-space:nowrap}
 .sms-add label{flex:1 1 150px;min-width:0}
 .flow-avg{align-items:flex-start}
 .flow-avg .test-send{width:auto}
+/* Tick-box words: white (yellow is for headers and field names). Ticked = bright white and bold, unticked = soft grey. */
+#settings label:has(> input[type=checkbox]){color:#c3ccd4;font-weight:500}
+#settings label:has(> input[type=checkbox]:checked){color:#ffffff;font-weight:700}
+#settings label:has(> input[type=checkbox]:disabled){opacity:.75}
