@@ -498,3 +498,29 @@ function setAuditShown(show){$('auditlist').hidden=!show;$('auditPeriod').hidden
  try{localStorage.setItem('ww.auditShown',show?'1':'0')}catch{}}
 {let shown=true;try{shown=localStorage.getItem('ww.auditShown')!=='0'}catch{};setAuditShown(shown)}
 $('auditToggle').addEventListener('click',()=>setAuditShown($('auditlist').hidden));
+
+// Hide and show boxes (27 Nov 2026): click a box's title to fold it; Hide all / Show all per page; long notes fold under
+// "Show notes". Remembered in this browser. Boxes marked data-folded start hidden.
+(function(){
+ const KEY='ww-folded-v1',PAGES=['events','audit','reports','settings','help'];
+ let state={};try{state=JSON.parse(localStorage.getItem(KEY))||{}}catch{}
+ const store=()=>{try{localStorage.setItem(KEY,JSON.stringify(state))}catch{}};
+ const heads=[];
+ PAGES.forEach(view=>{const sec=$(view);if(!sec)return;
+  sec.querySelectorAll('.panel').forEach(p=>{const h=p.querySelector(':scope>h2,:scope>h3');if(!h)return;
+   const key=view+':'+(p.id||h.textContent.trim().slice(0,40));
+   const set=on=>{p.classList.toggle('folded',on);h.setAttribute('aria-expanded',String(!on))};
+   h.classList.add('fold-head');h.tabIndex=0;h.setAttribute('role','button');h.title='Click to hide or show';
+   set(key in state?state[key]:p.hasAttribute('data-folded'));
+   const flip=e=>{if(e&&e.target.closest('select,input,a,button,label'))return;const on=!p.classList.contains('folded');set(on);state[key]=on;store()};
+   h.addEventListener('click',flip);h.addEventListener('keydown',e=>{if(e.target===h&&(e.key==='Enter'||e.key===' ')){e.preventDefault();flip()}});
+   heads.push({view,set:on=>{set(on);state[key]=on}})});
+  const bar=document.createElement('div');bar.className='fold-bar';
+  bar.innerHTML='<button type="button" data-fold="1">Hide all</button><button type="button" data-fold="0">Show all</button>';
+  bar.addEventListener('click',e=>{const b=e.target.closest('[data-fold]');if(!b)return;heads.filter(x=>x.view===view).forEach(x=>x.set(b.dataset.fold==='1'));store()});
+  sec.prepend(bar);
+  if(view==='help')return;   // the Help page is the notes: its paragraphs stay open
+  sec.querySelectorAll('.panel>p:not([id]):not([role])').forEach(p=>{if(p.textContent.trim().length<160)return;
+   const d=document.createElement('details');d.className='note';d.innerHTML='<summary>Show notes</summary>';
+   p.replaceWith(d);d.append(p);d.addEventListener('toggle',()=>{d.firstChild.textContent=d.open?'Hide notes':'Show notes'})})});
+})();

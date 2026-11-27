@@ -303,3 +303,19 @@ table.history td:first-child{white-space:nowrap}
 #settings label:has(> input[type=checkbox]){color:#c3ccd4;font-weight:500}
 #settings label:has(> input[type=checkbox]:checked){color:#ffffff;font-weight:700}
 #settings label:has(> input[type=checkbox]:disabled){opacity:.75}
+
+/* Hide and show boxes (27 Nov 2026) */
+.fold-head{cursor:pointer;user-select:none;position:relative;padding-right:36px}
+.fold-head::after{content:"▾";position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:.95em;opacity:.85;transition:transform .2s}
+.fold-head:hover{filter:brightness(1.2)}
+.fold-head:focus-visible{outline:2px solid #8fc7ff;outline-offset:3px;border-radius:4px}
+.panel.folded>.fold-head::after{transform:translateY(-50%) rotate(-90deg)}
+.panel.folded>:not(.fold-head){display:none!important}
+.panel.folded>.fold-head{margin-bottom:0}
+.fold-bar{display:flex;justify-content:flex-end;gap:8px;margin:0 0 10px}
+.fold-bar button{background:#1d2a36;color:#dfe8ef;border:1px solid rgba(255,255,255,.3);border-radius:6px;padding:5px 12px;font-weight:600;cursor:pointer}
+.fold-bar button:hover{background:#2a3c4c}
+details.note{margin:4px 0 8px}
+details.note>summary{cursor:pointer;color:#8fc7ff;font-weight:600;width:max-content;list-style-position:inside}
+details.note>summary:hover{text-decoration:underline}
+details.note[open]>p{margin-top:6px}
