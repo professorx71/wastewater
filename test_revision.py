@@ -38,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.67'
+        assert s['revision']=='1.2.68'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -825,13 +825,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.67 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.68 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.67 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.68 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -1215,6 +1215,26 @@ class RevisionTests(unittest.TestCase):
             ev=started(40)
             db.execute('INSERT INTO delivery(key,stamp,outcome) VALUES (?,?,?)',(f'alarm:incident:{ev}:m30','x','sent'))
             self.assertIsNotNone(web.alarm_emailed(db,ev))   # recovery email follows a follow-up-only alarm too
+
+    def test_reports_come_from_effluentiq_report(self):
+        mail={'host':'smtp.example.com','port':587,'sender':'alarms@example.com','username':'alarms@example.com','password':'x'}
+        sent=[]
+        class FakeSMTP:
+            def __init__(self,host,port,timeout=None):self.host=host
+            def __enter__(self):return self
+            def __exit__(self,*a):pass
+            def starttls(self,context=None):pass
+            def login(self,u,p):self.user=u
+            def send_message(self,msg):sent.append((self.host,self.user,msg['From']))
+        with patch.object(web.smtplib,'SMTP',FakeSMTP):
+            web.send_mail(web.report_mail(mail),'Wastewater Daily Report','b',['ops@example.com'])
+            web.send_mail(web.alert_mail(mail),'Wastewater pH HIGH alarm','b',['ops@example.com'])
+            web.send_mail(web.report_mail(dict(mail,report_username='reports@octaveworks.com',report_host='smtp.other.com')),'R','b',['ops@example.com'])
+        self.assertEqual(sent[0],('smtp.example.com','alarms@example.com','EffluentIQ Report <reports@octaveworks.com>'))
+        self.assertEqual(sent[1],('smtp.example.com','alarms@example.com','EffluentIQ Alerts <alarm@octaveworks.com>'))
+        self.assertEqual(sent[2][:2],('smtp.other.com','reports@octaveworks.com'))
+        self.assertEqual([k for k in ('daily:2026-11-27','monthly:2026-11','quarterly:2026-Q3','alarm:incident:5','caldue:ph:1:soon') if k.startswith(web.REPORT_KEYS)],
+                         ['daily:2026-11-27','monthly:2026-11','quarterly:2026-Q3'])
 
     def test_text_message_has_the_reading(self):
         now=datetime(2026,11,22,17,19,tzinfo=web.ZoneInfo('America/Vancouver'))

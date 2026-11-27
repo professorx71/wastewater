@@ -111,7 +111,7 @@ def summary():
                 if name in DOSING_RUN_TAGS:
                     item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.67','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.68','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
@@ -615,7 +615,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.67: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.68: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -898,7 +898,7 @@ def audit(conn,actor,action,detail):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.67
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.68
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -1370,12 +1370,35 @@ def application(env,start_response):
     except (OSError,sqlite3.Error):return send('503 Service Unavailable',{'error':'Storage temporarily unavailable'})
 
 # Run via separate systemd timer, never in Gunicorn workers. Email disabled by default.
+# Two senders: report emails (daily, monthly, quarterly) come from 'EffluentIQ Report <reports@octaveworks.com>';
+# everything else (alarms, recoveries, texts, calibration and stock notices, test email) from
+# 'EffluentIQ Alerts <alarm@octaveworks.com>'. email.json may override either: <p>_sender, <p>_name, and
+# <p>_host / <p>_port / <p>_username / <p>_password when that address logs in to the mail server on its own
+# (p = report or alert). Without its own login, an address sends with the main username / password.
+REPORT_SENDER='reports@octaveworks.com';REPORT_NAME='EffluentIQ Report'
+ALERT_SENDER='alarm@octaveworks.com';ALERT_NAME='EffluentIQ Alerts'
+REPORT_KEYS=('daily:','monthly:','quarterly:')
+def sender_mail(config,prefix,address,name):
+    from email.utils import formataddr
+    out=dict(config)
+    for k in ('host','port','username','password'):
+        if config.get(f'{prefix}_{k}'):out[k]=config[f'{prefix}_{k}']
+    out['sender']=config.get(f'{prefix}_sender') or address
+    out['from']=formataddr((config.get(f'{prefix}_name') or name,out['sender']))
+    return out
+def report_mail(config):
+    """SMTP config for the report emails: From 'EffluentIQ Report <reports@octaveworks.com>'."""
+    return sender_mail(config,'report',REPORT_SENDER,REPORT_NAME)
+def alert_mail(config):
+    """SMTP config for alarm emails and texts: From 'EffluentIQ Alerts <alarm@octaveworks.com>'."""
+    return sender_mail(config,'alert',ALERT_SENDER,ALERT_NAME)
+
 XLSX_MIME=('application','vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 def send_mail(config,subject,body,recipients,attachments=()):
     """attachments: (filename, bytes) Excel files."""
     msg=EmailMessage()
     if subject:msg['Subject']=subject   # text messages go without one: phones show "Subj:" and repeat it
-    msg['From']=config['sender'];msg['To']=', '.join(recipients);msg.set_content(body)
+    msg['From']=config.get('from') or config['sender'];msg['To']=', '.join(recipients);msg.set_content(body)
     for fname,data in attachments:msg.add_attachment(data,maintype=XLSX_MIME[0],subtype=XLSX_MIME[1],filename=fname)
     import ssl
     host=config['host'];port=int(config.get('port',587))
@@ -2159,7 +2182,7 @@ def pump_rows(start,end,zone,date_range):
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump',
                     'Caustic_Pump_Run':'Caustic dosing pump','Acid_Pump_Run':'Acid dosing pump'}
-# Settings saved before 1.2.67 (one key per product); read once to build the product list.
+# Settings saved before 1.2.68 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 LB_KG=0.45359237
 # Plant information 11/25/2026: the caustic pump doses NEUTRO 5045 (FNEUT5045-Bulk), the acid pump SA-93;
@@ -2199,7 +2222,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.67 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.68 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -2859,10 +2882,11 @@ def scheduler():
         for key,subject,body,build,*rest in jobs:
             alarm=rest[0] if rest else None;reading=rest[1] if len(rest)>1 else ''
             if alarm in shelved:continue   # shelved: no email or text while the shelf lasts (sent later if still active)
-            sends=[(key,lambda s=subject,b=body,bd=build:send_mail(mail,s,b,cfg['recipients'],[bd()] if bd else ()),'Email')]
+            via=report_mail(mail) if key.startswith(REPORT_KEYS) else alert_mail(mail)
+            sends=[(key,lambda s=subject,b=body,bd=build,m=via:send_mail(m,s,b,cfg['recipients'],[bd()] if bd else ()),'Email')]
             if sms and texted(alarm) and key.startswith('alarm:'):
                 eid=key.split(':')[2]
-                sends.append(('sms:'+key,lambda s=subject,e=eid,d=reading:send_mail(mail,'',sms_text(s,e,now,d),cfg['sms_recipients']),'Text message'))
+                sends.append(('sms:'+key,lambda s=subject,e=eid,d=reading,m=via:send_mail(m,'',sms_text(s,e,now,d),cfg['sms_recipients']),'Text message'))
             for dkey,send,what in sends:
                 if conn.execute('SELECT 1 FROM delivery WHERE key=?',(dkey,)).fetchone():
                     continue
@@ -2929,14 +2953,18 @@ def historical_report(now,period):
     out.extend(['','Report uses recorded samples; missing or invalid-quality data should be reviewed separately.'])
     return '\n'.join(out)
 
-def test_email():
-    """Send one test email to the Settings recipients with the server's SMTP config (shell only)."""
+def test_email(reports=False):
+    """Send one test email to the Settings recipients with the server's SMTP config (shell only).
+    Sent the way alarm emails go (From: EffluentIQ Alerts <alarm@...>), or with reports=True the way the
+    report emails go (From: EffluentIQ Report <reports@...>)."""
     mail=json.loads(EMAIL_CFG.read_text())
+    mail=report_mail(mail) if reports else alert_mail(mail)
     with appdb() as conn:recipients=settings(conn)['recipients']
     if not recipients:sys.exit('No recipients in Settings; add one under Settings > Email recipients first.')
-    send_mail(mail,'Wastewater dashboard test email',
-              f'Test email from the wastewater dashboard.\nSender: {mail["sender"]}\nSMTP: {mail["host"]}:{mail.get("port",587)}\n',recipients)
-    print('Test email sent from',mail['sender'],'to',', '.join(recipients))
+    shown=mail.get('from') or mail['sender']
+    send_mail(mail,'Wastewater dashboard test email'+(' (reports)' if reports else ''),
+              f'Test email from the wastewater dashboard.\nSender: {shown}\nSMTP: {mail["host"]}:{mail.get("port",587)}\n',recipients)
+    print('Test email sent from',shown,'to',', '.join(recipients))
 
 def set_login(role,username):
     """Create or replace a login from the server shell (also the lockout-recovery path).
@@ -2957,6 +2985,6 @@ if __name__=='__main__':
         with appdb() as conn: print('App database ready:',APP_DB)
     elif len(sys.argv)>2 and sys.argv[1]=='--set-operator':set_login('Operator',sys.argv[2])
     elif len(sys.argv)>2 and sys.argv[1]=='--set-admin':set_login('Admin',sys.argv[2])
-    elif len(sys.argv)>1 and sys.argv[1]=='--test-email':test_email()
+    elif len(sys.argv)>1 and sys.argv[1]=='--test-email':test_email(reports=sys.argv[2:3]==['reports'])
     elif len(sys.argv)>1 and sys.argv[1]=='--backup':backup(sys.argv[2] if len(sys.argv)>2 else None)
     else: print('Usage: python3 web.py --init|--scheduler|--backup [DIR]|--set-admin USERNAME|--set-operator USERNAME')

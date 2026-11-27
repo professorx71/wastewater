@@ -248,3 +248,13 @@ h2.with-button button{font-size:13px;letter-spacing:0;text-transform:none}
 /* Pump fans keep turning even when the computer asks for less animation: the turning fan IS the RUNNING signal. */
 @media (prefers-reduced-motion:reduce){.pump-fan.on svg{animation:pumpSpin 2.2s linear infinite}.pump-fan.transfer.on svg{animation-name:pumpSpinCw}
   .eq-liquid{transition-duration:1s}}
+/* Dosing pump boxes scale with the diagram (27 Nov 2026): text sized in container units (cqw, % of the diagram width), so at any
+   browser zoom the readings stay inside their boxes. The dosing bar and the diagram are the same width, so 1cqw matches in both. */
+.dosing-bar,.process-stage{container-type:inline-size}
+@supports (font-size:1cqw){
+ .pump-box{font-size:.92cqw;line-height:1.12;padding:0 .3cqw;border-width:max(1px,.07cqw);border-radius:.45cqw}
+ .pump-box .dose-unit{font-size:inherit}
+ .pump-box .run-line{gap:.25cqw}
+ .pump-box .dose-state{font-size:.8cqw;letter-spacing:.04em}
+ .pump-box.acid{height:auto;min-height:11.2%;padding:.25cqw .3cqw}
+}
