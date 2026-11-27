@@ -181,10 +181,14 @@ async function loadEvents(){try{const data=await api('/api/events'+periodQuery('
 async function loadAudit(){try{const data=await api('/api/audit'+periodQuery('auditPeriod'));periodCount('auditPeriod',data.period,['entry','entries']);$('auditlist').innerHTML=`<div class="tablewrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Detail</th></tr></thead><tbody>${data.rows.map(r=>`<tr><td>${local(r.stamp)}</td><td>${escapeHTML(r.actor)}</td><td>${escapeHTML(r.action)}</td><td>${escapeHTML(r.detail)}</td></tr>`).join('')||'<tr><td colspan="4">No audit entries in this period.</td></tr>'}</tbody></table></div>`}catch(e){$('auditlist').textContent='Admin required or audit unavailable: '+e.message}}
 const KEYS=['ph_low','ph_high','alarms_enabled','email_enabled','email_recovery_enabled','alarm_confirm_samples','alarm_recovery_samples','alarm_repeat_min','alarm_on','alarm_off','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time',
  'stale_alert_enabled','stale_alert_minutes','level_alarm_enabled','level_high_ft','flow_alarm_enabled','flow_low_lpm','flow_low_minutes','flow_stable_enabled','flow_target_gpm','flow_stable_pct','flow_stable_minutes','quarterly_enabled','plc_alarms_enabled','cal_reminders_enabled','cal_ph_days','cal_level_days','cal_remind_days',
- 'stock_alarm_enabled','sms_enabled','currency',
+ 'stock_alarm_enabled','sms_enabled','alert_name','currency','weekly_enabled','weekly_day','weekly_time','compliance_pdf_enabled','sms_method','escalate_enabled','escalate_minutes',
  'ph_trend_enabled','ph_trend_window_min','ph_trend_lookahead_min','dosing_alarm_enabled','dosing_alarm_minutes'];
 const dayNames=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];$('alarmDays').innerHTML=dayNames.map((d,i)=>`<label><input type="checkbox" data-day="${i}"> ${d}</label>`).join('');
-async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{if($(k))$(k)[$(k).type==='checkbox'?'checked':'value']=config[k]});document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));$('recipients').value=(config.recipients||[]).join('\n');$('sms_recipients').value=(config.sms_recipients||[]).join('\n');renderProducts(config.chemical_products||[]);lockSettings();$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send');document.querySelectorAll('#settings input:not([data-fixed]),#settings textarea,#settings button,#productRows select').forEach(el=>el.disabled=!can('settings'))}catch(e){$('saveState').textContent=e.message}}
+async function loadSettings(){if(can('accounts'))loadAccounts();try{let r=await api('/api/settings');config=r.settings;KEYS.forEach(k=>{const el=$(k);if(!el)return;if(el.type==='checkbox')el.checked=config[k];else el.value='bool' in el.dataset?String(!!config[k]):config[k]});showSenders(r.senders);document.querySelectorAll('[data-day]').forEach(x=>x.checked=config.alarm_days.includes(Number(x.dataset.day)));LIST_KEYS.forEach(k=>$(k).value=(config[k]||[]).join('\n'));renderProducts(config.chemical_products||[]);renderAlways(r.notify_choices||{});renderHistory(r.history||[]);$('twilioState').textContent=r.twilio_configured?'Twilio is set up on the server.':'Twilio is not set up on the server yet (see Help): texts go by email-to-text.';lockSettings();$('smtp').textContent='SMTP credentials: '+(r.email_configured?'file present (delivery not verified)':'not configured — email will not send')}catch(e){$('saveState').textContent=e.message}}
+function showSenders(s){const box=$('senderBox');if(!box)return;
+ if(!s||!s.configured){box.innerHTML='<b>Email server not set up</b> on the server (email.json): alarms and reports will not send.';box.classList.add('bad');return}
+ box.classList.remove('bad');const via=h=>h?' via '+escapeHTML(h):'';
+ box.innerHTML=`Alarms sent from <b>${escapeHTML(s.alert)}</b>${via(s.host)}<br>Reports sent from <b>${escapeHTML(s.report)}</b>${s.report_host!==s.host?via(s.report_host):''}`}
 // ---- Accounts and passwords (Admin only; server enforces the same rule) ----
 const postJSON=(path,body)=>fetch(path,{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(body)}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d});
 function accountMsg(text,ok){const el=$('accountState');el.textContent=text;el.className=ok?'ok-text':'error-text'}
@@ -227,18 +231,54 @@ $('saveRights').addEventListener('click',async()=>{
 $('disableOperator').addEventListener('click',async()=>{
  if(!confirm('Turn off ALL Operator logins? No Operator will be able to sign in until you add one again.'))return;
  try{await postJSON('/api/accounts/operator/disable',{});accountMsg('Operator login turned off.',true);loadAccounts()}catch(e){accountMsg('Not changed: '+e.message)}});
-const EMAIL_KEYS=['recipients','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time','quarterly_enabled','sms_enabled','sms_recipients'];
+const EMAIL_KEYS=['recipients','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time','quarterly_enabled','sms_enabled','sms_recipients','email_enabled','alert_name',
+ 'report_recipients','weekly_enabled','weekly_day','weekly_time','compliance_pdf_enabled','sms_method','escalate_enabled','escalate_minutes','escalate_recipients','escalate_sms'];
 function lockSettings(){const full=can('settings'),mail=can('email');
  document.querySelectorAll('#settings input,#settings select,#settings textarea,#settings button').forEach(el=>{if(el.closest('.accounts'))return;
   const ok=full||(mail&&(el.closest('.email-panel')||el.classList.contains('save-settings')));el.disabled=!ok});
  $('settingsReadOnly').hidden=full;$('settingsReadOnly').textContent=mail?'Your login can change only the email, text message and report settings. Everything else is shown read-only; ask the Admin to change it.':'Read only: your login can view the settings but not change them. Ask the Admin to change a setting.';
- document.querySelectorAll('#settings .save-row').forEach(r=>r.hidden=!(full||mail))}
+ document.querySelectorAll('#settings .save-row').forEach(r=>r.hidden=!(full||mail));$('backupPanel').hidden=!full}
 // A Save settings button at the bottom of every settings box (not Accounts): each saves the whole page.
-document.querySelectorAll('#settings .panel:not(.accounts)').forEach(p=>{if(!p.querySelector('.save-row'))p.insertAdjacentHTML('beforeend',
+document.querySelectorAll('#settings .panel:not(.accounts):not(.no-save)').forEach(p=>{if(!p.querySelector('.save-row'))p.insertAdjacentHTML('beforeend',
  '<div class="save-row"><button class="save-settings" type="button">Save settings (Admin only)</button><p class="save-state" role="status"></p></div>')});
 const saveMsg=t=>document.querySelectorAll('#settings .save-state').forEach(x=>x.textContent=t);
+const LIST_KEYS=['recipients','sms_recipients','report_recipients','escalate_recipients','escalate_sms'];
+// Critical alarms (always notify, outside the schedule too) and the settings change history.
+function renderAlways(choices){$('alwaysNotify').innerHTML=Object.entries(choices).map(([k,l])=>
+ `<label><input type="checkbox" data-always="${escapeHTML(k)}"${(config.always_notify||[]).includes(k)?' checked':''}> ${escapeHTML(l)}</label>`).join('')}
+function renderHistory(rows){$('settingsHistory').innerHTML=rows.length?'<table class="history"><thead><tr><th>When</th><th>Who</th><th>What changed</th></tr></thead><tbody>'+
+ rows.map(r=>`<tr><td>${escapeHTML(local(r.stamp))}</td><td>${escapeHTML(r.actor)}</td><td><b>${escapeHTML(r.action)}</b>${r.detail.split('; ').map(x=>'<br>'+escapeHTML(x)).join('')}</td></tr>`).join('')+'</tbody></table>'
+ :'<p>No changes recorded yet.</p>'}
+const busy=async(btn,state,work)=>{btn.disabled=true;state.classList.remove('bad');state.textContent='Working…';
+ try{state.textContent=await work()}catch(e){state.textContent='Not done: '+e.message;state.classList.add('bad')}finally{btn.disabled=false}};
+$('reportNow').addEventListener('click',()=>busy($('reportNow'),$('reportNowState'),async()=>{const r=await postJSON('/api/report-now',{kind:$('reportNowKind').value});
+ return `Sent "${r.subject}" to ${r.sent_to.join(', ')}.`}));
+$('flowAvg').addEventListener('click',()=>busy($('flowAvg'),$('flowAvgState'),async()=>{const res=await fetch('/api/flow-average',{cache:'no-store'}),r=await res.json().catch(()=>({}));if(!res.ok)throw Error(r.error||'HTTP '+res.status);$('flow_target_gpm').value=r.gpm;
+ return `Average ${r.gpm} GPM while discharging over the last ${r.minutes} min (${r.min}–${r.max} GPM, ${r.readings} readings). Press Save to keep it.`}));
+$('settingsBackup').addEventListener('click',()=>{window.location.href='/api/settings/backup'});
+$('settingsRestoreFile').addEventListener('change',e=>{const f=e.target.files[0];e.target.value='';if(!f)return;
+ busy($('settingsDefaults'),$('backupState'),async()=>{let data;try{data=JSON.parse(await f.text())}catch{throw Error('That file is not a settings backup')}
+  const s=data&&data.settings;if(!s||typeof s!=='object')throw Error('That file is not an EffluentIQ settings backup');
+  if(!confirm('Replace the current settings with the backup'+(data.saved_at?' from '+local(data.saved_at):'')+'?'))return 'Not restored.';
+  await postJSON('/api/settings/restore',{settings:s});loadSettings();loadSummary();return 'Settings restored from '+f.name+'.'})});
+$('settingsDefaults').addEventListener('click',()=>{if(!confirm('Restore the default limits, times and numbers? Recipients, the sender name, chemical products and every ON/OFF switch are kept. Download a backup first if unsure.'))return;
+ busy($('settingsDefaults'),$('backupState'),async()=>{await postJSON('/api/settings/defaults',{});loadSettings();loadSummary();return 'Default limits and times restored.'})});
+{const d=new Date();d.setDate(0);$('pdfMonth').value=d.toISOString().slice(0,7)}
+$('pdfDownload').addEventListener('click',()=>{const m=$('pdfMonth').value;if(!m){alert('Choose a month.');return}window.location.href='/api/compliance-pdf?month='+encodeURIComponent(m)});
+// Alarm notifications: build a carrier email-to-text address from a mobile number, and the two test buttons.
+$('smsAdd').addEventListener('click',()=>{let n=$('smsNumber').value.replace(/\D/g,'');if(n.length===11&&n[0]==='1')n=n.slice(1);
+ if(n.length!==10){$('testTextState').textContent='Enter a 10-digit mobile number, e.g. 604 555 1234.';$('smsNumber').focus();return}
+ const addr=n+'@'+$('smsCarrier').value,list=$('sms_recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);
+ if(list.includes(addr)){$('testTextState').textContent=addr+' is already in the list.';return}
+ list.push(addr);$('sms_recipients').value=list.join('\n');$('smsNumber').value='';
+ $('testTextState').textContent='Added '+addr+'. Press Save notification settings to keep it.'});
+async function sendTest(text){const state=$(text?'testTextState':'testEmailState'),btn=$(text?'testText':'testEmail');
+ btn.disabled=true;state.textContent='Sending…';state.classList.remove('bad');
+ try{const r=await postJSON(text?'/api/test-text':'/api/test-email',{});state.textContent=(text?'Test text sent to ':'Test email sent to ')+r.sent_to.join(', ')+(text?` by ${r.method}. It can take a few minutes to arrive.`:' from '+r.sender+'.')}
+ catch(e){state.textContent='Not sent: '+e.message;state.classList.add('bad')}finally{btn.disabled=false}}
+$('testEmail').addEventListener('click',()=>sendTest(false));$('testText').addEventListener('click',()=>sendTest(true));
 document.querySelectorAll('#settings .save-settings').forEach(b=>b.addEventListener('click',saveSettings));
-async function saveSettings(){const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));body.recipients=$('recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);body.sms_recipients=$('sms_recipients').value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);try{body.chemical_products=readProducts()}catch(e){saveMsg('Save failed: '+e.message);return}const send=can('settings')?body:Object.fromEntries(EMAIL_KEYS.map(k=>[k,body[k]]));try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(send)});saveMsg('Settings saved to server.');loadSummary();loadSettings()}catch(e){saveMsg('Save failed: '+e.message)}}
+async function saveSettings(){const body={};KEYS.forEach(k=>{const el=$(k);body[k]=el.type==='checkbox'?el.checked:'bool' in el.dataset?el.value==='true':el.type==='number'||'int' in el.dataset?Number(el.value):el.value});body.alarm_days=Array.from(document.querySelectorAll('[data-day]:checked'),x=>Number(x.dataset.day));LIST_KEYS.forEach(k=>body[k]=$(k).value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean));body.always_notify=Array.from(document.querySelectorAll('[data-always]:checked'),x=>x.dataset.always);try{body.chemical_products=readProducts()}catch(e){saveMsg('Save failed: '+e.message);return}const send=can('settings')?body:Object.fromEntries(EMAIL_KEYS.map(k=>[k,body[k]]));try{await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-WW-Request':'1'},body:JSON.stringify(send)});saveMsg('Settings saved to server.');loadSummary();loadSettings()}catch(e){saveMsg('Save failed: '+e.message)}}
 function reportDownload(fmt){const a=$('from').value,b=$('to').value;if(!a||!b||a>b){alert('Choose a valid date range.');return}let days=(Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/86400000;if(days>91){alert('Maximum 92 inclusive days (one quarter)');return}window.location.href='/api/export?tag='+encodeURIComponent($('reportTag').value)+'&startDate='+encodeURIComponent(a)+'&endDate='+encodeURIComponent(b)+(fmt?'&format='+fmt:'')}
 const vanNow=()=>{const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(Date.now()+clockOffset)).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`};
 const pickupMsg=(t,ok)=>{const el=$('pickupState');el.textContent=t;el.className=ok?'ok-text':'err-text'};

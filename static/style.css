@@ -258,3 +258,44 @@ h2.with-button button{font-size:13px;letter-spacing:0;text-transform:none}
  .pump-box .dose-state{font-size:.8cqw;letter-spacing:.04em}
  .pump-box.acid{height:auto;min-height:11.2%;padding:.25cqw .3cqw}
 }
+
+/* Settings → Alarm notifications (27 Nov 2026): email and text cards side by side. */
+.notify-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px;margin-top:12px}
+.notify-card{border:1px solid rgba(120,170,210,.28);border-radius:10px;padding:16px 18px;background:rgba(10,24,36,.55);display:flex;flex-direction:column;gap:10px}
+.notify-card h4{margin:0 0 4px;font-size:1.15em;font-weight:800;color:#ffe680}
+.notify-card label{display:flex;flex-direction:column;gap:5px;font-weight:700}
+.notify-card input,.notify-card select,.notify-card textarea{width:100%;box-sizing:border-box}
+.notify-card .hint{margin:0;font-size:.9em;opacity:.9}
+.notify-card code{background:rgba(255,255,255,.1);padding:1px 5px;border-radius:4px}
+.sender-box{border:1px solid rgba(120,170,210,.35);border-radius:8px;padding:9px 12px;background:rgba(40,80,110,.25);font-size:.92em;line-height:1.5}
+.sender-box.bad{border-color:#d9534f;background:rgba(217,83,79,.15)}
+.sms-add{display:grid;grid-template-columns:1fr 1.4fr auto;gap:10px;align-items:end}
+@media (max-width:520px){.sms-add{grid-template-columns:1fr}}
+.notify-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px}
+.notify-actions .test-send,#smsAdd{background:#1d2a36;color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:6px;padding:8px 14px;font-weight:700;cursor:pointer}
+.notify-actions .test-send:hover:not(:disabled),#smsAdd:hover:not(:disabled){background:#2a3c4c}
+.notify-state{margin:0;min-height:1.2em;font-weight:600;color:#9fe3a6}
+.notify-state.bad{color:#ff9b96}
+.notify-panel>.save-row{margin-top:6px}
+
+/* 27 Nov 2026: critical alarms, flow average, Send report now, change history, backup and restore. */
+#settings h4.sub{margin:14px 0 4px;color:#ffe680;font-size:1.05em}
+.days.always{display:flex;flex-wrap:wrap;gap:8px 18px}
+.flow-avg{display:flex;flex-direction:column;gap:4px;justify-content:end}
+.flow-avg small{opacity:.9}
+.report-now{display:flex;flex-wrap:wrap;gap:10px;align-items:end;margin-top:12px}
+.report-now label{display:flex;flex-direction:column;gap:5px;font-weight:700}
+#reportsPanel .hint{margin:2px 0 10px;font-size:.9em;opacity:.9}
+.test-send{background:#1d2a36;color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:6px;padding:8px 14px;font-weight:700;cursor:pointer}
+.test-send:hover:not(:disabled){background:#2a3c4c}
+.test-send.danger{border-color:#d9534f;color:#ffb3b0}
+.file-btn{display:inline-flex;align-items:center}
+table.history{width:100%;border-collapse:collapse;font-size:.92em}
+table.history th,table.history td{text-align:left;vertical-align:top;padding:6px 8px;border-bottom:1px solid rgba(255,255,255,.12)}
+table.history td:first-child{white-space:nowrap}
+#twilioState{opacity:.85;margin-top:-4px}
+/* three notification cards side by side: the number + carrier row wraps instead of squeezing */
+.sms-add{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.sms-add label{flex:1 1 150px;min-width:0}
+.flow-avg{align-items:flex-start}
+.flow-avg .test-send{width:auto}

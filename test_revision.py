@@ -38,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.70'
+        assert s['revision']=='1.2.71'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -655,6 +655,163 @@ class RevisionTests(unittest.TestCase):
         self.assertIn('Wastewater calibration reminder: EQ tank height (level) sensor is OVERDUE',subjects)
         self.assertEqual(len([s for s in subjects if 'calibration reminder' in s]),2)   # once each
 
+    def test_alarm_notifications_panel(self):
+        web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
+        web.EMAIL_CFG.write_text(json.dumps({'host':'mail.example.com','port':465,'sender':'t@example.com','username':'u','password':'p'}))
+        web.OP_AUTH=Path(self.tmp.name)/'operator.json'
+        self._login(web.AUTH,'admin','admin-pass');self._login(web.OP_AUTH,'op','op-pass')
+        def J(*a):
+            c,p=self.call(*a);return c,json.loads(p)
+        # sender name: saved, cleaned, shown with the senders, and checked
+        code,out=J('POST','/api/settings','admin','admin-pass',{'alert_name':'  Plant   Alerts ','recipients':['a@example.com']})
+        self.assertEqual((code,out['alert_name']),(200,'Plant Alerts'))
+        for bad in ('','x'*61,'A <b>','me@x','a\\b'):
+            self.assertEqual(self.call('POST','/api/settings','admin','admin-pass',{'alert_name':bad})[0],400,bad)
+        code,out=J('GET','/api/settings','admin','admin-pass')
+        self.assertEqual(out['senders'],{'configured':True,'alert':'Plant Alerts <alarm@octaveworks.com>',
+            'report':'EffluentIQ Report <reports@octaveworks.com>','host':'mail.example.com','report_host':'mail.example.com'})
+        # test email / text: to the saved addresses, from the Settings sender name, logged, rate limited
+        with patch.object(web,'send_mail') as mail:
+            code,out=J('POST','/api/test-email','admin','admin-pass',{})
+            self.assertEqual((code,out['sent_to'],out['sender']),(200,['a@example.com'],'Plant Alerts <alarm@octaveworks.com>'))
+            self.assertEqual(mail.call_args.args[0]['from'],'Plant Alerts <alarm@octaveworks.com>')
+            self.assertEqual(self.call('POST','/api/test-email','admin','admin-pass',{})[0],429)
+            self.assertEqual(self.call('POST','/api/test-text','admin','admin-pass',{})[0],400)   # no phone saved
+            self.assertEqual(self.call('POST','/api/test-text','op','op-pass',{})[0],403)
+        with patch.object(web,'send_mail',side_effect=web.smtplib.SMTPSenderRefused(553,b'not owned by user','alarm@octaveworks.com')):
+            self.call('POST','/api/settings','admin','admin-pass',{'sms_recipients':['6045550000@txt.bell.ca']})
+            code,out=J('POST','/api/test-text','admin','admin-pass',{})
+        self.assertEqual(code,502);self.assertIn('not owned by user',out['error'])
+        with web.appdb() as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT action FROM audit WHERE action LIKE 'Test %' ORDER BY id")],['Test email sent','Test text failed'])
+        # texts go out with Email alerts OFF; the alarm email does not
+        with web.appdb() as db:
+            for k,v in dict(email_enabled=False,sms_enabled=True).items():
+                db.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)',(k,json.dumps(v)))
+        current=web.summary()
+        current['extras']['E_STOP_STATUS']={'value':1,'status':'current','stamp':'2026-11-16T12:00:00Z'}
+        with patch.object(web,'summary',return_value=current),patch.object(web,'send_mail') as mail:
+            web.scheduler();web.scheduler()
+        calls=[c for c in mail.call_args_list if 'Emergency Stop' in c.args[1]+c.args[2]]
+        self.assertEqual([c.args[3] for c in calls],[['6045550000@txt.bell.ca']])
+        self.assertEqual(calls[0].args[0]['from'],'Plant Alerts <alarm@octaveworks.com>')
+
+    def _set(self,**kw):
+        with web.appdb() as db:
+            for k,v in kw.items():db.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)',(k,json.dumps(v)))
+
+    def test_critical_alarms_escalation_and_checker_gap(self):
+        web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
+        web.EMAIL_CFG.write_text(json.dumps({'host':'example.invalid','sender':'t@example.com','username':'u','password':'p'}))
+        # outside the schedule (no days): the critical E-Stop is sent, the (not critical) mixer pump fault waits
+        self._set(email_enabled=True,recipients=['ops@example.com'],alarm_days=[],escalate_enabled=True,escalate_minutes=5,
+                  escalate_recipients=['boss@example.com'],escalate_sms=['6045559999@txt.bell.ca'])
+        current=web.summary()
+        for tag in ('E_STOP_STATUS','MIXER_PUMP_FAULTED'):
+            current['extras'][tag]={'value':1,'status':'current','stamp':'2026-11-16T12:00:00Z'}
+        with patch.object(web,'summary',return_value=current),patch.object(web,'send_mail') as mail:
+            web.scheduler()
+            subjects=[c.args[1] for c in mail.call_args_list]
+            self.assertIn('Emergency Stop Activated',subjects)
+            self.assertFalse([x for x in subjects if 'Mixer' in x])
+            self.assertFalse([x for x in subjects if 'ESCALATED' in x])          # not on long enough yet
+            with web.appdb() as db:   # the E-Stop started 12 minutes ago
+                db.execute("UPDATE events SET stamp=? WHERE kind='E-Stop active'",(web.iso(datetime.now(timezone.utc)-timedelta(minutes=12)),))
+            mail.reset_mock();web.scheduler();web.scheduler()
+        esc=[c for c in mail.call_args_list if 'ESCALATED' in (c.args[1] or c.args[2])]
+        self.assertEqual(sorted(tuple(c.args[3]) for c in esc),[('6045559999@txt.bell.ca',),('boss@example.com',)])   # once each
+        self.assertEqual([c.args[1] for c in esc if c.args[1]],['ESCALATED: Emergency Stop Activated — still active 12 min'])
+        # the alarm checker was stopped for 25 minutes: one email when it runs again
+        with web.appdb() as db:
+            db.execute("UPDATE settings SET value=? WHERE key='scheduler_heartbeat'",(json.dumps(web.iso(datetime.now(timezone.utc)-timedelta(minutes=25))),))
+        with patch.object(web,'summary',return_value=current),patch.object(web,'send_mail') as mail:
+            web.scheduler();web.scheduler()
+        gap=[c for c in mail.call_args_list if c.args[1]=='Wastewater ALERT: alarm checking was stopped']
+        self.assertEqual(len(gap),1);self.assertIn('25 min',gap[0].args[2])
+        # /healthz: no sign-in; OK while the checker runs and readings arrive
+        code,body=self.call('GET','/healthz','nobody','x')
+        self.assertEqual((code,json.loads(body)['problems']),(200,[]))
+        with web.appdb() as db:
+            db.execute("UPDATE settings SET value=? WHERE key='scheduler_heartbeat'",(json.dumps(web.iso(datetime.now(timezone.utc)-timedelta(minutes=9))),))
+        code,body=self.call('GET','/healthz','nobody','x')
+        self.assertEqual((code,json.loads(body)['problems']),(503,['alarm checker not running for 9 min']))
+        # critical alarm choices are checked
+        self._login(web.AUTH,'admin','admin-pass')
+        self.assertEqual(self.call('POST','/api/settings','admin','admin-pass',{'always_notify':['stock:coag']})[0],400)
+        self.assertEqual(self.call('POST','/api/settings','admin','admin-pass',{'escalate_recipients':[],'escalate_sms':[]})[0],400)
+
+    def test_reports_upgrades(self):
+        web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
+        web.EMAIL_CFG.write_text(json.dumps({'host':'example.invalid','sender':'t@example.com','username':'u','password':'p'}))
+        self._login(web.AUTH,'admin','admin-pass')
+        self._set(recipients=['ops@example.com'],report_recipients=['manager@example.com'],weekly_enabled=True)
+        now=datetime(2026,11,25,8,0,tzinfo=web.ZoneInfo('America/Vancouver'))   # a Wednesday
+        with web.appdb() as db:cfg=web.settings(db)
+        key,subject,body,build=web.report_job('weekly',now,cfg)
+        self.assertEqual((key,subject),('weekly:2026-11-16','Wastewater Weekly Report Nov 16 – Nov 22, 2026'))
+        self.assertIn('Period: 2026-11-16 12:00 AM through 2026-11-23 12:00 AM Pacific',body)
+        self.assertIn('Discharge compliance by day:',body);self.assertIn('Chemical cost',body)
+        self.assertEqual(build()[0],'wastewater-report-all-2026-11-16-to-2026-11-22.xlsx')
+        self.assertEqual(web.report_job('quarterly',now,cfg)[0],'quarterly:2026 Q3 (Jul-Sep)')
+        # Send report now: to the report recipients, from EffluentIQ Report, does not use up the scheduled send
+        with patch.object(web,'send_mail') as mail:
+            code,out=self.call('POST','/api/report-now','admin','admin-pass',{'kind':'daily'})
+            self.assertEqual(code,200)
+            self.assertEqual(mail.call_args.args[3],['manager@example.com'])
+            self.assertEqual(mail.call_args.args[0]['from'],'EffluentIQ Report <reports@octaveworks.com>')
+            self.assertTrue(mail.call_args.args[1].endswith('(sent on request)'))
+            self.assertEqual(self.call('POST','/api/report-now','admin','admin-pass',{'kind':'daily'})[0],429)
+        with web.appdb() as db:self.assertIsNone(db.execute("SELECT 1 FROM delivery WHERE key LIKE 'daily:%'").fetchone())
+        # PDF download
+        code,pdf=self.call('GET','/api/compliance-pdf','admin','admin-pass',query='month=2026-10')
+        self.assertEqual(code,200);self.assertTrue(pdf.startswith(b'%PDF'))
+        self.assertEqual(self.call('GET','/api/compliance-pdf','admin','admin-pass',query='month=2099-01')[0],400)
+        self.assertEqual(self.call('GET','/api/compliance-pdf','admin','admin-pass',query='month=x')[0],400)
+
+    def test_settings_history_backup_restore_defaults(self):
+        self._login(web.AUTH,'admin','admin-pass')
+        J=lambda *a,**k:(lambda r:(r[0],json.loads(r[1])))(self.call(*a,**k))
+        self.assertEqual(self.call('POST','/api/settings','admin','admin-pass',{'ph_low':6.0,'alarms_enabled':True,'recipients':['a@example.com']})[0],200)
+        code,out=J('GET','/api/settings','admin','admin-pass')
+        self.assertEqual(out['history'][0]['action'],'Settings updated')
+        self.assertEqual(out['history'][0]['detail'],'Low pH: 5.8 → 6.0; pH alarm monitoring: OFF → ON; Email recipients: (none) → a@example.com')
+        code,raw=self.call('GET','/api/settings/backup','admin','admin-pass')
+        backup=json.loads(raw);self.assertEqual(backup['settings']['ph_low'],6.0)
+        self.call('POST','/api/settings','admin','admin-pass',{'ph_low':6.5,'ph_high':8.5})
+        code,out=J('POST','/api/settings/restore','admin','admin-pass',{'settings':dict(backup['settings'],future_key=1)})
+        self.assertEqual((code,out['ph_low'],out['ph_high']),(200,6.0,9.0))
+        code,out=J('POST','/api/settings/defaults','admin','admin-pass',{})
+        self.assertEqual((out['ph_low'],out['alarms_enabled'],out['recipients']),(5.8,True,['a@example.com']))   # switches and recipients kept
+        with web.appdb() as db:
+            self.assertEqual([r[0] for r in db.execute("SELECT action FROM audit WHERE action LIKE 'Settings%' ORDER BY id")],
+                             ['Settings updated','Settings updated','Settings restored from backup','Settings reset to defaults'])
+        web.OP_AUTH=Path(self.tmp.name)/'operator.json';self._login(web.OP_AUTH,'op','op-pass')
+        self.assertEqual(self.call('POST','/api/settings/defaults','op','op-pass',{})[0],403)
+        self.assertEqual(self.call('GET','/api/settings/backup','op','op-pass')[0],403)
+        # Use current average: discharging readings only
+        with patch.object(web,'flow_readings',return_value=[('t',0.0),('t',10.0),('t',12.0),('t',11.0)]):
+            code,out=J('GET','/api/flow-average','admin','admin-pass')
+        self.assertEqual((out['gpm'],out['readings']),(11.0,3))
+        with patch.object(web,'flow_readings',return_value=[]):
+            self.assertEqual(self.call('GET','/api/flow-average','admin','admin-pass')[0],404)
+
+    def test_twilio_texts_fall_back_to_email(self):
+        cfg=dict(web.DEFAULTS,sms_method='twilio');via={'from':'x'}
+        to=['6045551234@txt.bell.ca','16045550000@msg.telus.com','abc@sms.example.com']
+        self.assertEqual([web.phone_number(a) for a in to],['+16045551234','+16045550000',None])
+        with patch.object(web,'twilio_config',return_value=None),patch.object(web,'send_mail') as mail:
+            self.assertEqual(web.send_text(via,'hi',to,cfg),'email-to-text');self.assertEqual(mail.call_args.args[3],to)
+        sent=[]
+        def tw(conf,number,body):
+            if number=='+16045550000':raise OSError('down')
+            sent.append(number)
+        with patch.object(web,'twilio_config',return_value={'account_sid':'AC1','auth_token':'t','from_number':'+1'}),\
+             patch.object(web,'twilio_send',side_effect=tw),patch.object(web,'send_mail') as mail:
+            how=web.send_text(via,'hi',to,cfg)
+        self.assertEqual(sent,['+16045551234'])
+        self.assertEqual(mail.call_args.args[3],['16045550000@msg.telus.com','abc@sms.example.com'])
+        self.assertTrue(how.startswith('Twilio; email-to-text for'))
+
     def test_shelving_holds_alarm_email_and_sms_goes_out(self):
         web.EMAIL_CFG=Path(self.tmp.name)/'fake-email.json'
         web.EMAIL_CFG.write_text(json.dumps({'host':'example.invalid','sender':'t@example.com','username':'u','password':'p'}))
@@ -825,13 +982,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.70 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.71 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.70 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.71 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})
@@ -888,8 +1045,10 @@ class RevisionTests(unittest.TestCase):
             web.scheduler()
         subjects={c.args[1]:c.args[4] for c in mail.call_args_list}
         self.assertEqual(set(subjects),{'Wastewater Monthly Report 2026-10','Wastewater Quarterly Report 2026 Q3 (Jul-Sep)'})
-        (name,data),=subjects['Wastewater Monthly Report 2026-10']
+        (name,data),(pdf_name,pdf)=subjects['Wastewater Monthly Report 2026-10']   # Excel + PDF compliance summary
         self.assertEqual(name,'wastewater-report-all-2026-09-01-to-2026-09-30.xlsx')
+        self.assertEqual(pdf_name,'EffluentIQ-compliance-2026-09.pdf')
+        self.assertTrue(pdf.startswith(b'%PDF-1.4') and pdf.rstrip().endswith(b'%%EOF'))
         import zipfile
         book=zipfile.ZipFile(io.BytesIO(data)).read('xl/workbook.xml').decode()
         self.assertIn('name="Summary"',book);self.assertIn('name="Total_Flow_Li"',book);self.assertNotIn('name="FLOW_RATE"',book)

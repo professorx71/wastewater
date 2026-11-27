@@ -111,7 +111,7 @@ def summary():
                 if name in DOSING_RUN_TAGS:
                     item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.70','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.71','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
@@ -555,11 +555,21 @@ DEFAULTS={'ph_low':5.8,'ph_high':9.0,'alarms_enabled':False,'email_enabled':Fals
           # Currency of the chemical prices in Settings (cost per m³ and estimated purchase costs use it).
           'currency':'CAD',
           # Text messages for new alarms, sent by email to carrier email-to-SMS addresses.
-          'sms_enabled':False,'sms_recipients':[],
+          'sms_enabled':False,'sms_recipients':[],'alert_name':'EffluentIQ Alerts',
           # Predictive pH: warn when pH, inside the limits, is heading for one (trend over window, reaching it within lookahead).
           'ph_trend_enabled':True,'ph_trend_window_min':30,'ph_trend_lookahead_min':60,
           # Dosing pump stopped (0 mL/min) for this many minutes while wastewater is being discharged.
-          'dosing_alarm_enabled':False,'dosing_alarm_minutes':15}
+          'dosing_alarm_enabled':False,'dosing_alarm_minutes':15,
+          # Critical alarms: emailed and texted even outside the notification schedule (days and hours).
+          'always_notify':['ph','level','plc:E_STOP_STATUS','plc:EQ_TANK_FULL'],
+          # Escalation: an alarm still active this many minutes is also sent, once, to these contacts.
+          'escalate_enabled':False,'escalate_minutes':30,'escalate_recipients':[],'escalate_sms':[],
+          # Reports: their own recipients (empty = the alarm email recipients), the weekly report (previous Mon–Sun)
+          # and the PDF compliance summary attached to the monthly report.
+          'report_recipients':[],'weekly_enabled':False,'weekly_day':0,'weekly_time':'08:00','compliance_pdf_enabled':True,
+          # Texts: 'email' = carrier email-to-text; 'twilio' = Twilio SMS (sms.json), falling back to email-to-text.
+          'sms_method':'email'}
+SMS_CFG=Path(os.environ.get('PBF_SMS_CONFIG','/etc/pbf-wastewater/sms.json'))
 @contextmanager
 def appdb():
     APP_DB.parent.mkdir(parents=True,exist_ok=True)
@@ -615,7 +625,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.70: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.71: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -868,7 +878,9 @@ PERMISSION_CHOICES=('alarms','acknowledge','shelve','pickup','export','email','s
 DEFAULT_ROLE_PERMISSIONS={'Engineering':('alarms','acknowledge','shelve','pickup','export','email','settings_view','settings','audit'),
                           'Operator':('alarms','acknowledge','pickup','export'),'Guest':('alarms',)}
 # Settings an 'email' right may change without the full 'settings' right.
-EMAIL_SETTING_KEYS=frozenset({'recipients','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time','quarterly_enabled','sms_enabled','sms_recipients'})
+EMAIL_SETTING_KEYS=frozenset({'recipients','daily_enabled','daily_time','monthly_enabled','monthly_day','monthly_time','quarterly_enabled','sms_enabled','sms_recipients',
+                            'email_enabled','alert_name','report_recipients','weekly_enabled','weekly_day','weekly_time','compliance_pdf_enabled',
+                            'sms_method','escalate_enabled','escalate_minutes','escalate_recipients','escalate_sms'})
 # Rights saved before a choice existed get that choice's default (saves record which choices they knew).
 _FIRST_CHOICES=('export','acknowledge','settings','audit')
 def role_permissions(conn=None):
@@ -895,10 +907,48 @@ def audit(conn,actor,action,detail):
     conn.execute('INSERT INTO audit(stamp,actor,action,detail) VALUES (?,?,?,?)',
                  (iso(datetime.now(UTC)),actor,action,detail[:800]))
 
+# Alarms that can be marked critical (always notify, outside the schedule too). Warnings and stock notices cannot.
+NOTIFY_CHOICES={'ph':'pH HIGH / LOW alarm','level':'EQ tank high level','flow':'No discharge flow','flow_stable':'Discharge flow not stable',
+                'data':'Data stopped',**{'plc:'+t:k for t,k,_,_,_ in PLC_ALARMS}}
+SETTING_LABELS={'ph_low':'Low pH','ph_high':'High pH','alarms_enabled':'pH alarm monitoring','email_enabled':'Email alerts','sms_enabled':'Text message alerts',
+                'recipients':'Email recipients','sms_recipients':'Text message addresses','report_recipients':'Report recipients','alert_name':'Sender name',
+                'alarm_on':'Notify from','alarm_off':'Notify until','alarm_days':'Notify days','alarm_repeat_min':'Still-active every (min)',
+                'always_notify':'Critical alarms','escalate_enabled':'Escalation','escalate_minutes':'Escalate after (min)',
+                'escalate_recipients':'Escalation emails','escalate_sms':'Escalation texts','flow_target_gpm':'Desired discharge flow (GPM)',
+                'weekly_enabled':'Weekly report','daily_enabled':'Daily report','monthly_enabled':'Monthly report','quarterly_enabled':'Quarterly report',
+                'compliance_pdf_enabled':'PDF compliance summary','sms_method':'Texts sent by','chemical_products':'Chemical products'}
+def setting_changes(old,new):
+    """['Low pH: 5.8 → 6.0', ...] for the settings that changed (the Audit log and Settings → Change history)."""
+    def show(k,v):
+        if isinstance(v,bool):return 'ON' if v else 'OFF'
+        if k=='alarm_days':return ', '.join(('Mon','Tue','Wed','Thu','Fri','Sat','Sun')[d] for d in v) or '(none)'
+        if k=='always_notify':return ', '.join(NOTIFY_CHOICES.get(x,x) for x in v) or '(none)'
+        if isinstance(v,list):return ', '.join(map(str,v)) or '(none)'
+        return str(v)
+    out=[]
+    for k in DEFAULTS:
+        if old.get(k)==new.get(k):continue
+        if k=='chemical_products':out.append('Chemical products changed');continue
+        out.append(f"{SETTING_LABELS.get(k,k)}: {show(k,old.get(k))[:120]} → {show(k,new.get(k))[:120]}")
+    return out
+SETTINGS_HISTORY_ACTIONS=('Settings updated','Chemical prices changed','Settings restored from backup','Settings reset to defaults')
+def settings_history(conn,limit=25):
+    q=','.join('?'*len(SETTINGS_HISTORY_ACTIONS))
+    return [dict(r) for r in conn.execute(f'SELECT stamp,actor,action,detail FROM audit WHERE action IN ({q}) ORDER BY id DESC LIMIT ?',(*SETTINGS_HISTORY_ACTIONS,limit))]
+# Restore defaults resets the limits, times and numbers; it keeps who is notified, the chemical products and every ON/OFF switch
+# (so it can never quietly turn the alarms off).
+KEEP_ON_RESET=('recipients','sms_recipients','report_recipients','escalate_recipients','escalate_sms','alert_name','chemical_products',
+               'currency','flow_target_gpm','sms_method')
+def default_settings(cur):
+    return {k:(cur[k] if k in KEEP_ON_RESET or isinstance(v,bool) else json.loads(json.dumps(v))) for k,v in DEFAULTS.items()}
+def save_settings(conn,who,updated,old,action):
+    for k,v in updated.items():conn.execute('INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)',(k,json.dumps(v)))
+    audit(conn,who,action,'; '.join(setting_changes(old,updated)) or 'no changes')
+
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.70
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.71
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -906,7 +956,8 @@ def val_settings(data,old,used_products=()):
     if new['ph_low']>=new['ph_high']:raise ValueError('pH low must be less than high')
     for key in ('alarms_enabled','email_enabled','daily_enabled','monthly_enabled','email_recovery_enabled',
                 'stale_alert_enabled','level_alarm_enabled','flow_alarm_enabled','quarterly_enabled','plc_alarms_enabled',
-                'cal_reminders_enabled','stock_alarm_enabled','sms_enabled','ph_trend_enabled','dosing_alarm_enabled','flow_stable_enabled'):
+                'cal_reminders_enabled','stock_alarm_enabled','sms_enabled','ph_trend_enabled','dosing_alarm_enabled','flow_stable_enabled',
+                'escalate_enabled','weekly_enabled','compliance_pdf_enabled'):
         if type(new[key]) is not bool:raise ValueError('Invalid switch')
     if type(new['stale_alert_minutes']) is not int or not 5<=new['stale_alert_minutes']<=1440:raise ValueError('Data-stopped alert: 5–1440 minutes')
     if type(new['level_high_ft']) not in (int,float) or not 0<new['level_high_ft']<=100:raise ValueError('High level: 0–100 ft')
@@ -920,11 +971,16 @@ def val_settings(data,old,used_products=()):
     if type(new['ph_trend_lookahead_min']) is not int or not 10<=new['ph_trend_lookahead_min']<=480:raise ValueError('pH trend: warn 10–480 minutes ahead')
     if type(new['dosing_alarm_minutes']) is not int or not 5<=new['dosing_alarm_minutes']<=240:raise ValueError('Dosing pump stopped: 5–240 minutes')
     if not isinstance(new['alarm_days'],list) or any(type(d)!=int or d not in range(7) for d in new['alarm_days']):raise ValueError('Invalid days')
-    for k in ('alarm_on','alarm_off','daily_time','monthly_time'):
+    for k in ('alarm_on','alarm_off','daily_time','monthly_time','weekly_time'):
         if not isinstance(new[k],str):raise ValueError('Invalid time')
         time.fromisoformat(new[k])
         if len(new[k])!=5:raise ValueError('Expected HH:MM')
     if type(new['monthly_day']) is not int or not 1<=new['monthly_day']<=28:raise ValueError('Choose day 1–28')
+    if type(new['weekly_day']) is not int or new['weekly_day'] not in range(7):raise ValueError('Weekly report day: Monday–Sunday')
+    if type(new['escalate_minutes']) is not int or not 5<=new['escalate_minutes']<=1440:raise ValueError('Escalate after 5–1440 minutes')
+    if new['sms_method'] not in ('email','twilio'):raise ValueError('Texts are sent by email-to-text or Twilio')
+    if not isinstance(new['always_notify'],list) or any(k not in NOTIFY_CHOICES for k in new['always_notify']):raise ValueError('Invalid critical alarm')
+    new['always_notify']=[k for k in NOTIFY_CHOICES if k in new['always_notify']]
     for key in ('alarm_confirm_samples','alarm_recovery_samples'):
         if type(new[key]) is not int or not 1<=new[key]<=10:raise ValueError('Alarm confirmation must be 1–10 consecutive readings')
     if type(new['alarm_repeat_min']) is not int or not (new['alarm_repeat_min']==0 or 5<=new['alarm_repeat_min']<=60):raise ValueError('Still-active follow-up: 0 (off) or 5–60 minutes')
@@ -934,7 +990,14 @@ def val_settings(data,old,used_products=()):
     if new['currency'] not in CURRENCIES:raise ValueError('Currency: CAD or USD')
     if not isinstance(new['recipients'],list) or len(new['recipients'])>10:raise ValueError('Too many recipients')
     if not isinstance(new['sms_recipients'],list) or len(new['sms_recipients'])>10:raise ValueError('Too many text message addresses')
-    for address in new['recipients']+new['sms_recipients']:
+    if not isinstance(new['alert_name'],str):raise ValueError('Invalid sender name')
+    new['alert_name']=' '.join(new['alert_name'].split())
+    if not 1<=len(new['alert_name'])<=60 or any(c in new['alert_name'] for c in '<>"@\\') or not new['alert_name'].isprintable():
+        raise ValueError('Sender name: 1–60 characters, without < > " @ or \\')
+    for key in ('report_recipients','escalate_recipients','escalate_sms'):
+        if not isinstance(new[key],list) or len(new[key])>10:raise ValueError('Too many addresses')
+    if new['escalate_enabled'] and not (new['escalate_recipients'] or new['escalate_sms']):raise ValueError('Escalation: add at least one email or text address')
+    for address in new['recipients']+new['sms_recipients']+new['report_recipients']+new['escalate_recipients']+new['escalate_sms']:
         if not isinstance(address,str) or len(address)>254 or '@' not in address or '\n' in address or '\r' in address:raise ValueError('Invalid email address')
     return new
 
@@ -1069,6 +1132,29 @@ def confirm_password(env,user,pwd):
     if found==LOCKED:raise AccountError('Too many wrong passwords. Try again in 15 minutes.')
     if not isinstance(found,tuple) or found[1]!=user:raise AccountError('Wrong password: nothing was removed')
 
+TEST_GAP=timedelta(seconds=20)   # one test email (or text) at a time, so the button cannot flood the mail server
+def send_test(conn,who,text):
+    """Settings → Alarm notifications → Send test email / Send test text, to the SAVED addresses."""
+    what='Test text' if text else 'Test email'
+    last=conn.execute('SELECT stamp FROM audit WHERE action IN (?,?) ORDER BY id DESC LIMIT 1',(what+' sent',what+' failed')).fetchone()
+    if last and datetime.now(UTC)-parse(last[0])<TEST_GAP:return '429 Too Many Requests',{'error':'Please wait a few seconds before sending another test'}
+    cfg=settings(conn);to=cfg['sms_recipients' if text else 'recipients']
+    if not to:return '400 Bad Request',{'error':'No '+('text message addresses' if text else 'email recipients')+' saved yet: add one and press Save first'}
+    mail=mail_config()
+    if not mail:return '400 Bad Request',{'error':'The email server is not set up on the server (email.json)'}
+    via=alert_mail(mail,cfg['alert_name'])
+    now=datetime.now(ZoneInfo('America/Vancouver'))
+    try:
+        if text:how=send_text(via,f'EffluentIQ test text. Alarm texts will arrive like this. Sent {now:%b %d %H:%M} by {who}.',to,cfg)
+        else:send_mail(via,'Wastewater dashboard test email',f'Test email from the wastewater dashboard, sent by {who} at {now:%Y-%m-%d %H:%M} (Vancouver).\n'
+                       f'Sender: {via["from"]}\nSMTP: {via["host"]}:{via.get("port",587)}\n\nAlarm emails will arrive from this sender.',to)
+    except Exception as exc:
+        reason=f'{type(exc).__name__}: {exc}'[:300]
+        audit(conn,who,what+' failed',reason);conn.commit()
+        return '502 Bad Gateway',{'error':'The mail server did not accept it — '+reason}
+    audit(conn,who,what+' sent',', '.join(to)+(f' ({how})' if text else ''));conn.commit()
+    return '200 OK',{'sent_to':to,'sender':via['from'],'method':how if text else 'email'}
+
 def handle_post(path,env,role,conn,user=''):
     who=actor(role,user)
     # Custom header + same-origin check defend cookie/browser cross-site submission with Basic auth.
@@ -1077,7 +1163,7 @@ def handle_post(path,env,role,conn,user=''):
     origin=env.get('HTTP_ORIGIN')
     if origin and urlsplit(origin).netloc!=env.get('HTTP_HOST',''):return '403 Forbidden',{'error':'Origin rejected'}
     length=int(env.get('CONTENT_LENGTH') or 0)
-    if length<1 or length>(CAL_BODY_MAX if path=='/api/calibrations' else 40000 if path=='/api/settings' else 12000):raise ValueError('Invalid request length')
+    if length<1 or length>(CAL_BODY_MAX if path=='/api/calibrations' else 200000 if path=='/api/settings/restore' else 40000 if path=='/api/settings' else 12000):raise ValueError('Invalid request length')
     body=json.loads(env['wsgi.input'].read(length))
     if not isinstance(body,dict):raise ValueError('JSON object required')
     if path in REMOVE_PATHS:
@@ -1088,15 +1174,34 @@ def handle_post(path,env,role,conn,user=''):
             if not can(role,'email'):return '403 Forbidden',{'error':'Not permitted to change settings'}
             if set(body)-EMAIL_SETTING_KEYS:return '403 Forbidden',{'error':'Your login can change only the email, text message and report settings'}
         used={r[0] for r in conn.execute('SELECT chemical FROM chemical_purchases UNION SELECT chemical FROM chemical_stock')}
-        before={p['key']:p['prices'] for p in settings(conn)['chemical_products']}
-        updated=val_settings(body,settings(conn),used)
-        for k,v in updated.items():conn.execute('INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)',(k,json.dumps(v)))
-        audit(conn,who,'Settings updated',', '.join(body.keys()))
+        old=settings(conn)
+        before={p['key']:p['prices'] for p in old['chemical_products']}
+        updated=val_settings(body,old,used)
+        save_settings(conn,who,updated,old,'Settings updated')
         for p in updated['chemical_products']:
             if p['prices']!=before.get(p['key'],[]):
                 audit(conn,who,'Chemical prices changed',p['name']+': '+(', '.join(f"${e['price']:,.2f} from {e['from']}" for e in p['prices']) or 'no price'))
         conn.commit()
         return '200 OK',updated
+    if path in ('/api/settings/restore','/api/settings/defaults'):
+        if not can(role,'settings'):return '403 Forbidden',{'error':'Not permitted to change settings'}
+        used={r[0] for r in conn.execute('SELECT chemical FROM chemical_purchases UNION SELECT chemical FROM chemical_stock')}
+        old=settings(conn)
+        if path.endswith('defaults'):
+            updated=val_settings(default_settings(old),old,used);save_settings(conn,who,updated,old,'Settings reset to defaults')
+        else:
+            data=body.get('settings')
+            if not isinstance(data,dict):raise ValueError('Not an EffluentIQ settings backup file')
+            data={k:v for k,v in data.items() if k in DEFAULTS}   # a backup from another revision: unknown keys are skipped
+            updated=val_settings(data,old,used);save_settings(conn,who,updated,old,'Settings restored from backup')
+        conn.commit()
+        return '200 OK',updated
+    if path=='/api/report-now':
+        if not (can(role,'settings') or can(role,'email')):return '403 Forbidden',{'error':'Not permitted to send reports'}
+        return report_now(conn,who,body.get('kind'))
+    if path in ('/api/test-email','/api/test-text'):
+        if not (can(role,'settings') or can(role,'email')):return '403 Forbidden',{'error':'Not permitted to send test messages'}
+        return send_test(conn,who,path.endswith('text'))
     if path.startswith('/api/accounts/'):
         if not can(role,'accounts'):return '403 Forbidden',{'error':'Admin required'}
         if path=='/api/accounts/admin':
@@ -1235,6 +1340,9 @@ def application(env,start_response):
         if not isinstance(body,bytes):body=json.dumps(body,allow_nan=False).encode()
         start_response(status,headers+[('Content-Type',kind),('Content-Length',str(len(body)))]+list(extra))
         return [body]
+    if env.get('PATH_INFO')=='/healthz':
+        ok,info=health()
+        return send('200 OK' if ok else '503 Service Unavailable',info)
     who=who_for(env)
     if who==LOCKED:
         return send('429 Too Many Requests',b'<!doctype html><meta charset="utf-8"><title>Sign-in locked</title>'
@@ -1290,8 +1398,30 @@ def application(env,start_response):
                 return send('200 OK',data)
             if path=='/api/settings':
                 if not any(can(role,p) for p in ('settings','email','settings_view')):return send('403 Forbidden',{'error':'Not permitted'})
+                with appdb() as conn:
+                    config=settings(conn);changes=settings_history(conn)
+                return send('200 OK',{'settings':config,'role':role,'email_configured':EMAIL_CFG.is_file(),'senders':senders(config),
+                                      'notify_choices':NOTIFY_CHOICES,'history':changes,'twilio_configured':twilio_config() is not None})
+            if path=='/api/settings/backup':
+                if not can(role,'settings'):return send('403 Forbidden',{'error':'Not permitted'})
                 with appdb() as conn:config=settings(conn)
-                return send('200 OK',{'settings':config,'role':role,'email_configured':EMAIL_CFG.is_file()})
+                day=datetime.now(ZoneInfo('America/Vancouver')).strftime('%Y-%m-%d')
+                data=json.dumps({'effluentiq_settings':1,'saved_at':iso(datetime.now(UTC)),'settings':config},indent=1,ensure_ascii=False).encode()
+                return send('200 OK',data,'application/json; charset=utf-8',[('Content-Disposition',f'attachment; filename="effluentiq-settings-{day}.json"')])
+            if path=='/api/flow-average':
+                if not can(role,'settings'):return send('403 Forbidden',{'error':'Not permitted'})
+                with appdb() as conn:cfg=settings(conn)
+                avg=flow_average(cfg)
+                return send('200 OK',avg) if avg else send('404 Not Found',{'error':'No discharge flow in the last hour to average'})
+            if path=='/api/compliance-pdf':
+                if not can(role,'export'):return send('403 Forbidden',{'error':'Not permitted'})
+                m=parse_qs(env.get('QUERY_STRING','')).get('month',[''])[0]
+                if not re.fullmatch(r'20\d\d-(0[1-9]|1[0-2])',m):return send('400 Bad Request',{'error':'Choose a month'})
+                first=date(int(m[:4]),int(m[5:]),1)
+                if first>datetime.now(ZoneInfo('America/Vancouver')).date():return send('400 Bad Request',{'error':'That month has not started yet'})
+                with appdb() as conn:cfg=settings(conn)
+                fname,data=compliance_pdf(first,cfg)
+                return send('200 OK',data,'application/pdf',[('Content-Disposition',f'attachment; filename="{fname}"')])
             if path=='/api/accounts':
                 if not can(role,'accounts'):return send('403 Forbidden',{'error':'Admin required'})
                 with appdb() as conn:return send('200 OK',account_summary(conn))
@@ -1377,7 +1507,7 @@ def application(env,start_response):
 # (p = report or alert). Without its own login, an address sends with the main username / password.
 REPORT_SENDER='reports@octaveworks.com';REPORT_NAME='EffluentIQ Report'
 ALERT_SENDER='alarm@octaveworks.com';ALERT_NAME='EffluentIQ Alerts'
-REPORT_KEYS=('daily:','monthly:','quarterly:')
+REPORT_KEYS=('daily:','weekly:','monthly:','quarterly:')
 def sender_mail(config,prefix,address,name):
     from email.utils import formataddr
     out=dict(config)
@@ -1389,9 +1519,25 @@ def sender_mail(config,prefix,address,name):
 def report_mail(config):
     """SMTP config for the report emails: From 'EffluentIQ Report <reports@octaveworks.com>'."""
     return sender_mail(config,'report',REPORT_SENDER,REPORT_NAME)
-def alert_mail(config):
-    """SMTP config for alarm emails and texts: From 'EffluentIQ Alerts <alarm@octaveworks.com>'."""
-    return sender_mail(config,'alert',ALERT_SENDER,ALERT_NAME)
+def alert_mail(config,name=None):
+    """SMTP config for alarm emails and texts: From 'EffluentIQ Alerts <alarm@octaveworks.com>'.
+    name: the sender name from Settings → Alarm notifications, which wins over email.json."""
+    out=sender_mail(config,'alert',ALERT_SENDER,ALERT_NAME)
+    if name:
+        from email.utils import formataddr
+        out['from']=formataddr((name,out['sender']))
+    return out
+def mail_config():
+    """The email.json SMTP config, or None when it is missing or incomplete."""
+    try:mail=json.loads(EMAIL_CFG.read_text())
+    except (OSError,ValueError):return None
+    return mail if isinstance(mail,dict) and all(mail.get(k) for k in ('host','sender','username','password')) else None
+def senders(cfg):
+    """What the Settings page shows: who alarms and reports come from, and through which mail server."""
+    mail=mail_config()
+    if not mail:return {'configured':False}
+    a=alert_mail(mail,cfg['alert_name']);r=report_mail(mail)
+    return {'configured':True,'alert':a['from'],'report':r['from'],'host':a['host'],'report_host':r['host']}
 
 XLSX_MIME=('application','vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 def send_mail(config,subject,body,recipients,attachments=()):
@@ -1399,7 +1545,9 @@ def send_mail(config,subject,body,recipients,attachments=()):
     msg=EmailMessage()
     if subject:msg['Subject']=subject   # text messages go without one: phones show "Subj:" and repeat it
     msg['From']=config.get('from') or config['sender'];msg['To']=', '.join(recipients);msg.set_content(body)
-    for fname,data in attachments:msg.add_attachment(data,maintype=XLSX_MIME[0],subtype=XLSX_MIME[1],filename=fname)
+    for fname,data in attachments:
+        mime=('application','pdf') if fname.lower().endswith('.pdf') else XLSX_MIME
+        msg.add_attachment(data,maintype=mime[0],subtype=mime[1],filename=fname)
     import ssl
     host=config['host'];port=int(config.get('port',587))
     if port==465:
@@ -2182,7 +2330,7 @@ def pump_rows(start,end,zone,date_range):
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump',
                     'Caustic_Pump_Run':'Caustic dosing pump','Acid_Pump_Run':'Acid dosing pump'}
-# Settings saved before 1.2.70 (one key per product); read once to build the product list.
+# Settings saved before 1.2.71 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 LB_KG=0.45359237
 # Plant information 11/25/2026: the caustic pump doses NEUTRO 5045 (FNEUT5045-Bulk), the acid pump SA-93;
@@ -2222,7 +2370,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.70 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.71 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -2798,6 +2946,7 @@ def scheduler():
     now=datetime.now(ZoneInfo('America/Vancouver'))
     with appdb() as conn:
         cfg=settings(conn)
+        gap=heartbeat(conn)   # minutes since the previous run when the scheduler was stopped for a while, else None
         current=summary();readings=current['tags']
         ph=next((r for r in readings if r['name']=='pH_Reading'),None)
         update_ph_incidents(conn,cfg,ph)
@@ -2805,7 +2954,10 @@ def scheduler():
         conditions.update(check_plc_alarms(conn,cfg,current.get('extras')))
         conditions.update(check_stock(conn,cfg))
         shelved=active_shelves(conn)
-        if not EMAIL_CFG.is_file() or not cfg['recipients']:
+        sms=cfg['sms_enabled'] and cfg['sms_recipients']
+        esc=cfg['escalate_enabled'] and (cfg['escalate_recipients'] or cfg['escalate_sms'])
+        report_to=cfg['report_recipients'] or cfg['recipients']
+        if not EMAIL_CFG.is_file() or not (cfg['recipients'] or sms or report_to or esc):
             return
         mail=json.loads(EMAIL_CFG.read_text())
         if not all(mail.get(k) for k in ('host','sender','username','password')):
@@ -2813,14 +2965,25 @@ def scheduler():
         hhmm=now.strftime('%H:%M');today=now.strftime('%Y-%m-%d');weekday=now.weekday()
         on=time.fromisoformat(cfg['alarm_on']);off=time.fromisoformat(cfg['alarm_off']);moment=now.time()
         within=(on<=moment<=off) if on<=off else (moment>=on or moment<=off)
-        notify=cfg['email_enabled'] and weekday in cfg['alarm_days'] and within
-        eligible=notify and cfg['alarms_enabled']
-        jobs=[]   # (delivery key, subject, body, attachment builder or None[, alarm key for shelving and texts])
+        # Email alerts, text alerts and escalation each have their own switch. Inside the schedule (days and hours) every
+        # alarm is sent; outside it, only the critical alarms (Settings → Alarm notification schedule).
+        in_schedule=weekday in cfg['alarm_days'] and within
+        due=lambda alarm:in_schedule or alarm in cfg['always_notify']
+        notify=cfg['email_enabled'] or bool(sms) or bool(esc)
+        eligible=notify and cfg['alarms_enabled'] and due('ph')
+        jobs=[]   # (delivery key, subject, body, attachment builder or None[, alarm key for shelving and texts, reading])
+        active=[]   # (alarm key, event id, title, detail) of the alarms on now, for escalation
+        if gap:
+            jobs.append((f'gap:{now:%Y-%m-%dT%H:%M}','Wastewater ALERT: alarm checking was stopped',
+                f'The EffluentIQ alarm checker did not run for {minutes_text(gap)} (until {now:%b %d %H:%M}). '
+                'Alarms that came and went in that time were not emailed or texted. It is running again now.\n\n'
+                'This usually means the server restarted or was updated. If it happens often, check the server.',None))
         if eligible:
             tracker=conn.execute('SELECT * FROM ph_alarm_v2 WHERE id=1').fetchone()
             if tracker and tracker['active_event'] and tracker['active_kind'] in ('high','low') and ph_status(ph,cfg)==tracker['active_kind']:
                 key,subject,body,reading=ph_alarm_job(conn,cfg,tracker,ph,now)
                 jobs.append((key,subject,body,None,'ph',reading))
+                active.append(('ph',tracker['active_event'],f"Wastewater pH {tracker['active_kind'].upper()} alarm",reading))
             if tracker and tracker['pending_recovery_event'] and cfg['email_recovery_enabled']:
                 eid=tracker['recovery_origin_event']; rid=tracker['pending_recovery_event']
                 delivered=ph_alarm_emailed(conn,eid)
@@ -2837,10 +3000,12 @@ def scheduler():
                         f'{lasted}pH recovered after {cfg["alarm_recovery_samples"]} normal readings.\nTimestamp: {now.isoformat()}',None))
         if notify:
             for key,st in conditions.items():
+                if not due(key):continue
                 if st.get('active'):
                     eid=st['active'];ev=conn.execute('SELECT detail FROM events WHERE id=?',(eid,)).fetchone()
                     suffix,tail,line=still_active(conn,cfg,eid,key,now)
                     title=condition_subject(key,cfg)
+                    if followed_up(key):active.append((key,eid,title,ev['detail'] if ev else ''))
                     jobs.append((f'alarm:incident:{eid}{suffix}',title+tail,
                         (title.removeprefix('Wastewater ')+'\n\n' if key=='flow_stable' else title+'\n\n' if key in RECOVERY_SUBJECTS else '')+
                         f'{mail_detail(ev["detail"]) if ev else ""}\n'+(line if followed_up(key) else '')+
@@ -2853,6 +3018,15 @@ def scheduler():
                         subject=RECOVERY_SUBJECTS.get(key,f'Wastewater {rec["kind"]}')
                         jobs.append((f'recovery:incident:{eid}',subject,
                             (subject+'\n\n' if key in RECOVERY_SUBJECTS else '')+f'{mail_detail(rec["detail"])}\nTimestamp: {now.isoformat()}',None))
+        if esc:
+            for key,eid,title,detail in active:
+                mins=alarm_minutes(conn,eid)
+                if mins>=cfg['escalate_minutes']:
+                    subject=f'ESCALATED: {title.removeprefix("Wastewater ")} — still active {minutes_text(mins)}'
+                    jobs.append((f'escalate:{eid}',subject,
+                        f'{subject}\n\nThis alarm has been on for {minutes_text(mins)}, longer than the {cfg["escalate_minutes"]} min escalation time, '
+                        'so it is also sent to the escalation contacts. Please make sure someone is dealing with it.\n\n'
+                        f'{mail_detail(detail)}\nTimestamp: {now.isoformat()}',None,key,detail))
         # Calibration reminders: once when a sensor is due within the reminder days, once when overdue.
         if cfg['cal_reminders_enabled'] and hhmm==cfg['daily_time']:
             for key,c in calibration_status(conn,cfg,now.date()).items():
@@ -2861,32 +3035,23 @@ def scheduler():
                     jobs.append((f"caldue:{key}:{c['last_id']}:{c['state']}",f"Wastewater calibration reminder: {c['label']} {when}",
                         f"{c['label']} calibration {when}.\nLast calibrated: {c['last']} by {c['last_by']}\nDue: {c['due']} "
                         f"(every {c['every_days']} days)\n\nLog the new calibration and certificate on the dashboard Audit page.",None))
-        if cfg['daily_enabled'] and hhmm==cfg['daily_time']:
-            jobs.append((f'daily:{today}','Wastewater Daily Report '+today,historical_report(now,'daily'),None))
+        if cfg['daily_enabled'] and hhmm==cfg['daily_time']:jobs.append(report_job('daily',now,cfg))
+        if cfg['weekly_enabled'] and weekday==cfg['weekly_day'] and hhmm==cfg['weekly_time']:jobs.append(report_job('weekly',now,cfg))
         if now.day==cfg['monthly_day'] and hhmm==cfg['monthly_time']:
-            first=now.date().replace(day=1)
-            if cfg['monthly_enabled']:
-                start=(first-timedelta(days=1)).replace(day=1)
-                jobs.append((f'monthly:{now:%Y-%m}','Wastewater Monthly Report '+now.strftime('%Y-%m'),
-                    historical_report(now,'monthly')+'\n\nAttached: Excel report for the month (Summary and Total_Flow_Li readings).',
-                    lambda s=start,e=first-timedelta(days=1):period_report(s,e,(SUMMARY_TAG,))))
-            if cfg['quarterly_enabled'] and now.month in (1,4,7,10):
-                start=(first-timedelta(days=80)).replace(day=1)
-                label=quarter_label(start)
-                jobs.append((f'quarterly:{label}','Wastewater Quarterly Report '+label,
-                    f'Wastewater Quarterly Report {label}\nPeriod: {start:%m/%d/%Y} through {first-timedelta(days=1):%m/%d/%Y} (America/Vancouver)\n\n'
-                    'Attached: Excel Summary (Total_Flow_Li EOD values, usage, monthly and quarterly totals).\n'
-                    'Download the full readings from the Reports page if needed.',
-                    lambda s=start,e=first-timedelta(days=1):period_report(s,e,())))
-        sms=cfg['sms_enabled'] and cfg['sms_recipients']
+            if cfg['monthly_enabled']:jobs.append(report_job('monthly',now,cfg))
+            if cfg['quarterly_enabled'] and now.month in (1,4,7,10):jobs.append(report_job('quarterly',now,cfg))
         for key,subject,body,build,*rest in jobs:
             alarm=rest[0] if rest else None;reading=rest[1] if len(rest)>1 else ''
             if alarm in shelved:continue   # shelved: no email or text while the shelf lasts (sent later if still active)
-            via=report_mail(mail) if key.startswith(REPORT_KEYS) else alert_mail(mail)
-            sends=[(key,lambda s=subject,b=body,bd=build,m=via:send_mail(m,s,b,cfg['recipients'],[bd()] if bd else ()),'Email')]
-            if sms and texted(alarm) and key.startswith('alarm:'):
-                eid=key.split(':')[2]
-                sends.append(('sms:'+key,lambda s=subject,e=eid,d=reading,m=via:send_mail(m,'',sms_text(s,e,now,d),cfg['sms_recipients']),'Text message'))
+            report=key.startswith(REPORT_KEYS)
+            via=report_mail(mail) if report else alert_mail(mail,cfg['alert_name'])
+            if key.startswith('escalate:'):to_mail,to_sms=cfg['escalate_recipients'],cfg['escalate_sms']
+            else:
+                to_mail=report_to if report else cfg['recipients'] if cfg['email_enabled'] or not key.startswith(('alarm:','recovery:')) else []
+                to_sms=cfg['sms_recipients'] if sms and texted(alarm) and key.startswith('alarm:') else []
+            sends=[(key,lambda s=subject,b=body,bd=build,m=via,t=to_mail:send_mail(m,s,b,t,attachments(bd)),'Email')] if to_mail else []
+            if to_sms:
+                sends.append(('sms:'+key,lambda s=subject,d=reading,m=via,t=to_sms:send_text(m,sms_text(s,0,now,d),t,cfg),'Text message'))
             for dkey,send,what in sends:
                 if conn.execute('SELECT 1 FROM delivery WHERE key=?',(dkey,)).fetchone():
                     continue
@@ -2899,6 +3064,274 @@ def scheduler():
                     audit(conn,'system',f'{what} failed',dkey+' '+type(exc).__name__)
                     print(f'{what} failed:',type(exc).__name__,file=sys.stderr)
                 conn.commit()
+
+# ---------------------------------------------------------------- scheduler heartbeat and the /healthz check
+HEARTBEAT_KEY='scheduler_heartbeat'   # kept in the settings table; settings() ignores it
+GAP_ALERT_MIN=10        # a longer pause of the minute-by-minute alarm checker is emailed when it runs again
+HEALTH_SCHEDULER_MAX=5  # /healthz fails when the alarm checker has not run for this many minutes
+def heartbeat(conn):
+    """Record this scheduler run. Returns the minutes since the previous run when that is GAP_ALERT_MIN or more, else None."""
+    now=datetime.now(UTC)
+    row=conn.execute('SELECT value FROM settings WHERE key=?',(HEARTBEAT_KEY,)).fetchone()
+    conn.execute('INSERT OR REPLACE INTO settings(key,value) VALUES (?,?)',(HEARTBEAT_KEY,json.dumps(iso(now))));conn.commit()
+    if not row:return None
+    try:gap=int((now-parse(json.loads(row[0]))).total_seconds()//60)
+    except (ValueError,TypeError,AttributeError):return None
+    return gap if gap>=GAP_ALERT_MIN else None
+
+def health():
+    """(ok, info) for /healthz: the alarm checker ran in the last few minutes and readings are arriving.
+    No sign-in, so it says only what is wrong, never a reading."""
+    now=datetime.now(UTC);problems=[]
+    try:
+        with appdb() as conn:
+            cfg=settings(conn);row=conn.execute('SELECT value FROM settings WHERE key=?',(HEARTBEAT_KEY,)).fetchone()
+        ran=parse(json.loads(row[0])) if row else None
+    except Exception:
+        return False,{'ok':False,'problems':['dashboard database unavailable']}
+    late=None if ran is None else (now-ran).total_seconds()/60
+    if late is None:problems.append('alarm checker has never run')
+    elif late>HEALTH_SCHEDULER_MAX:problems.append(f'alarm checker not running for {minutes_text(late)}')
+    try:
+        ages=[r.get('history_age_seconds',r.get('age_seconds')) for r in summary()['tags']];ages=[a for a in ages if a is not None]
+        age=min(ages) if ages else None
+    except Exception:age=None
+    if age is None:problems.append('no readings')
+    elif age>cfg['stale_alert_minutes']*60:problems.append(f'no new readings for {minutes_text(age/60)}')
+    return not problems,{'ok':not problems,'checked':iso(now),'problems':problems}
+
+def alarm_minutes(conn,eid):
+    ev=conn.execute('SELECT stamp FROM events WHERE id=?',(eid,)).fetchone()
+    return max(0,int((datetime.now(UTC)-parse(ev['stamp'])).total_seconds()//60)) if ev else 0
+
+def attachments(build):
+    """The email attachments from a report's builder: one (name, bytes) or a list of them."""
+    if not build:return ()
+    out=build()
+    return [out] if isinstance(out,tuple) else list(out)
+
+# ---------------------------------------------------------------- Twilio SMS (optional)
+# /etc/pbf-wastewater/sms.json: {"account_sid": "AC...", "auth_token": "...", "from_number": "+1604..."}.
+# With Settings → Text message alerts → Send texts by = Twilio, each text address's phone number (the digits before @)
+# gets a real SMS; a phone Twilio cannot reach falls back to its email-to-text address.
+def twilio_config():
+    try:c=json.loads(SMS_CFG.read_text())
+    except (OSError,ValueError):return None
+    return c if isinstance(c,dict) and all(c.get(k) for k in ('account_sid','auth_token','from_number')) else None
+
+def phone_number(address):
+    d=re.sub(r'\D','',str(address).split('@')[0])
+    return '+1'+d if len(d)==10 else '+'+d if len(d)==11 and d[0]=='1' else None
+
+def twilio_send(conf,number,body):
+    import urllib.request
+    from urllib.parse import quote,urlencode
+    req=urllib.request.Request(f"https://api.twilio.com/2010-04-01/Accounts/{quote(conf['account_sid'])}/Messages.json",
+                               data=urlencode({'To':number,'From':conf['from_number'],'Body':body}).encode(),method='POST')
+    req.add_header('Authorization','Basic '+base64.b64encode(f"{conf['account_sid']}:{conf['auth_token']}".encode()).decode())
+    with urllib.request.urlopen(req,timeout=20) as r:
+        if r.status>=300:raise RuntimeError(f'Twilio HTTP {r.status}')
+
+def send_text(via,body,to,cfg):
+    """Send one text to each address. Returns how it went out (for the Audit log and the Send test text message)."""
+    tw=twilio_config() if cfg.get('sms_method')=='twilio' else None
+    if not tw:
+        send_mail(via,'',body,to);return 'email-to-text'
+    left=[]
+    for a in to:
+        n=phone_number(a)
+        try:
+            if not n:raise ValueError('no 10-digit phone number')
+            twilio_send(tw,n,body)
+        except Exception as exc:
+            print('Twilio text failed:',type(exc).__name__,file=sys.stderr);left.append(a)
+    if left:
+        send_mail(via,'',body,left)
+        return 'Twilio; email-to-text for '+', '.join(left)
+    return 'Twilio'
+
+# ---------------------------------------------------------------- report emails (scheduled and Send report now)
+def report_job(kind,now,cfg):
+    """(delivery key, subject, body, attachment builder) of the report for the last complete day, week (Mon–Sun),
+    month or quarter before `now` (Vancouver)."""
+    today=now.date()
+    if kind=='daily':
+        return f'daily:{today}','Wastewater Daily Report '+today.isoformat(),historical_report(now,'daily'),None
+    if kind=='weekly':
+        start=today-timedelta(days=today.weekday()+7);last=start+timedelta(days=6)
+        return (f'weekly:{start}',f'Wastewater Weekly Report {start:%b %d} – {last:%b %d, %Y}',
+                historical_report(now,'weekly')+'\n\nAttached: Excel report for the week (Summary and Total_Flow_Li readings).',
+                lambda s=start,e=last:period_report(s,e,(SUMMARY_TAG,)))
+    if kind=='monthly':
+        first=today.replace(day=1);last=first-timedelta(days=1);start=last.replace(day=1);pdf=cfg.get('compliance_pdf_enabled')
+        return (f'monthly:{now:%Y-%m}','Wastewater Monthly Report '+now.strftime('%Y-%m'),
+                historical_report(now,'monthly')+'\n\nAttached: Excel report for the month (Summary and Total_Flow_Li readings)'+
+                (' and the PDF discharge compliance summary.' if pdf else '.'),
+                lambda s=start,e=last:[period_report(s,e,(SUMMARY_TAG,))]+([compliance_pdf(s,cfg)] if pdf else []))
+    if kind=='quarterly':
+        first=date(today.year,(today.month-1)//3*3+1,1);start=(first-timedelta(days=80)).replace(day=1);last=first-timedelta(days=1)
+        label=quarter_label(start)
+        return (f'quarterly:{label}','Wastewater Quarterly Report '+label,
+                f'Wastewater Quarterly Report {label}\nPeriod: {start:%m/%d/%Y} through {last:%m/%d/%Y} (America/Vancouver)\n\n'
+                'Attached: Excel Summary (Total_Flow_Li EOD values, usage, monthly and quarterly totals).\n'
+                'Download the full readings from the Reports page if needed.',
+                lambda s=start,e=last:period_report(s,e,()))
+    raise ValueError('Choose the daily, weekly, monthly or quarterly report')
+
+def report_now(conn,who,kind):
+    """Settings → Email reports → Send report now: the report as it would be sent today, to the report recipients."""
+    last=conn.execute("SELECT stamp FROM audit WHERE action IN ('Report sent on request','Report failed on request') ORDER BY id DESC LIMIT 1").fetchone()
+    if last and datetime.now(UTC)-parse(last[0])<TEST_GAP:return '429 Too Many Requests',{'error':'Please wait a few seconds before sending another report'}
+    cfg=settings(conn);to=cfg['report_recipients'] or cfg['recipients']
+    if not to:return '400 Bad Request',{'error':'No report recipients saved yet: add one and press Save first'}
+    mail=mail_config()
+    if not mail:return '400 Bad Request',{'error':'The email server is not set up on the server (email.json)'}
+    try:key,subject,body,build=report_job(kind,datetime.now(ZoneInfo('America/Vancouver')),cfg)
+    except ValueError as exc:return '400 Bad Request',{'error':str(exc)}
+    via=report_mail(mail)
+    try:send_mail(via,subject+' (sent on request)',body,to,attachments(build))
+    except Exception as exc:
+        reason=f'{type(exc).__name__}: {exc}'[:300]
+        audit(conn,who,'Report failed on request',f'{kind}: {reason}');conn.commit()
+        return '502 Bad Gateway',{'error':'Not sent — '+reason}
+    audit(conn,who,'Report sent on request',f'{kind} report to '+', '.join(to));conn.commit()
+    return '200 OK',{'sent_to':to,'subject':subject,'sender':via['from']}
+
+def flow_average(cfg,minutes=60):
+    """Average discharge flow (GPM) while discharging over the last hour (or 15 minutes), for Settings → Use current average."""
+    for m in (minutes,15):
+        rows=flow_readings(m)
+        if rows:break
+    idle=cfg['flow_low_lpm']/TAGS['FLOW_RATE'][2]
+    vals=[v for _,v in rows if v is not None and v>=idle]
+    if not vals:return None
+    return {'gpm':round(sum(vals)/len(vals),1),'min':round(min(vals),1),'max':round(max(vals),1),'readings':len(vals),'minutes':m}
+
+# ---------------------------------------------------------------- PDF discharge compliance summary
+class SimplePDF:
+    """A small US Letter PDF with Helvetica text, lines and filled boxes; no extra library on the server."""
+    W,H=612,792
+    def __init__(self):self.pages=[];self.page()
+    def page(self):self.ops=[];self.pages.append(self.ops);self.y=self.H-54
+    @staticmethod
+    def _s(t):
+        b=str(t).replace('→','->').replace('≥','>=').encode('cp1252','replace')
+        return b.replace(b'\\',b'\\\\').replace(b'(',b'\\(').replace(b')',b'\\)')
+    def text(self,x,y,t,size=10,bold=False,rgb=(0,0,0)):
+        self.ops.append(b'BT %.3f %.3f %.3f rg /F%d %.1f Tf %.2f %.2f Td (' % (*rgb,2 if bold else 1,size,x,y)+self._s(t)+b') Tj ET')
+    def rect(self,x,y,w,h,rgb):self.ops.append(b'%.3f %.3f %.3f rg %.2f %.2f %.2f %.2f re f' % (*rgb,x,y,w,h))
+    def line(self,x1,y1,x2,y2,gray=.75,w=.5):self.ops.append(b'%.3f G %.2f w %.2f %.2f m %.2f %.2f l S' % (gray,w,x1,y1,x2,y2))
+    def need(self,h):
+        if self.y-h<60:self.page()
+    def para(self,t,size=9.5,bold=False,width=105,rgb=(0,0,0),gap=3):
+        import textwrap
+        for ln in textwrap.wrap(str(t),width) or ['']:
+            self.need(size+2);self.text(54,self.y,ln,size,bold,rgb);self.y-=size+3
+        self.y-=gap
+    def bytes(self,footer=''):
+        n=len(self.pages)
+        for i,ops in enumerate(self.pages,1):
+            self.ops=ops;self.line(54,44,self.W-54,44)
+            self.text(54,32,footer,7.5,rgb=(.4,.4,.4));self.text(self.W-100,32,f'Page {i} of {n}',7.5,rgb=(.4,.4,.4))
+        objs=[b'<< /Type /Catalog /Pages 2 0 R >>',
+              ('<< /Type /Pages /Kids [%s] /Count %d >>' % (' '.join(f'{5+2*i} 0 R' for i in range(n)),n)).encode(),
+              b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
+              b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>']
+        for i,ops in enumerate(self.pages):
+            stream=b'\n'.join(ops)
+            objs.append(f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {self.W} {self.H}] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {6+2*i} 0 R >>'.encode())
+            objs.append(b'<< /Length %d >>\nstream\n' % len(stream)+stream+b'\nendstream')
+        out=bytearray(b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n');offs=[]
+        for i,o in enumerate(objs,1):
+            offs.append(len(out));out+=b'%d 0 obj\n' % i+o+b'\nendobj\n'
+        xref=len(out)
+        out+=b'xref\n0 %d\n0000000000 65535 f \n' % (len(objs)+1)+b''.join(b'%010d 00000 n \n' % o for o in offs)
+        out+=b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n' % (len(objs)+1,xref)
+        return bytes(out)
+
+def compliance_pdf(first,cfg):
+    """(file name, PDF bytes): one month's discharge compliance summary, for an inspector or the permit file."""
+    zone=ZoneInfo('America/Vancouver');now=datetime.now(UTC)
+    nxt=(first+timedelta(days=32)).replace(day=1)
+    a=datetime.combine(first,time.min,zone).astimezone(UTC);b=datetime.combine(nxt,time.min,zone).astimezone(UTC)
+    days,exc=daily_compliance(a,b,zone,cfg,with_excursions=True)
+    covered=max(0.0,(min(b,now)-a).total_seconds()/60)
+    data_days={d:x for d,x in days.items() if x['ph']}
+    tot_l=sum(x['litres'] for x in days.values());out_min=sum(x['out_min'] for x in days.values())
+    out_l=sum(x['out_litres'] for x in days.values())
+    bad=[d for d,x in data_days.items() if x['out_min']>=0.5]
+    allph=[v for x in data_days.values() for v in x['ph']]
+    with appdb() as conn:
+        alarms=conn.execute("SELECT COUNT(*) FROM events WHERE stamp>=? AND stamp<? AND kind NOT LIKE '%recovered' "
+                            "AND kind NOT LIKE '%restored' AND kind NOT LIKE '%cleared'",(iso(a),iso(b))).fetchone()[0]
+        cal=calibration_status(conn,cfg)
+    pct=lambda part,whole:'—' if not whole else f'{100*(1-part/whole):.2f} %'
+    GREY=(.35,.35,.35);RED=(.75,.1,.1);GREEN=(.05,.5,.2)
+    p=SimplePDF()
+    p.rect(0,p.H-40,p.W,40,(.06,.16,.24))
+    p.text(54,p.H-26,'EffluentIQ',14,True,(1,.83,0));p.text(138,p.H-26,'Wastewater discharge compliance summary',12,True,(1,1,1))
+    p.y=p.H-78;p.text(54,p.y,f'{first:%B %Y}',20,True);p.y-=20
+    p.para(f'Period: {first:%b %d, %Y} to {nxt-timedelta(days=1):%b %d, %Y} (America/Vancouver)'
+           +('   ·   month in progress: figures to date' if b>now else ''),9.5,rgb=GREY,gap=0)
+    p.para(f"pH limits: {cfg['ph_low']:.2f} – {cfg['ph_high']:.2f} (the limits in Settings when this summary was made)",9.5,rgb=GREY,gap=10)
+    if not data_days:verdict,col='NO pH READINGS in this month',GREY
+    elif bad:verdict,col=f'NOT COMPLIANT on {len(bad)} day{"s" if len(bad)!=1 else ""}: pH was outside the limits for {out_min:,.0f} minutes',RED
+    else:verdict,col='COMPLIANT: pH stayed inside the limits on every day with readings',GREEN
+    p.rect(54,p.y-8,p.W-108,24,(.95,.96,.97));p.text(64,p.y,verdict,11.5,True,col);p.y-=34
+    rows=[('Volume discharged',f'{tot_l/1000:,.1f} m³  ({tot_l:,.0f} L)'),
+          ('Days with discharge',f"{sum(1 for x in days.values() if x['litres']>0.5)} of {len(days)}"),
+          ('Days compliant',f'{len(data_days)-len(bad)} of {len(data_days)} days with pH readings'),
+          ('Time inside the pH limits',pct(out_min,covered)),('Volume discharged inside the pH limits',pct(out_l,tot_l)),
+          ('pH range (average)',f'{min(allph):.2f} – {max(allph):.2f}  (avg {sum(allph)/len(allph):.2f})' if allph else '—'),
+          ('pH excursions',f'{len(exc)}  ({out_min:,.0f} minutes, {out_l:,.0f} L discharged while outside)'),
+          ('Alarms in the month',str(alarms))]
+    for label,val in rows:
+        p.text(54,p.y,label,9.5,True);p.text(250,p.y,val,9.5);p.y-=14
+    p.y-=6
+    try:p.para(cost_line(a,b,cfg,'this month'),9.5)
+    except (OSError,sqlite3.Error):pass
+    # daily table
+    p.need(60);p.y-=6;p.text(54,p.y,'Daily results',12,True);p.y-=16
+    cols=((54,'Date'),(150,'pH min'),(200,'pH avg'),(250,'pH max'),(305,'Minutes outside'),(395,'Discharged (m³)'),(490,'Compliant'))
+    def head():
+        p.rect(50,p.y-4,p.W-100,15,(.06,.16,.24))
+        for x,t in cols:p.text(x,p.y,t,8.5,True,(1,1,1))
+        p.y-=15
+    head()
+    for i,(d,x) in enumerate(days.items()):
+        if p.y<58:p.page();head()
+        if i%2:p.rect(50,p.y-4,p.W-100,13,(.94,.95,.96))
+        ph=x['ph'];ok='no data' if not ph else 'yes' if x['out_min']<0.5 else 'NO'
+        vals=(f'{d:%a %b %d}',*(f'{v:.2f}' for v in ((min(ph),sum(ph)/len(ph),max(ph)) if ph else ())),*(('—',)*3 if not ph else ()),
+              f"{x['out_min']:.0f}",f"{x['litres']/1000:,.2f}",ok)
+        for (cx,_),v in zip(cols,vals):p.text(cx,p.y,v,8.5,v=='NO',RED if v=='NO' else (0,0,0))
+        p.y-=13
+    p.y-=8
+    if exc:
+        p.need(50);p.text(54,p.y,'pH excursions (each period outside the limits)',12,True);p.y-=16
+        ecols=((54,'Started'),(160,'Ended'),(266,'Minutes'),(330,'High / low'),(400,'Highest / lowest pH'),(500,'Litres'))
+        p.rect(50,p.y-4,p.W-100,15,(.06,.16,.24))
+        for x,t in ecols:p.text(x,p.y,t,8.5,True,(1,1,1))
+        p.y-=15
+        for e in exc[:40]:
+            p.need(14)
+            vals=(f"{e['start'].astimezone(zone):%b %d %H:%M}",f"{e['end'].astimezone(zone):%b %d %H:%M}",f"{e['minutes']:.0f}",e['side'],f"{e['extreme']:.2f}",f"{e['litres']:,.0f}")
+            for (cx,_),v in zip(ecols,vals):p.text(cx,p.y,v,8.5)
+            p.y-=13
+        if len(exc)>40:p.para(f'… and {len(exc)-40} more: see the Excel "Daily discharge compliance" report.',8.5,rgb=GREY)
+        p.y-=8
+    p.need(50);p.text(54,p.y,'Sensor calibration',12,True);p.y-=16
+    for c in cal.values():
+        state={'ok':'up to date','soon':'due soon','overdue':'OVERDUE','never':'no calibration logged'}[c['state']]
+        p.para(f"{c['label']}: last calibrated {c['last'] or '—'}{' by '+c['last_by'] if c['last_by'] else ''}; next due {c['due'] or '—'} ({state}).",
+               9.5,rgb=RED if c['state']=='overdue' else (0,0,0),gap=1)
+    p.y-=6
+    p.para('How it is worked out: each pH reading outside the limits counts until the next reading (at most 15 minutes, so data gaps are '
+           'not counted). Volume discharged is the increase of the Total_Flow_Li meter (meter resets skipped). A day is compliant when it '
+           'has no minutes outside the pH limits. Full readings: Reports → Excel report → "Daily discharge compliance".',8,rgb=GREY,width=125)
+    made=now.astimezone(zone)
+    return f'EffluentIQ-compliance-{first:%Y-%m}.pdf',p.bytes(f'EffluentIQ · generated {made:%Y-%m-%d %H:%M} (Vancouver) · readings from the plant PLC via Talk2M')
+
 
 BACKUP_DIR=Path(os.environ.get('PBF_BACKUP_DIR','/var/backups/pbf-wastewater-nightly'))
 def backup(dest=None,keep=14):
@@ -2924,6 +3357,9 @@ def historical_report(now,period):
     if period=='daily':
         end=datetime.combine(now.date(),time.min,zone)
         start=end-timedelta(days=1)
+    elif period=='weekly':   # the previous full week, Monday to Sunday
+        end=datetime.combine(now.date()-timedelta(days=now.weekday()),time.min,zone)
+        start=end-timedelta(days=7)
     else:
         end=datetime(now.year,now.month,1,tzinfo=zone)
         if now.month==1:start=datetime(now.year-1,12,1,tzinfo=zone)
@@ -2946,7 +3382,10 @@ def historical_report(now,period):
     try:
         with appdb() as c:cfg=settings(c)
         if daily:out.extend(['',compliance_line(start.date(),cfg)])
-        out.extend(['',cost_line(start.astimezone(UTC),end.astimezone(UTC),cfg,'yesterday' if daily else 'last month')])
+        if period=='weekly':
+            out.extend(['','Discharge compliance by day:']+[f"{d:%a %b %d}: "+compliance_line(d,cfg).removeprefix('Discharge compliance: ')
+                                                        for d in (start.date()+timedelta(days=i) for i in range(7))])
+        out.extend(['',cost_line(start.astimezone(UTC),end.astimezone(UTC),cfg,{'daily':'yesterday','weekly':'last week'}.get(period,'last month'))])
     except (OSError,sqlite3.Error):pass
     try:out.extend(['',alarm_report(start.astimezone(UTC),end.astimezone(UTC))])
     except (OSError,sqlite3.Error):out.extend(['','Alarm list unavailable (app database could not be read).'])
@@ -2958,8 +3397,9 @@ def test_email(reports=False):
     Sent the way alarm emails go (From: EffluentIQ Alerts <alarm@...>), or with reports=True the way the
     report emails go (From: EffluentIQ Report <reports@...>)."""
     mail=json.loads(EMAIL_CFG.read_text())
-    mail=report_mail(mail) if reports else alert_mail(mail)
-    with appdb() as conn:recipients=settings(conn)['recipients']
+    with appdb() as conn:cfg=settings(conn)
+    recipients=(cfg['report_recipients'] or cfg['recipients']) if reports else cfg['recipients']
+    mail=report_mail(mail) if reports else alert_mail(mail,cfg['alert_name'])
     if not recipients:sys.exit('No recipients in Settings; add one under Settings > Email recipients first.')
     shown=mail.get('from') or mail['sender']
     send_mail(mail,'Wastewater dashboard test email'+(' (reports)' if reports else ''),
