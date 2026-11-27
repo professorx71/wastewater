@@ -1,4 +1,4 @@
-Wastewater Dashboard — Rev 1.2.69
+Wastewater Dashboard — Rev 1.2.70
 Design and program by Daniel Salazar.
 
 NEVER run Linux scripts in Windows PowerShell before ssh-ing into the Ubuntu VPS.
@@ -16,13 +16,13 @@ RELEASE NOTES
 
 INSTALL TO STAGING FIRST
 1) In Windows PowerShell:
-   scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.69.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
+   scp "$env:USERPROFILE\Downloads\pbf-wastewater-rev1.2.70.tar.gz" ubuntu@51.161.52.12:/home/ubuntu/
 2) SSH:
    ssh ubuntu@51.161.52.12
 3) On Ubuntu:
    mkdir -p ~/ww-upgrade
-   tar xzf ~/pbf-wastewater-rev1.2.69.tar.gz -C ~/ww-upgrade
-   cd ~/ww-upgrade/pbf-wastewater-rev1.2.69
+   tar xzf ~/pbf-wastewater-rev1.2.70.tar.gz -C ~/ww-upgrade
+   cd ~/ww-upgrade/pbf-wastewater-rev1.2.70
    sudo bash stage.sh
 4) Follow staging command printed by stage.sh; Gunicorn port 8003 must be launched in an SSH terminal.
    Staging uses a NEW metadata SQLite file with all email switches OFF by default.
@@ -40,9 +40,9 @@ INSTALL TO STAGING FIRST
 
 ROLLBACK
 The deploy script prints a backup path, e.g.
-/var/backups/pbf-wastewater/pre-deploy-1.2.69-YYYYMMDD-HHMMSS
+/var/backups/pbf-wastewater/pre-deploy-1.2.70-YYYYMMDD-HHMMSS
 To restore old web code (leaves history/metadata intact):
-   sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.69-YYYYMMDD-HHMMSS
+   sudo bash rollback.sh /var/backups/pbf-wastewater/pre-deploy-1.2.70-YYYYMMDD-HHMMSS
 
 SECURITY AND LIMITATIONS
 - Never paste SMTP passwords, HTTP Basic passwords or Talk2M API secrets in chat.
