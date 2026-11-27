@@ -7,6 +7,7 @@ const ICONS={
  Total_Flow_Li:'<svg viewBox="0 0 32 32"><ellipse cx="16" cy="7.5" rx="10" ry="3.5"/><path d="M6 7.5v17c0 1.9 4.5 3.5 10 3.5s10-1.6 10-3.5v-17"/><path d="M6 13.2c0 1.9 4.5 3.5 10 3.5s10-1.6 10-3.5M6 18.9c0 1.9 4.5 3.5 10 3.5s10-1.6 10-3.5"/></svg>'
 };
 const $=id=>document.getElementById(id);
+const EQ_TANK_TOP_FT=6;   // EQ tank level at the top plate: the diagram's water is full here
 const fmt=x=>x==null?'--.--':Number(x).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2});
 const local=x=>{try{return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Vancouver',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date(x))}catch{return '—'}};
 let summaryData=null;let historyData=null;let userRole='Operator';let userName='';let clockOffset=0;let perms=new Set();let config={};
@@ -53,7 +54,12 @@ function drawCards(){
  document.querySelectorAll('[data-flow-unit]').forEach(s=>s.onchange=()=>setFlowUnit(s.value));
  const item=(key)=>lookup[key]||{};
  const set=(id,key,unit='')=>{const t=item(key);$(id).textContent=(t.status==='current'&&t.value!=null?fmt(t.value):'--.--')+(unit?' '+unit:'')};
- set('tankPh','pH_Reading');set('tankLevel','EQ_Tank_Level_Ft');{const t=item('FLOW_RATE');$('diagramFlow').textContent=(t.status==='current'&&t.value!=null?fmt(flowValue(t.value)):'--.--')+' '+flowUnit}
+ set('tankPh','pH_Reading');set('tankLevel','EQ_Tank_Level_Ft');
+ // EQ tank water: rises from the bottom (0 ft) to the top plate (EQ_TANK_TOP_FT); the painted water is covered while the level is known.
+ {const t=item('EQ_Tank_Level_Ft');const known=t.status==='current'&&t.value!=null;const ft=known?Number(t.value):0;
+  const pct=Math.max(0,Math.min(1,ft/EQ_TANK_TOP_FT))*100;const box=$('eqFill');box.classList.toggle('known',known);box.classList.toggle('top',known&&ft>=EQ_TANK_TOP_FT);
+  $('eqLiquid').style.height=pct+'%';box.title=known?`EQ tank level ${fmt(ft)} ft of ${EQ_TANK_TOP_FT} ft (${Math.round(pct)}% full)`:'EQ tank level: '+(t.status||'missing')}
+ {const t=item('FLOW_RATE');$('diagramFlow').textContent=(t.status==='current'&&t.value!=null?fmt(flowValue(t.value)):'--.--')+' '+flowUnit}
  {const ex=summaryData.extras||{};const show=(id,tag,unit,dec)=>{const r=ex[tag]||{};const ok=r.status==='current'&&r.value!=null;const el=$(id);el.textContent=(ok?Number(r.value).toFixed(dec):'--.'+'-'.repeat(dec))+' '+unit;el.classList.toggle('live',ok);el.title=`${r.label||tag} (${tag}): ${r.status||'missing'}${r.stamp?' · '+local(r.stamp):''}`};
   // Dosing run rates arrive in mL/min (the server converts PLC mL/hr); shown in the unit picked here.
   // All four pumps share one unit choice: mL/min or L/hr (mL/min x 60 / 1000).

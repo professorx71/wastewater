@@ -227,3 +227,24 @@ h2.with-button button{font-size:13px;letter-spacing:0;text-transform:none}
 #settings input[type=checkbox]:hover:not(:disabled){box-shadow:0 0 8px #ffd40088}
 #settings input[type=checkbox]:disabled{border-color:#7d7a5c;cursor:not-allowed}
 #settings .days label{gap:2px;margin-right:16px}
+
+/* EQ tank live water level (26 Nov 2026). Tank wall in the 1672 x 597 art: x 476-697, top plate y 100, bottom y 412.
+   .eq-empty covers the painted water (y 288-414) with the tank's steel; .eq-liquid grows from the bottom (0 ft) to the top plate (6 ft). */
+.eq-fill{position:absolute;left:28.47%;width:13.22%;top:16.75%;height:52.26%;pointer-events:auto;display:none}
+.eq-fill.known{display:block}
+.eq-empty{position:absolute;left:0;right:0;bottom:-.4%;height:40.8%;border-radius:0 0 6% 6%/0 0 9% 9%;
+  background:linear-gradient(90deg,#8e969d 0%,#c9ced2 7%,#eef1f3 22%,#e4e8eb 45%,#d3d8dc 68%,#b4bbc1 86%,#8c949a 100%)}
+.eq-liquid{position:absolute;left:0;right:0;bottom:0;height:0;transition:height 2.5s cubic-bezier(.3,.7,.3,1);border-radius:0 0 5% 5%/0 0 6% 6%;
+  background:linear-gradient(180deg,rgba(64,214,255,.78),rgba(18,150,222,.86) 45%,rgba(8,104,180,.92));
+  box-shadow:inset 0 0 18px rgba(170,240,255,.45)}
+.eq-wave{position:absolute;left:0;right:0;top:-7px;height:9px;opacity:.95;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 10' preserveAspectRatio='none'%3E%3Cpath d='M0 6Q10 0 20 6T40 6T60 6T80 6V10H0Z' fill='%2340d6ff' fill-opacity='.85'/%3E%3Cpath d='M0 6Q10 0 20 6T40 6T60 6T80 6' fill='none' stroke='%23d9fbff' stroke-width='1.4'/%3E%3C/svg%3E") 0 0/50% 100% repeat-x;
+  animation:eqWave 3s linear infinite}
+@keyframes eqWave{to{background-position:100% 0}}
+.eq-fill.top .eq-liquid{background:linear-gradient(180deg,rgba(255,120,110,.8),rgba(18,150,222,.86) 18%,rgba(8,104,180,.92))}
+.eq-ticks{position:absolute;right:2%;top:0;bottom:0;width:12%}
+.eq-ticks i{position:absolute;right:0;width:100%;border-top:2px solid rgba(20,40,55,.75);font-style:normal}
+.eq-ticks b{position:absolute;right:110%;top:-.75em;font-size:clamp(7px,.6vw,11px);font-weight:800;color:#13293a;line-height:1;text-shadow:0 0 3px rgba(255,255,255,.8)}
+/* Pump fans keep turning even when the computer asks for less animation: the turning fan IS the RUNNING signal. */
+@media (prefers-reduced-motion:reduce){.pump-fan.on svg{animation:pumpSpin 2.2s linear infinite}.pump-fan.transfer.on svg{animation-name:pumpSpinCw}
+  .eq-liquid{transition-duration:1s}}

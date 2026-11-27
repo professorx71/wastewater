@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EffluentIQ — Rev 1.2.66</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>EffluentIQ — Rev 1.2.67</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body data-view="overview">
 <header class="topbar"><div class="brand"><h1><img class="logo" src="/logo-effluentiq.svg" alt="EffluentIQ — Industrial Wastewater Monitoring &amp; Reporting" width="700" height="124"></h1></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button><button data-view="help">Help</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.66</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.67</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="alarmRibbon" class="sludge-ribbon" role="alert" hidden></div><div id="shelfNote" class="shelf-note" hidden></div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -86,6 +86,7 @@
         <rect x="334" y="74" width="12" height="11" rx="2" fill="#9ca3af" stroke="#5d6973"/>
       </g>
       </svg>
+      <div class="eq-fill" id="eqFill" aria-hidden="true"><div class="eq-empty"></div><div class="eq-liquid" id="eqLiquid"><span class="eq-wave"></span></div><div class="eq-ticks"><i style="bottom:16.6667%"><b>1</b></i><i style="bottom:33.3333%"><b>2</b></i><i style="bottom:50.0000%"><b>3</b></i><i style="bottom:66.6667%"><b>4</b></i><i style="bottom:83.3333%"><b>5</b></i></div></div>
       <div class="eq-overlay" aria-label="Actual EQ tank readings">
         <div><span>pH</span><strong id="tankPh">--.--</strong></div>
         <div><span>Level</span><strong id="tankLevel">--.--</strong><small>ft</small></div>
@@ -112,6 +113,7 @@
 
 <div class="panel" id="help-new"><h3>What's new — November 2026</h3>
 <ul>
+<li><b>Live EQ tank water level</b> (26 Nov 2026): the water in the EQ tank on the process diagram now rises and falls with the level reading, 0 ft (bottom) to 6 ft (top plate). The pump fans now also turn on computers set to reduce animations.</li>
 <li><b>Easier Settings page</b> (26 Nov 2026): a green <b>Save settings</b> button at the bottom of every box, larger text, large check boxes with a bold yellow border (green with a tick when on), and box titles and setting names in yellow.</li>
 <li><b>Unstable discharge flow alarm</b> (26 Nov 2026): enter the <b>desired discharge flow (GPM)</b> in Settings → Data, tank level, flow and PLC alarms. If the flow swings outside ±10 % (choose 10–20 %) of it for 1 minute while discharging, an email and text say "Discharge Flow Reading GPM not Stable — Note: Check Mixer Pump or Check Flow meter sensor". Off until you turn it on. See <a href="#help-alarms">Alarms</a>.</li>
 <li><b>"Still active" email and text for every alarm</b> (26 Nov 2026): data stopped, EQ tank level, no discharge flow and PLC alarms (sludge tank full, E-Stop, pump and motor faults), as well as pH, now send a follow-up while they stay on — "… — still active 30 min", "… — still active 1 h", then hourly, counted from when the alarm started. Default every 30 minutes for the first hour (was 5 minutes, pH only); change it in Settings → Alarm notification schedule. See <a href="#help-email">Emails and texts</a>.</li>
@@ -169,6 +171,7 @@
 <li><b>SYSTEM ENABLED</b> circle: green <b>ON</b> / red <b>OFF</b> from PLC B3:0/4. Grey "--" means no reading has arrived.</li>
 <li>EQ tank pH and level, rake motor speed (Hz), discharge flow, coagulant, flocculant, caustic (blue box) and acid (yellow box) pump rate (%) and run rate (choose <b>mL/min</b> or <b>L/hr</b>; one choice for all four pumps).</li>
 <li>Coagulant, flocculant, caustic and acid pumps: <b>RUNNING</b> while the run reading is at least 0.01 mL/min, <b>STOPPED</b> below that (a leftover reading such as 0.003 mL/min shows as 0.00 and counts as stopped). Point at the word to see the exact reading from the PLC.</li>
+<li><b>EQ tank water level:</b> the water in the EQ tank drawing rises and falls with the live level reading, from 0 ft at the bottom to 6 ft at the top plate, with marks at each foot. Hover over the tank to see the level and % full.</li>
 <li>Electric transfer (sump) pump and circulation (mixer) pump: spinning green fan and <b>RUNNING</b>, or <b>OFF</b>. The transfer pump fan turns clockwise, the circulation pump fan counter-clockwise.</li>
 <li>Sludge tank: <b>NORMAL</b> or flashing <b>FULL</b>.</li>
 <li>DAF bottom drain: the orange pipe from the bottom of the DAF unit through the <b>gate valve</b> into the sludge bin. It is drawn for reference only; the valve position is not read from the PLC.</li>
@@ -322,5 +325,5 @@
 <label><span>Password for <b id="pwUser"></b></span><input type="password" id="pwInput" autocomplete="current-password" maxlength="256"></label>
 <p class="pw-note">Removing a record needs your password, so nothing is deleted by accident. It is recorded in the Audit log.</p>
 <div class="pw-buttons"><button type="button" id="pwCancel">Cancel</button><button type="submit" id="pwOk" class="danger">Remove</button></div></form></dialog>
-<footer>EffluentIQ™ Rev 1.2.66 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
+<footer>EffluentIQ™ Rev 1.2.67 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering · Design and program by Daniel Salazar.</footer>
 </main></body></html>
