@@ -38,7 +38,7 @@ class RevisionTests(unittest.TestCase):
 
     def test_mapping_and_summary(self):
         s=web.summary()
-        assert s['revision']=='1.2.73'
+        assert s['revision']=='1.2.74'
         tags={r['name']:r for r in s['tags']}
         self.assertAlmostEqual(tags['FLOW_RATE']['value'],0.030656*3.78541,places=6)
         self.assertEqual(tags['pH_Reading']['status'],'current')
@@ -502,9 +502,9 @@ class RevisionTests(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('live_mod',os.path.join(os.path.dirname(web.__file__),'collector','live.py'))
         live=importlib.util.module_from_spec(spec);spec.loader.exec_module(live)
         db=live.connect(str(web.LIVE_DB))
-        def feed(values):   # one live reading every 3 s ending now
+        def feed(values,back=0):   # one live reading every 3 s ending now (or `back` seconds ago)
             db.execute('DELETE FROM recent')
-            t=datetime.now(timezone.utc)
+            t=datetime.now(timezone.utc)-timedelta(seconds=back)
             for i,v in enumerate(reversed(values)):
                 db.execute('INSERT INTO recent(name,value,read_at) VALUES (?,?,?)',('FLOW_RATE',v,web.iso(t-timedelta(seconds=3*i))))
             db.commit()
@@ -530,6 +530,10 @@ class RevisionTests(unittest.TestCase):
             sms=web.sms_text(web.condition_subject('flow_stable',cfg),1,datetime.now(),ev['detail'])
             self.assertIn('Note: Check Mixer Pump or Check Flow meter sensor',sms)
             self.assertTrue(web.texted('flow_stable'))
+            # the band is changed to ±20 % while the alarm is on: follow-ups show the new band, the history keeps the start
+            feed([35 if i%2 else 66 for i in range(21)],back=2);st=web.check_conditions(a,dict(cfg,flow_stable_pct=20),[],datetime.now(web.ZoneInfo('America/Vancouver')))['flow_stable']
+            self.assertIn('±20%',st['now_detail']);self.assertIn('Allowed 40.0–60.0 GPM',st['now_detail'])
+            self.assertIn('±10%',a.execute('SELECT detail FROM events WHERE id=?',(st['active'],)).fetchone()[0])
             feed(steady)
             web.check_conditions(a,cfg,[],datetime.now(web.ZoneInfo('America/Vancouver')))
             self.assertEqual(a.execute("SELECT COUNT(*) FROM events WHERE kind='Discharge flow stable'").fetchone()[0],1)
@@ -982,13 +986,13 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(self.call('GET','/api/export','admin','admin-pass',query='tag=consumption&year=1999')[0],400)
         with web.appdb() as db:   # prices: validated, unknown products refused
             cfg=web.settings(db);items=cfg['chemical_products']
-            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.73 carried over
+            self.assertEqual(web.products(cfg)['caustic']['price'],500.0)   # price saved before 1.2.74 carried over
             bad=lambda **kw:[dict(items[0],**kw)]+items[1:]
             for b in (bad(prices=[{'from':'2026-01-01','price':-1}]),bad(prices=[{'from':'not a date','price':5}]),
                       bad(prices=[{'from':'2026-01-01','price':5},{'from':'2026-01-01','price':6}]),bad(container_l=0),bad(name=''),bad(key='Bad Key'),bad(tag='FLOW_RATE'),bad(lead_days=1.5),
                       bad(tag='Floc_Pump_Rate'),[]):   # Floc_Pump_Rate already measures the flocculant
                 with self.assertRaises(ValueError):web.val_settings({'chemical_products':b},cfg)
-            # an old page sending the pre-1.2.73 keys is not refused (they are ignored)
+            # an old page sending the pre-1.2.74 keys is not refused (they are ignored)
             web.val_settings({'chemical_prices':{'floc':42.5},'stock_low_coag_l':3},cfg)
             # caustic has tank counts: it cannot be deleted, only taken out of use; sa93 has entries too
             with self.assertRaises(ValueError):web.val_settings({'chemical_products':items[1:]},cfg,{'caustic'})

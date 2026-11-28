@@ -1,10 +1,10 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EffluentIQ — Rev 1.2.73</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<title>EffluentIQ — Rev 1.2.74</title><link rel="icon" type="image/svg+xml" href="/logo-effluentiq-mark.svg"><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
 <body data-view="overview">
 <header class="topbar"><div class="brand"><h1><img class="logo" src="/logo-effluentiq.svg" alt="EffluentIQ — Industrial Wastewater Monitoring &amp; Reporting" width="700" height="124"></h1></div>
 <nav aria-label="Dashboard navigation"><button class="selected" data-view="overview">Overview</button><button data-view="trends">Trends</button><button data-view="events">Alarms</button><button data-view="audit" hidden>Audit</button><button data-view="reports">Reports</button><button data-view="settings" hidden>Settings</button><button data-view="help">Help</button></nav>
-<div class="account"><b id="role">Checking…</b><small>Rev 1.2.73</small><button id="switchUser" type="button">Switch user</button></div></header>
+<div class="account"><b id="role">Checking…</b><small>Rev 1.2.74</small><button id="switchUser" type="button">Switch user</button></div></header>
 <main><div id="banner" class="banner" role="status" aria-live="polite">Connecting to stored wastewater API readings…</div><div id="alarmRibbon" class="sludge-ribbon" role="alert" hidden></div><div id="shelfNote" class="shelf-note" hidden></div>
 <section id="overview" class="view">
   <div id="cards" class="cards" aria-label="Live wastewater readings"></div>
@@ -113,6 +113,7 @@
 
 <div class="panel" id="help-new"><h3>What's new — November 2026</h3>
 <ul>
+<li><b>Follow-up alarm emails show the latest reading</b> (27 Nov 2026): a "still active" follow-up (and an escalation) now shows the reading and limits as they are now, so a limit you change while an alarm is on — for example the allowed flow swing — appears in the next follow-up. The first email and the Events history keep the reading from when the alarm started.</li>
 <li><b>Hide and show boxes</b> (27 Nov 2026): click a box's title to fold it away, use Hide all / Show all at the top of each page, and open long explanations with <b>Show notes</b>. Saves space; remembered on this computer.</li>
 <li><b>Alarms, reports and settings upgrades</b> (27 Nov 2026): <b>critical alarms</b> that notify at any hour; <b>escalation</b> to a supervisor when an alarm stays on; an email when the alarm checker was stopped, and a <code>/healthz</code> check for an outside monitor; separate <b>report recipients</b>; a <b>weekly report</b>; <b>Send report now</b>; a <b>monthly PDF compliance summary</b>; the settings <b>Change history</b>; settings <b>backup, restore and defaults</b>; <b>Use current average</b> for the desired flow; and optional <b>Twilio SMS</b>. See <a href="#help-email">Emails and texts</a>.</li>
 <li><b>Alarm notifications panel</b> (27 Nov 2026): the top of Settings now has <b>Email alerts</b> and <b>Text message alerts</b> side by side — ON/OFF, the sender name, recipients, a mobile number + carrier <b>Add</b> helper, and <b>Send test email</b> / <b>Send test text</b> buttons. Texts no longer need alarm email turned on. See <a href="#help-email">Emails and texts</a>.</li>
@@ -345,5 +346,5 @@
 <label><span>Password for <b id="pwUser"></b></span><input type="password" id="pwInput" autocomplete="current-password" maxlength="256"></label>
 <p class="pw-note">Removing a record needs your password, so nothing is deleted by accident. It is recorded in the Audit log.</p>
 <div class="pw-buttons"><button type="button" id="pwCancel">Cancel</button><button type="submit" id="pwOk" class="danger">Remove</button></div></form></dialog>
-<footer>EffluentIQ™ Rev 1.2.73 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering</footer>
+<footer>EffluentIQ™ Rev 1.2.74 · Industrial Wastewater Monitoring &amp; Reporting · EffluentIQ is a trademark of Octave Works Engineering</footer>
 </main></body></html>

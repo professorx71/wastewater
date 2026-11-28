@@ -111,7 +111,7 @@ def summary():
                 if name in DOSING_RUN_TAGS:
                     item.update(raw_value=lv['value'],raw_unit=raw_unit(name,lv['read_at']),value=ml_per_min(name,lv['read_at'],lv['value']))
             extras[name]=item
-        return {'revision':'1.2.73','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
+        return {'revision':'1.2.74','now':iso(now),'timezone':'America/Vancouver','tags':result,'collector':state,
                 'data_age_seconds':min(ages) if ages else None,'extras':extras,'live':bool(live)}
     finally: db.close()
 
@@ -625,7 +625,7 @@ def appdb():
         conn.close()
 
 def migrate_alarms(conn):
-    """Rev 1.2.73: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
+    """Rev 1.2.74: all alarms are auto-acknowledged and their messages carry no PLC address or tag name."""
     conn.execute("UPDATE events SET state=CASE WHEN cleared_at IS NULL THEN 'acknowledged' ELSE 'closed' END,"
                  "actor=COALESCE(actor,?),ack_at=COALESCE(ack_at,stamp) WHERE state='open'",(AUTO_ACK_ACTOR,))
     if conn.execute("SELECT 1 FROM settings WHERE key='alarm_text_v2'").fetchone():return
@@ -948,7 +948,7 @@ def save_settings(conn,who,updated,old,action):
 def val_settings(data,old,used_products=()):
     """Validated copy of the settings with `data` applied. used_products: product keys that have purchases or
     tank counts (they cannot be deleted, only taken out of use)."""
-    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.73
+    if isinstance(data,dict):data={k:v for k,v in data.items() if k not in LEGACY_PRODUCT_KEYS}   # sent by a page loaded before 1.2.74
     if not isinstance(data,dict) or set(data)-set(DEFAULTS):raise ValueError('Unknown setting')
     new=dict(old);new.update(data)
     for key in ('ph_low','ph_high'):
@@ -1697,6 +1697,7 @@ def update_condition(conn,key,enabled,abnormal,stamp,kind,detail,recovered_kind,
                 audit(conn,'system',f'Confirmed {kind}',f'incident {st["active"]}')
         elif abnormal:
             st['rec']=0
+            if detail:st['now_detail']=detail   # follow-ups show the latest reading and limits, not the ones at the start
         else:
             st['rec']=st.get('rec',0)+1
             if st['rec']>=recover:
@@ -1711,7 +1712,7 @@ def update_condition(conn,key,enabled,abnormal,stamp,kind,detail,recovered_kind,
                     conn.execute("UPDATE events SET state='closed' WHERE id=? AND state IN ('open','acknowledged')",(eid,))
                 cur=conn.execute('INSERT INTO events(stamp,kind,detail,state) VALUES (?,?,?,?)',
                                  (now,recovered_kind,f'Incident {eid}; {recovered_detail}','closed'))
-                st['pending']=[eid,cur.lastrowid];st['active']=None;st['rec']=0
+                st['pending']=[eid,cur.lastrowid];st['active']=None;st['rec']=0;st.pop('now_detail',None)
                 audit(conn,'system',f'{recovered_kind} confirmed',f'incident {eid}')
     conn.execute('INSERT OR REPLACE INTO alarm_state(key,state) VALUES (?,?)',(key,json.dumps(st)))
     conn.commit()
@@ -2330,7 +2331,7 @@ def pump_rows(start,end,zone,date_range):
 GAL_L=3.785411784
 DOSING_TAG_CHOICES={'Coag_Pump_Run':'Coagulant dosing pump','Floc_Pump_Rate':'Flocculant dosing pump',
                     'Caustic_Pump_Run':'Caustic dosing pump','Acid_Pump_Run':'Acid dosing pump'}
-# Settings saved before 1.2.73 (one key per product); read once to build the product list.
+# Settings saved before 1.2.74 (one key per product); read once to build the product list.
 LEGACY_PRODUCT_KEYS=('chemical_prices','stock_low_coag_l','stock_low_floc_l','stock_low_caustic_l','stock_low_sa93_l')
 LB_KG=0.45359237
 # Plant information 11/25/2026: the caustic pump doses NEUTRO 5045 (FNEUT5045-Bulk), the acid pump SA-93;
@@ -2370,7 +2371,7 @@ PRODUCT_MAX=30
 _PRODUCT_KEY=re.compile(r'^[a-z0-9_]{1,24}$')
 
 def default_products(legacy=None):
-    """The original four products, with the low-stock levels and prices saved before 1.2.73 (legacy settings)."""
+    """The original four products, with the low-stock levels and prices saved before 1.2.74 (legacy settings)."""
     legacy=legacy or {};prices=legacy.get('chemical_prices') or {};out=[]
     for p in _DEFAULT_PRODUCTS:
         p=dict(p);low=legacy.get(f"stock_low_{p['key']}_l")
@@ -3004,6 +3005,7 @@ def scheduler():
                 if st.get('active'):
                     eid=st['active'];ev=conn.execute('SELECT detail FROM events WHERE id=?',(eid,)).fetchone()
                     suffix,tail,line=still_active(conn,cfg,eid,key,now)
+                    if suffix and ev and st.get('now_detail'):ev={'detail':st['now_detail']}   # follow-up: latest reading
                     title=condition_subject(key,cfg)
                     if followed_up(key):active.append((key,eid,title,ev['detail'] if ev else ''))
                     jobs.append((f'alarm:incident:{eid}{suffix}',title+tail,
